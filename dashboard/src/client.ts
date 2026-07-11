@@ -170,6 +170,7 @@ const ACTIVITY: Record<TaskState, string> = {
   QUEUED: "Waiting for a free slot",
   RUNNING: "Agent is working",
   VERIFYING: "Checking the work (tests)",
+  REVIEWING: "Second agent reviewing the diff",
   MERGE_QUEUED: "Work approved — waiting to merge",
   MERGING: "Merging into your branch",
   DONE: "Merged",
@@ -181,6 +182,7 @@ const STATE_ICON: Record<TaskState, string> = {
   QUEUED: "◷",
   RUNNING: "●",
   VERIFYING: "🔎",
+  REVIEWING: "⚖",
   MERGE_QUEUED: "✓",
   MERGING: "⇄",
   DONE: "✓",
@@ -300,7 +302,7 @@ function progressBar(): HTMLElement {
   const done = tasks.filter((t) => t.state === "DONE").length;
   const failed = tasks.filter((t) => t.state === "FAILED").length;
   const active = tasks.filter((t) =>
-    ["RUNNING", "VERIFYING", "MERGING", "MERGE_QUEUED"].includes(t.state),
+    ["RUNNING", "VERIFYING", "REVIEWING", "MERGING", "MERGE_QUEUED"].includes(t.state),
   ).length;
   const seg = (cls: string, count: number) => {
     if (!count) return;
@@ -399,7 +401,8 @@ function render(): void {
     .filter((t) => t.state === "BLOCKED" || t.state === "FAILED")
     .map((t) => taskCard(t, "attention"));
   const working = tasks
-    .filter((t) => ["RUNNING", "VERIFYING", "MERGING", "MERGE_QUEUED"].includes(t.state))
+    .filter((t) =>
+      ["RUNNING", "VERIFYING", "REVIEWING", "MERGING", "MERGE_QUEUED"].includes(t.state))
     .map((t) => taskCard(t, "working"));
 
   for (const zone of [

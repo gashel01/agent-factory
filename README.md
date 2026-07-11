@@ -112,13 +112,14 @@ All optional — missing file means defaults. See [`examples/factory.yaml`](exam
 | `agent.permission_mode` | `acceptEdits` | Never use permission bypass outside a disposable container. |
 | `agent.allowed_tools` | git/pytest/ruff | Headless agents can't answer prompts; anything not allow-listed is denied. |
 | `verify.commands` | `[]` | Default gate commands; tickets can override. |
+| `review.enabled` | `false` | Adversarial second agent judging each diff before merge (scope creep, gamed tests, obvious bugs). Rejection re-queues the task with the reasons as evidence. Use `review.model` for a cheap tier. |
 | `ratelimit.cooldown_min` | `20` | First pause; doubles on each subsequent hit. |
 | `contract_path` | built-in | The execution contract prepended to every prompt. |
 
 ## How a task flows
 
 ```
-QUEUED → RUNNING → VERIFYING → MERGE_QUEUED → MERGING → DONE
+QUEUED → RUNNING → VERIFYING → (REVIEWING) → MERGE_QUEUED → MERGING → DONE
             │           │                        │
             │           └── red ──► retry (failure evidence appended to the
             │                        ticket, max_retries) ──► FAILED
@@ -186,10 +187,9 @@ CI runs the suite on Linux **and** Windows.
 
 ## Roadmap
 
-- **v2** — adversarial review agent on the diff (second model, cheap tier),
-  post-worktree setup hooks (`uv sync`, `npm ci`), dashboard control plane
-  (pause/kill/retry via a control file polled by the dispatcher).
-- **v3** — burst mode, PR-based flow (`gh`), pluggable agent runtimes.
+- post-worktree setup hooks (`uv sync`, `npm ci`)
+- burst mode, PR-based flow (`gh`), pluggable agent runtimes
+- a "plan" tab in the dashboard (goal in, draft tickets out, edit in place)
 
 ## License
 

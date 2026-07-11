@@ -10,14 +10,12 @@ The planner proposes, the human disposes — drafts are never executed silently.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import shutil
-import time
 from pathlib import Path
 
-from .agent import RATE_LIMIT_RE, extract_trailing_json
+from .agent import extract_trailing_json, is_rate_limit_result, stream_headless
 from .config import Config
 
 #: Exploration only — the planner must not be able to modify the repo.
@@ -89,62 +87,22 @@ async def run_planner(cfg: Config, repo: Path, goal: str, log_path: Path) -> dic
         cmd += ["--model", cfg.agent.model]
     prompt = f"{PLANNER_CONTRACT}\n\n---\n\n# Operator goal\n\n{goal}\n"
 
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(repo),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    assert proc.stdin is not None
-    proc.stdin.write(prompt.encode("utf-8"))
-    await proc.stdin.drain()
-    proc.stdin.close()
+    try:
+        out = await stream_headless(cmd, prompt, repo, log_path, timeout_s=15 * 60)
+    except TimeoutError as exc:
+        raise PlanError("planner exceeded its 15 min budget") from exc
 
-    result_record: dict | None = None
-    start = time.monotonic()
-    with log_path.open("w", encoding="utf-8", errors="replace") as log:
-        assert proc.stdout is not None and proc.stderr is not None
-
-        async def read_out() -> None:
-            nonlocal result_record
-            while line := await proc.stdout.readline():  # type: ignore[union-attr]
-                text = line.decode("utf-8", errors="replace")
-                log.write(text)
-                try:
-                    record = json.loads(text)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(record, dict) and record.get("type") == "result":
-                    result_record = record
-
-        async def read_err() -> None:
-            while line := await proc.stderr.readline():  # type: ignore[union-attr]
-                text = line.decode("utf-8", errors="replace")
-                log.write(f"[stderr] {text}")
-                if RATE_LIMIT_RE.search(text):
-                    raise PlanError("rate limit hit while planning — retry later")
-
-        try:
-            async with asyncio.timeout(15 * 60):
-                await asyncio.gather(read_out(), read_err())
-                await proc.wait()
-        except TimeoutError as exc:
-            proc.kill()
-            await proc.wait()
-            raise PlanError("planner exceeded its 15 min budget") from exc
-
-    if proc.returncode != 0 or result_record is None:
-        raise PlanError(f"planner exited {proc.returncode} without a result — see {log_path}")
-    contract = extract_trailing_json(str(result_record.get("result", "")))
+    if out.stderr_rate_limited or (out.result is not None and is_rate_limit_result(out.result)):
+        raise PlanError("rate limit hit while planning — retry later")
+    if out.returncode != 0 or out.result is None:
+        raise PlanError(f"planner exited {out.returncode} without a result — see {log_path}")
+    contract = extract_trailing_json(str(out.result.get("result", "")))
     if contract is None:
         raise PlanError(f"planner returned no JSON plan — see {log_path}")
     if contract.get("status") == "blocked":
         raise PlanError(f"the planner needs an answer first: {contract.get('summary', '?')}")
     if not isinstance(contract.get("tickets"), list) or not contract["tickets"]:
         raise PlanError("planner returned an empty plan")
-    _ = time.monotonic() - start
     return contract
 
 

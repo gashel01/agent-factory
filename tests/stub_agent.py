@@ -28,6 +28,15 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    if "Review contract" in prompt:
+        if "STUB:REVIEW_REJECT" in prompt:
+            verdict = {"status": "done", "verdict": "reject",
+                       "reasons": ["assertions were weakened to pass"]}
+        else:
+            verdict = {"status": "done", "verdict": "approve", "reasons": []}
+        print(json.dumps({"type": "result", "num_turns": 2, "result": json.dumps(verdict)}))
+        return 0
+
     if "Planning contract" in prompt:
         tickets = [
             {

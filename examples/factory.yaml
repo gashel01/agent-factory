@@ -30,6 +30,13 @@ verify:
   commands: []             # default gate; tickets usually declare their own
   command_timeout_s: 600
 
+review:
+  enabled: false           # adversarial second agent judging each diff before merge.
+                           # Off by default (doubles per-task spend); turn on when
+                           # merges land somewhere that matters.
+  model: null              # cheap tier recommended, e.g. "haiku"
+  timeout_min: 10
+
 ratelimit:
   cooldown_min: 20         # doubles on each subsequent pause: 20 → 40 → 80 ...
   max_pauses_before_stop: 6

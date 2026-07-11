@@ -42,6 +42,15 @@ class VerifyConfig:
 
 
 @dataclass(frozen=True)
+class ReviewConfig:
+    # Off by default: it doubles per-task agent spend. Turn it on when merges
+    # land somewhere that matters.
+    enabled: bool = False
+    model: str | None = None  # cheap tier recommended (e.g. "haiku")
+    timeout_min: int = 10
+
+
+@dataclass(frozen=True)
 class RateLimitConfig:
     cooldown_min: int = 20
     max_pauses_before_stop: int = 6
@@ -57,6 +66,7 @@ class Config:
     contract_path: Path | None = None
     agent: AgentConfig = field(default_factory=AgentConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
     ratelimit: RateLimitConfig = field(default_factory=RateLimitConfig)
 
     def with_overrides(self, *, max_slots: int | None = None) -> Config:
@@ -88,6 +98,7 @@ def load_config(path: Path | None) -> Config:
     conc = raw.get("concurrency", {}) or {}
     agent = raw.get("agent", {}) or {}
     verify = raw.get("verify", {}) or {}
+    review = raw.get("review", {}) or {}
     rate = raw.get("ratelimit", {}) or {}
 
     contract = raw.get("contract_path")
@@ -110,6 +121,11 @@ def load_config(path: Path | None) -> Config:
         verify=VerifyConfig(
             commands=_as_str_tuple(verify.get("commands"), "verify.commands"),
             command_timeout_s=int(verify.get("command_timeout_s", 600)),
+        ),
+        review=ReviewConfig(
+            enabled=bool(review.get("enabled", False)),
+            model=review.get("model"),
+            timeout_min=int(review.get("timeout_min", 10)),
         ),
         ratelimit=RateLimitConfig(
             cooldown_min=int(rate.get("cooldown_min", 20)),

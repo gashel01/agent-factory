@@ -4,6 +4,7 @@ export type TaskState =
   | "QUEUED"
   | "RUNNING"
   | "VERIFYING"
+  | "REVIEWING"
   | "MERGE_QUEUED"
   | "MERGING"
   | "DONE"

@@ -17,6 +17,7 @@ class TaskState(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     VERIFYING = "VERIFYING"
+    REVIEWING = "REVIEWING"
     MERGE_QUEUED = "MERGE_QUEUED"
     MERGING = "MERGING"
     DONE = "DONE"
@@ -26,7 +27,13 @@ class TaskState(StrEnum):
 
 #: States that occupy a repo: a colliding task must not start while one of these holds it.
 IN_FLIGHT = frozenset(
-    {TaskState.RUNNING, TaskState.VERIFYING, TaskState.MERGE_QUEUED, TaskState.MERGING}
+    {
+        TaskState.RUNNING,
+        TaskState.VERIFYING,
+        TaskState.REVIEWING,
+        TaskState.MERGE_QUEUED,
+        TaskState.MERGING,
+    }
 )
 
 

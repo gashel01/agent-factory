@@ -22,6 +22,7 @@ from . import merge as merge_mod
 from . import worktree as wt_mod
 from .config import Config
 from .events import EventLog
+from .review import ReviewError, run_review
 from .task import IN_FLIGHT, Task, TaskState
 from .verify import run_verify
 
@@ -301,6 +302,9 @@ class Dispatcher:
                 self._retry_or_fail(task, "verify failed: " + "; ".join(verdict.failures))
                 return
 
+            if self.cfg.review.enabled and not await self._review_gate(task, wt):
+                return
+
             self._set_state(task, TaskState.MERGE_QUEUED)
             self._merge_q.put_nowait((task, wt))
         except asyncio.CancelledError:
@@ -311,6 +315,38 @@ class Dispatcher:
         except Exception as exc:  # noqa: BLE001 — a worker must never take down the run
             await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
             self._fail(task, f"internal worker error: {exc!r}")
+
+    async def _review_gate(self, task: Task, wt: wt_mod.Worktree) -> bool:
+        """Adversarial review of the diff. True = approved, proceed to merge.
+
+        On a rate limit the completed work is NOT discarded: the gate waits out
+        the global pause and reviews again.
+        """
+        self._set_state(task, TaskState.REVIEWING)
+        log_path = self.run_dir / "agents" / f"{task.id}.review.jsonl"
+        while True:
+            try:
+                verdict = await run_review(self.cfg, task, wt.path, log_path)
+            except ReviewError as exc:
+                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+                self._retry_or_fail(task, f"review infrastructure error: {exc}")
+                return False
+            if not verdict.rate_limited:
+                break
+            self._trigger_pause()
+            if self._stopped:
+                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+                self._set_state(task, TaskState.QUEUED)  # intact for a later run
+                return False
+            await asyncio.sleep(max(self._pause_until - time.monotonic(), 1.0))
+
+        self.log.emit("review", task=task.id, verdict=verdict.verdict,
+                      reasons=list(verdict.reasons))
+        if verdict.verdict != "approve":
+            await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+            self._retry_or_fail(task, "review rejected: " + "; ".join(verdict.reasons))
+            return False
+        return True
 
     async def _merge_worker(self) -> None:
         while True:

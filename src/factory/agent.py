@@ -63,6 +63,94 @@ class AgentResult:
     contract: dict | None
 
 
+@dataclass(frozen=True)
+class StreamOutcome:
+    """Raw outcome of one headless CLI invocation (shared by all agent kinds)."""
+
+    returncode: int | None
+    result: dict | None  # the stream-json "result" record, if any
+    stderr_rate_limited: bool
+    stderr_tail: str
+    wall_s: float
+
+
+async def stream_headless(
+    cmd: list[str],
+    prompt: str,
+    cwd: Path,
+    log_path: Path,
+    timeout_s: float,
+) -> StreamOutcome:
+    """Spawn one headless agent: prompt on stdin, stream-json on stdout.
+
+    Raises TimeoutError (budget) or CancelledError (operator kill) — the
+    subprocess is reaped in both cases. Used by the coding agent, the planner,
+    and the reviewer, so process handling has exactly one implementation.
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    result_record: dict | None = None
+    stderr_limited = False
+    stderr_tail: list[str] = []
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    with log_path.open("w", encoding="utf-8", errors="replace") as log:
+
+        async def feed_stdin() -> None:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+
+        async def read_stdout() -> None:
+            nonlocal result_record
+            assert proc.stdout is not None
+            while line := await proc.stdout.readline():
+                text = line.decode("utf-8", errors="replace")
+                log.write(text)
+                try:
+                    record = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict) and record.get("type") == "result":
+                    result_record = record
+
+        async def read_stderr() -> None:
+            nonlocal stderr_limited
+            assert proc.stderr is not None
+            while line := await proc.stderr.readline():
+                text = line.decode("utf-8", errors="replace")
+                log.write(f"[stderr] {text}")
+                stderr_tail.append(text.strip())
+                del stderr_tail[:-5]
+                if RATE_LIMIT_RE.search(text):
+                    stderr_limited = True
+
+        try:
+            async with asyncio.timeout(timeout_s):
+                await asyncio.gather(feed_stdin(), read_stdout(), read_stderr())
+                await proc.wait()
+        except (TimeoutError, asyncio.CancelledError):
+            proc.kill()
+            await proc.wait()
+            raise
+
+    return StreamOutcome(
+        returncode=proc.returncode,
+        result=result_record,
+        stderr_rate_limited=stderr_limited,
+        stderr_tail="; ".join(stderr_tail),
+        wall_s=time.monotonic() - started,
+    )
+
+
 def extract_trailing_json(text: str) -> dict | None:
     """Find the contract JSON at the end of the agent's final message."""
     cleaned = text.rstrip().removesuffix("```").rstrip()
@@ -114,90 +202,36 @@ async def run_agent(
     log_path: Path,
 ) -> AgentResult:
     prompt = f"{contract}\n\n---\n\n# Ticket\n\n{task.render()}\n"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    rate_limited = False
-    result_record: dict | None = None
-    stderr_tail: list[str] = []
+    try:
+        out = await stream_headless(
+            build_command(cfg, task), prompt, worktree_path, log_path,
+            timeout_s=task.budget.timeout_min * 60,
+        )
+    except TimeoutError:
+        return AgentResult(
+            status="timeout",
+            summary=f"killed after {task.budget.timeout_min} min budget",
+            turns=None,
+            wall_s=task.budget.timeout_min * 60,
+            contract=None,
+        )
 
-    proc = await asyncio.create_subprocess_exec(
-        *build_command(cfg, task),
-        cwd=str(worktree_path),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    turns = out.result.get("num_turns") if out.result else None
+    rate_limited = out.stderr_rate_limited or (
+        out.result is not None and is_rate_limit_result(out.result)
     )
-
-    with log_path.open("w", encoding="utf-8", errors="replace") as log:
-
-        async def read_stdout() -> None:
-            nonlocal rate_limited, result_record
-            assert proc.stdout is not None
-            while line := await proc.stdout.readline():
-                text = line.decode("utf-8", errors="replace")
-                log.write(text)
-                try:
-                    record = json.loads(text)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(record, dict) and record.get("type") == "result":
-                    result_record = record
-                    if is_rate_limit_result(record):
-                        rate_limited = True
-
-        async def read_stderr() -> None:
-            nonlocal rate_limited
-            assert proc.stderr is not None
-            while line := await proc.stderr.readline():
-                text = line.decode("utf-8", errors="replace")
-                log.write(f"[stderr] {text}")
-                stderr_tail.append(text.strip())
-                del stderr_tail[:-5]
-                if RATE_LIMIT_RE.search(text):
-                    rate_limited = True
-
-        async def feed_stdin() -> None:
-            assert proc.stdin is not None
-            proc.stdin.write(prompt.encode("utf-8"))
-            await proc.stdin.drain()
-            proc.stdin.close()
-
-        try:
-            async with asyncio.timeout(task.budget.timeout_min * 60):
-                await asyncio.gather(feed_stdin(), read_stdout(), read_stderr())
-                await proc.wait()
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return AgentResult(
-                status="timeout",
-                summary=f"killed after {task.budget.timeout_min} min budget",
-                turns=None,
-                wall_s=time.monotonic() - started,
-                contract=None,
-            )
-        except asyncio.CancelledError:
-            # Operator kill: reap the subprocess before propagating.
-            proc.kill()
-            await proc.wait()
-            raise
-
-    wall_s = time.monotonic() - started
-    turns = result_record.get("num_turns") if result_record else None
-
     if rate_limited:
-        return AgentResult("ratelimit", "provider rate/usage limit hit", turns, wall_s, None)
-    if proc.returncode != 0 or result_record is None:
-        summary = "; ".join(stderr_tail) or f"agent exited {proc.returncode} without a result"
-        return AgentResult("error", summary[:500], turns, wall_s, None)
+        return AgentResult("ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None)
+    if out.returncode != 0 or out.result is None:
+        summary = out.stderr_tail or f"agent exited {out.returncode} without a result"
+        return AgentResult("error", summary[:500], turns, out.wall_s, None)
 
-    final_text = str(result_record.get("result", ""))
-    contract_json = extract_trailing_json(final_text)
+    contract_json = extract_trailing_json(str(out.result.get("result", "")))
     if contract_json is None:
         # No contract block (crash mid-answer, model drift): let the verify gate decide.
-        return AgentResult("done", "no contract JSON in final message", turns, wall_s, None)
+        return AgentResult("done", "no contract JSON in final message", turns, out.wall_s, None)
     status = str(contract_json.get("status", "done"))
     summary = str(contract_json.get("summary", ""))[:500]
     if status not in ("done", "blocked"):
         status = "done"
-    return AgentResult(status, summary, turns, wall_s, contract_json)
+    return AgentResult(status, summary, turns, out.wall_s, contract_json)
