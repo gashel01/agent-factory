@@ -111,6 +111,7 @@ All optional — missing file means defaults. See [`examples/factory.yaml`](exam
 | `agent.command` | `claude` | Any CLI with the same contract works — tests use a stub. |
 | `agent.permission_mode` | `acceptEdits` | Never use permission bypass outside a disposable container. |
 | `agent.allowed_tools` | git/pytest/ruff | Headless agents can't answer prompts; anything not allow-listed is denied. |
+| `setup.commands` | `[]` | Run in each fresh worktree **before** the agent starts (`uv sync`, `npm ci`, …). Worktrees share no venv/node_modules with the main checkout — any repo with dependencies needs this. Setup failure fails the task immediately (environment problem, no retries burned). |
 | `verify.commands` | `[]` | Default gate commands; tickets can override. |
 | `review.enabled` | `false` | Adversarial second agent judging each diff before merge (scope creep, gamed tests, obvious bugs). Rejection re-queues the task with the reasons as evidence. Use `review.model` for a cheap tier. |
 | `ratelimit.cooldown_min` | `20` | First pause; doubles on each subsequent hit. |
@@ -187,9 +188,10 @@ CI runs the suite on Linux **and** Windows.
 
 ## Roadmap
 
-- post-worktree setup hooks (`uv sync`, `npm ci`)
+- multi-project workspaces in one dashboard
+- a supervisor agent: chat with the factory — ask about progress, redirect a
+  running task (kill + session-resume with new instructions), answer blocked agents
 - burst mode, PR-based flow (`gh`), pluggable agent runtimes
-- a "plan" tab in the dashboard (goal in, draft tickets out, edit in place)
 
 ## License
 

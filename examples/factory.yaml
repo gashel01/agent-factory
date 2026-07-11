@@ -26,6 +26,14 @@ agent:
     - "Bash(python:*)"
     - "Bash(ruff:*)"
 
+setup:
+  commands: []             # run in each fresh worktree BEFORE the agent starts.
+                           # Worktrees share no venv/node_modules with the main
+                           # checkout — real repos need e.g.:
+                           #   - "uv sync"        (Python)
+                           #   - "npm ci"         (Node)
+  timeout_s: 600
+
 verify:
   commands: []             # default gate; tickets usually declare their own
   command_timeout_s: 600

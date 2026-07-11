@@ -36,6 +36,19 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
+class SetupConfig:
+    """Commands run inside each fresh worktree BEFORE the agent starts.
+
+    A git worktree shares no venv/node_modules with the main checkout, so real
+    repos need their dependencies installed per worktree (e.g. "uv sync",
+    "npm ci"). Setup failure fails the task before any tokens are spent.
+    """
+
+    commands: tuple[str, ...] = ()
+    timeout_s: int = 600
+
+
+@dataclass(frozen=True)
 class VerifyConfig:
     commands: tuple[str, ...] = ()
     command_timeout_s: int = 600
@@ -65,6 +78,7 @@ class Config:
     stagger_seconds: float = 20.0
     contract_path: Path | None = None
     agent: AgentConfig = field(default_factory=AgentConfig)
+    setup: SetupConfig = field(default_factory=SetupConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
     ratelimit: RateLimitConfig = field(default_factory=RateLimitConfig)
@@ -97,6 +111,7 @@ def load_config(path: Path | None) -> Config:
     repo = raw.get("repo_defaults", {}) or {}
     conc = raw.get("concurrency", {}) or {}
     agent = raw.get("agent", {}) or {}
+    setup = raw.get("setup", {}) or {}
     verify = raw.get("verify", {}) or {}
     review = raw.get("review", {}) or {}
     rate = raw.get("ratelimit", {}) or {}
@@ -117,6 +132,10 @@ def load_config(path: Path | None) -> Config:
                 else DEFAULT_ALLOWED_TOOLS
             ),
             extra_args=_as_str_tuple(agent.get("extra_args"), "agent.extra_args"),
+        ),
+        setup=SetupConfig(
+            commands=_as_str_tuple(setup.get("commands"), "setup.commands"),
+            timeout_s=int(setup.get("timeout_s", 600)),
         ),
         verify=VerifyConfig(
             commands=_as_str_tuple(verify.get("commands"), "verify.commands"),

@@ -7,6 +7,35 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+class SetupError(Exception):
+    """A post-worktree setup command failed; message carries the evidence."""
+
+
+def run_setup(wt_path: Path, commands: tuple[str, ...], timeout_s: int) -> None:
+    """Run dependency-installation commands inside a fresh worktree.
+
+    shell=True on purpose: commands are trusted user config ("uv sync",
+    "npm ci") and may rely on shell syntax.
+    """
+    for cmd in commands:
+        try:
+            proc = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=str(wt_path),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SetupError(f"setup `{cmd}` timed out after {timeout_s}s") from exc
+        if proc.returncode != 0:
+            tail = (proc.stdout + proc.stderr).strip().splitlines()[-8:]
+            raise SetupError(f"setup `{cmd}` exited {proc.returncode}: " + " | ".join(tail))
+
+
 class GitError(Exception):
     def __init__(self, args_: tuple[str, ...], stderr: str):
         self.stderr = stderr.strip()

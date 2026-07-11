@@ -266,6 +266,21 @@ class Dispatcher:
             return
 
         try:
+            if self.cfg.setup.commands:
+                try:
+                    await asyncio.to_thread(
+                        wt_mod.run_setup, wt.path, self.cfg.setup.commands,
+                        self.cfg.setup.timeout_s,
+                    )
+                    self.log.emit("setup", task=task.id, ok=True)
+                except wt_mod.SetupError as exc:
+                    self.log.emit("setup", task=task.id, ok=False, reason=str(exc)[:500])
+                    await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+                    # Environment problem, not agent failure: retrying without a
+                    # config fix would burn attempts for nothing.
+                    self._fail(task, f"worktree setup failed: {exc}")
+                    return
+
             log_path = self.run_dir / "agents" / f"{task.id}.stdout.jsonl"
             result = await agent_mod.run_agent(
                 self.cfg.agent, task, wt.path, self._contract, log_path
