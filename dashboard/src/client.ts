@@ -419,6 +419,7 @@ function render(): void {
     }
     controls.append(confirmButton("⏹ Stop run", "Sure? Click again", () => void sendControl("stop")));
   }
+  controls.append(btn("📁 Repo", "ghost", () => void showRepoExplorer()));
   controls.append(btn("💬 Supervisor", "ghost", () => void showSupervisor()));
   controls.append(btn("＋ New work", model.run ? "ghost" : "primary", () => void showWorkPanel()));
   header.append(controls);
@@ -656,6 +657,173 @@ function switchWorkspace(name: string): void {
   currentWs = name;
   localStorage.setItem("factory.ws", name);
   connectEvents(); // fresh SSE stream, model resets on its run event
+}
+
+/* ------------------------- repo explorer ------------------------- */
+
+function repoPath(): string {
+  return (localStorage.getItem("factory.repo") ?? "").trim();
+}
+
+async function repoGet<T>(endpoint: string, params: Record<string, string> = {}): Promise<T> {
+  const qs = new URLSearchParams({ repo: repoPath(), ...params });
+  return fetchJSON<T>(`/api/repo/${endpoint}?${qs}`);
+}
+
+/** vscode://file/C:/path/file:line — opens the user's IDE, no server involved. */
+function openInIDE(file: string, line = 1): void {
+  const abs = repoPath().replace(/\\/g, "/") + "/" + file;
+  window.location.href = `vscode://file/${abs}:${line}`;
+}
+
+function renderDiff(host: HTMLElement, diff: string): void {
+  host.replaceChildren();
+  const pre = el("pre", "diff-pre");
+  for (const line of diff.split("\n")) {
+    const cls = line.startsWith("+++") || line.startsWith("---") ? "diff-file"
+      : line.startsWith("@@") ? "diff-hunk"
+      : line.startsWith("+") ? "diff-add"
+      : line.startsWith("-") ? "diff-del"
+      : line.startsWith("commit ") ? "diff-file"
+      : "";
+    pre.append(el("div", `diff-line ${cls}`, line || " "));
+  }
+  host.append(pre);
+}
+
+async function showRepoExplorer(): Promise<void> {
+  if (!repoPath()) {
+    toast("Set a repository path in the New work panel first.", true);
+    return;
+  }
+  const overlay = el("div", "overlay");
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  const panel = el("div", "log-panel repo-panel");
+  const head = el("div", "log-head");
+  const title = el("h3", "", `Repo — ${repoPath().split(/[\\/]/).pop()}`);
+  head.append(title);
+
+  /* branch picker + guarded switch */
+  const branchPick = document.createElement("select");
+  branchPick.className = "ws-picker";
+  head.append(branchPick);
+  head.append(btn("✕", "ghost close", () => overlay.remove()));
+  panel.append(head);
+
+  const body = el("div", "repo-body");
+  const side = el("div", "repo-side");
+  const tabs = el("div", "repo-tabs");
+  const filesTab = btn("Files", "link", () => void loadTree());
+  const historyTab = btn("History", "link", () => void loadHistory());
+  tabs.append(filesTab, historyTab);
+  side.append(tabs);
+  const sideList = el("div", "repo-side-list");
+  side.append(sideList);
+  const main = el("div", "repo-main");
+  main.append(el("p", "chat-hint", "Pick a file to preview it, or a commit to see its diff."));
+  body.append(side, main);
+  panel.append(body);
+  overlay.append(panel);
+  document.body.append(overlay);
+
+  async function loadBranches(): Promise<void> {
+    const { branches, current } = await repoGet<{ branches: string[]; current: string }>("branches");
+    branchPick.replaceChildren();
+    for (const b of branches) {
+      const opt = document.createElement("option");
+      opt.value = b;
+      opt.textContent = b;
+      opt.selected = b === current;
+      branchPick.append(opt);
+    }
+    branchPick.onchange = async () => {
+      try {
+        await fetchJSON("/api/repo/switch", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path: repoPath(), branch: branchPick.value }),
+        });
+        toast(`Now on ${branchPick.value}.`);
+        await loadTree();
+      } catch (err) {
+        toast(String(err), true);
+        await loadBranches(); // reset selection to reality
+      }
+    };
+  }
+
+  async function loadTree(): Promise<void> {
+    const { files } = await repoGet<{ files: string[] }>("tree");
+    sideList.replaceChildren();
+    // flat paths → collapsible folders
+    const root: Record<string, unknown> = {};
+    for (const f of files) {
+      let node = root;
+      const parts = f.split("/");
+      for (let i = 0; i < parts.length - 1; i++) {
+        node = (node[parts[i]!] ??= {}) as Record<string, unknown>;
+      }
+      node[parts[parts.length - 1]!] = f;
+    }
+    const build = (tree: Record<string, unknown>, host: HTMLElement): void => {
+      const entries = Object.entries(tree).sort(([a, va], [b, vb]) => {
+        const da = typeof va !== "string" ? 0 : 1;
+        const db = typeof vb !== "string" ? 0 : 1;
+        return da - db || a.localeCompare(b);
+      });
+      for (const [name, value] of entries) {
+        if (typeof value === "string") {
+          const row = btn(name, "tree-file", () => void openFile(value));
+          host.append(row);
+        } else {
+          const details = document.createElement("details");
+          const summary = document.createElement("summary");
+          summary.textContent = name;
+          details.append(summary);
+          const inner = el("div", "tree-folder");
+          build(value as Record<string, unknown>, inner);
+          details.append(inner);
+          host.append(details);
+        }
+      }
+    };
+    build(root, sideList);
+  }
+
+  async function openFile(path: string): Promise<void> {
+    const { content } = await repoGet<{ content: string }>("file", { path });
+    main.replaceChildren();
+    const bar = el("div", "repo-file-bar");
+    bar.append(el("span", "card-title", path));
+    bar.append(btn("Open in IDE", "ghost", () => openInIDE(path)));
+    main.append(bar);
+    main.append(el("pre", "file-pre", content));
+  }
+
+  async function loadHistory(): Promise<void> {
+    const { commits } = await repoGet<{
+      commits: Array<{ hash: string; date: string; author: string; subject: string }>;
+    }>("log");
+    sideList.replaceChildren();
+    for (const c of commits) {
+      const row = btn("", "commit-row", () => void openDiff(c.hash));
+      row.append(el("div", "commit-subject", c.subject));
+      row.append(el("div", "commit-meta", `${c.hash} · ${c.author} · ${c.date}`));
+      sideList.append(row);
+    }
+  }
+
+  async function openDiff(commit: string): Promise<void> {
+    const { diff } = await repoGet<{ diff: string }>("diff", { commit });
+    main.replaceChildren();
+    main.append(el("div", "repo-file-bar", `Commit ${commit}`));
+    renderDiff(main, diff);
+  }
+
+  await loadBranches();
+  await loadTree();
 }
 
 /* ------------------------- supervisor chat ------------------------- */

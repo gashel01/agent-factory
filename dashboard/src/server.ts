@@ -415,6 +415,113 @@ function main(): void {
       return;
     }
 
+    /* ---------------- repo explorer (read-only git views + guarded switch) ---------------- */
+
+    if (url.pathname.startsWith("/api/repo/") && req.method === "GET") {
+      const repo = resolve(url.searchParams.get("repo") ?? "");
+      if (!repo || !existsSync(join(repo, ".git"))) {
+        json(res, 400, { ok: false, error: "repo must be an existing git repository" });
+        return;
+      }
+      const ref = url.searchParams.get("ref") ?? "HEAD";
+      if (!/^[\w./@^~-]+$/.test(ref)) {
+        json(res, 400, { ok: false, error: "bad ref" });
+        return;
+      }
+
+      if (url.pathname === "/api/repo/tree") {
+        const result = await runCmd("git", ["ls-tree", "-r", "--name-only", ref], repo);
+        if (result.code !== 0) {
+          json(res, 400, { ok: false, error: result.output.trim() });
+          return;
+        }
+        json(res, 200, { files: result.output.split("\n").filter(Boolean) });
+        return;
+      }
+      if (url.pathname === "/api/repo/file") {
+        const file = url.searchParams.get("path") ?? "";
+        if (!file || file.includes("..")) {
+          json(res, 400, { ok: false, error: "bad path" });
+          return;
+        }
+        const result = await runCmd("git", ["show", `${ref}:${file}`], repo);
+        if (result.code !== 0) {
+          json(res, 404, { ok: false, error: result.output.trim() });
+          return;
+        }
+        json(res, 200, { content: result.output.slice(0, 200_000), path: file });
+        return;
+      }
+      if (url.pathname === "/api/repo/branches") {
+        const branches = await runCmd("git", ["branch", "--format=%(refname:short)"], repo);
+        const current = await runCmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], repo);
+        json(res, 200, {
+          branches: branches.output.split("\n").filter(Boolean),
+          current: current.output.trim(),
+        });
+        return;
+      }
+      if (url.pathname === "/api/repo/log") {
+        const result = await runCmd(
+          "git",
+          ["log", "--format=%h%x09%ad%x09%an%x09%s", "--date=relative", "-n", "60", ref],
+          repo,
+        );
+        const commits = result.output
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [hash, date, author, ...subject] = line.split("\t");
+            return { hash, date, author, subject: subject.join("\t") };
+          });
+        json(res, 200, { commits });
+        return;
+      }
+      if (url.pathname === "/api/repo/diff") {
+        // ?commit=<hash> shows one commit; ?from=&to= compares two refs
+        const commit = url.searchParams.get("commit");
+        const from = url.searchParams.get("from");
+        const to = url.searchParams.get("to");
+        let args: string[];
+        if (commit && /^[\w^~]+$/.test(commit)) {
+          args = ["show", commit, "--stat", "--patch"];
+        } else if (from && to && /^[\w./@^~-]+$/.test(from) && /^[\w./@^~-]+$/.test(to)) {
+          args = ["diff", `${from}..${to}`, "--stat", "--patch"];
+        } else {
+          json(res, 400, { ok: false, error: "pass ?commit= or ?from=&to=" });
+          return;
+        }
+        const result = await runCmd("git", args, repo);
+        json(res, 200, { diff: result.output.slice(0, 400_000) });
+        return;
+      }
+    }
+
+    if (url.pathname === "/api/repo/switch" && req.method === "POST") {
+      try {
+        const { path, branch } = JSON.parse(await readBody(req)) as {
+          path?: string;
+          branch?: string;
+        };
+        const repo = resolve(path ?? "");
+        if (!repo || !existsSync(join(repo, ".git"))) {
+          throw new Error("repo must be an existing git repository");
+        }
+        if (!branch || !/^[\w./-]+$/.test(branch)) throw new Error("bad branch name");
+        // A run's merge queue targets the checked-out branch: never switch mid-run.
+        const running = [...registry.workspaces.values()].some(
+          (w) => w.jobs.run.state === "running",
+        );
+        if (running) throw new Error("refusing to switch branches while a run is in progress");
+        const result = await runCmd("git", ["switch", branch], repo);
+        if (result.code !== 0) throw new Error(result.output.trim());
+        json(res, 200, { ok: true, output: `now on ${branch}` });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+
     /* ---------------- everything below is per-workspace (?ws=) ---------------- */
 
     const ws = registry.resolve(url);
