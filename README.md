@@ -113,6 +113,24 @@ Every transition is one line in `runs/<run>/events.jsonl` — append-only, singl
 crash-tolerant. `factory status` and `factory report` replay it; so can anything else
 (a dashboard tails the same file — planned, see roadmap).
 
+## Live dashboard
+
+A TypeScript status board (Node >= 20, zero runtime dependencies) that tails
+`events.jsonl` over SSE — attach to a live run, watch a new run take over
+automatically, or replay a finished one. Strictly a reader: it never writes into
+a run directory.
+
+```bash
+cd dashboard
+npm install && npm run build
+npm start -- --runs ../runs        # http://127.0.0.1:8765
+```
+
+Header badge (live / paused on rate limit / finished), stat tiles, one card per
+task (state chip, turns, duration, retries, failure evidence, agent-log viewer),
+and the raw event feed. Light and dark theme, status colors always paired with
+an icon + label.
+
 ## Testing (no tokens required)
 
 The full pipeline — dispatcher, worktrees, verification, merge queue, retries, rate-limit
@@ -150,8 +168,9 @@ CI runs the suite on Linux **and** Windows.
 
 ## Roadmap
 
-- **v2** — adversarial review agent on the diff (second model, cheap tier), live dashboard
-  (FastAPI + SSE tailing `events.jsonl`), post-worktree setup hooks (`uv sync`, `npm ci`).
+- **v2** — adversarial review agent on the diff (second model, cheap tier),
+  post-worktree setup hooks (`uv sync`, `npm ci`), dashboard control plane
+  (pause/kill/retry via a control file polled by the dispatcher).
 - **v3** — burst mode, PR-based flow (`gh`), pluggable agent runtimes.
 
 ## License

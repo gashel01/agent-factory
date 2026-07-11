@@ -114,7 +114,7 @@ class Dispatcher:
             "run_start",
             run=self.run_id,
             slots=self.cfg.max_slots,
-            tasks=[t.id for t in self.tasks],
+            tasks=[{"id": t.id, "title": t.title} for t in self.tasks],
         )
         merger = asyncio.create_task(self._merge_worker())
         try:

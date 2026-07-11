@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>agent-factory</title>
+<style>
+  /* Tokens: light first, dark via prefers-color-scheme. Status colors are the
+     reserved status palette — never reused for anything else; every status chip
+     pairs icon + label so color never carries meaning alone. */
+  :root {
+    --surface: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --hairline: #e1e0d9;
+    --border: rgba(11, 11, 11, 0.10);
+    --active: #2a78d6;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --good-text: #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1a1a19;
+      --plane: #0d0d0d;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --hairline: #2c2c2a;
+      --border: rgba(255, 255, 255, 0.10);
+      --active: #3987e5;
+      --good-text: #0ca30c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  #app { max-width: 1080px; margin: 0 auto; padding: 20px 16px 48px; }
+
+  .header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  .run-title { display: flex; align-items: center; gap: 10px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  h2 { font-size: 13px; margin: 0 0 8px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.04em; }
+  .run-meta { color: var(--muted); font-size: 12.5px; }
+
+  .badge {
+    font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--ink-2); background: var(--surface);
+  }
+  .badge.active { color: var(--active); border-color: var(--active); }
+  .badge.good { color: var(--good-text); border-color: var(--good); }
+  .badge.warning { color: var(--ink); border-color: var(--warning); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin: 18px 0; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 14px;
+  }
+  .tile-value { font-size: 26px; font-weight: 650; }
+  .tile-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .tile.done .tile-value { color: var(--good-text); }
+  .tile.failed .tile-value { color: var(--critical); }
+  .tile.running .tile-value { color: var(--active); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 26px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 7px;
+  }
+  .card-head { display: flex; justify-content: space-between; align-items: center; }
+  .card-id { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .card-title { font-weight: 600; }
+  .card-facts { color: var(--ink-2); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .card-note { color: var(--ink-2); font-size: 12.5px; border-left: 2px solid var(--hairline); padding-left: 8px; }
+
+  .chip { font-size: 12px; font-weight: 650; padding: 1px 8px; border-radius: 999px; border: 1px solid; }
+  .chip.muted { color: var(--muted); border-color: var(--hairline); }
+  .chip.active { color: var(--active); border-color: var(--active); }
+  .chip.good { color: var(--good-text); border-color: var(--good); }
+  .chip.warning { color: var(--ink); border-color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+  .chip.critical { color: var(--critical); border-color: var(--critical); }
+
+  .log-btn {
+    align-self: flex-start; margin-top: 2px; font-size: 12px; cursor: pointer;
+    background: none; border: 1px solid var(--hairline); border-radius: 6px;
+    color: var(--ink-2); padding: 3px 10px; font-family: inherit;
+  }
+  .log-btn:hover { border-color: var(--muted); color: var(--ink); }
+
+  .feed-list {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 0; max-height: 420px; overflow-y: auto;
+  }
+  .feed-line {
+    display: flex; gap: 12px; padding: 3px 14px;
+    font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  .feed-line:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+  .feed-ts { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .feed-body { color: var(--ink-2); overflow-wrap: anywhere; }
+
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .log-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    max-width: 900px; width: 100%; max-height: 80vh; display: flex; flex-direction: column;
+    padding: 14px 16px;
+  }
+  .log-panel h3 { margin: 0 0 10px; font-size: 14px; }
+  .log-pre {
+    margin: 0; overflow: auto; font: 11.5px/1.5 ui-monospace, Consolas, monospace;
+    color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="/client.js" defer></script>
+</body>
+</html>

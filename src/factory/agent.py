@@ -24,9 +24,11 @@ RATE_LIMIT_RE = re.compile(r"rate.?limit|usage limit|overloaded|too many request
 def is_rate_limit_result(record: dict) -> bool:
     """Structured rate-limit detection on the final result record ONLY.
 
-    Never regex-scan raw stream lines: base64 thinking signatures can contain
-    '429' by chance and turn a successful agent into a false rate-limit
-    (observed live on 2026-07-11). stderr, being plain text, is still scanned.
+    Never regex-scan raw stream lines: the CLI's init record ALWAYS contains
+    `rate_limit_info` fields (so raw scanning flags every run), and base64
+    thinking signatures can contain '429' by chance. Both observed live on
+    2026-07-11: two successful agents were discarded as rate-limited.
+    stderr, being plain text, is still scanned.
     """
     if record.get("api_error_status") == 429:
         return True
