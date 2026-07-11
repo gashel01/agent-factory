@@ -16,9 +16,6 @@ from pathlib import Path
 from .agent import extract_trailing_json, is_rate_limit_result, stream_headless
 from .config import Config
 
-#: Read anything; write only through the operator channels; no arbitrary shell.
-SUPERVISOR_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit")
-
 SUPERVISOR_CONTRACT = """\
 # Supervisor contract — Agent Factory
 
@@ -78,10 +75,10 @@ async def ask(cfg: Config, workdir: Path, message: str, log_path: Path) -> dict:
         "--max-turns",
         "30",
         "--allowedTools",
-        ",".join(SUPERVISOR_TOOLS),
+        ",".join(cfg.supervisor.allowed_tools),
     ]
-    if cfg.agent.model:
-        cmd += ["--model", cfg.agent.model]
+    if model := (cfg.supervisor.model or cfg.agent.model):
+        cmd += ["--model", model]
 
     session_file = _session_file(workdir)
     resumed = session_file.exists()
@@ -93,9 +90,13 @@ async def ask(cfg: Config, workdir: Path, message: str, log_path: Path) -> dict:
         prompt = f"{SUPERVISOR_CONTRACT}\n\n---\n\n# Operator\n\n{message}\n"
 
     try:
-        out = await stream_headless(cmd, prompt, workdir, log_path, timeout_s=10 * 60)
+        out = await stream_headless(
+            cmd, prompt, workdir, log_path, timeout_s=cfg.supervisor.timeout_min * 60
+        )
     except TimeoutError as exc:
-        raise SuperviseError("supervisor exceeded its 10 min budget") from exc
+        raise SuperviseError(
+            f"supervisor exceeded its {cfg.supervisor.timeout_min} min budget"
+        ) from exc
 
     if out.stderr_rate_limited or (out.result is not None and is_rate_limit_result(out.result)):
         raise SuperviseError("rate limit hit — try again in a few minutes")

@@ -54,6 +54,20 @@ class VerifyConfig:
     command_timeout_s: int = 600
 
 
+#: Supervisor defaults: read anything, act only through the operator channels
+#: (control.jsonl appends, ticket edits). Extend via supervisor.allowed_tools —
+#: e.g. add "WebSearch" or MCP tools ("mcp__github__*") declared in a .mcp.json
+#: placed in the workspace.
+DEFAULT_SUPERVISOR_TOOLS = ("Read", "Glob", "Grep", "Write", "Edit")
+
+
+@dataclass(frozen=True)
+class SupervisorConfig:
+    allowed_tools: tuple[str, ...] = DEFAULT_SUPERVISOR_TOOLS
+    model: str | None = None
+    timeout_min: int = 10
+
+
 @dataclass(frozen=True)
 class ReviewConfig:
     # Off by default: it doubles per-task agent spend. Turn it on when merges
@@ -81,6 +95,7 @@ class Config:
     setup: SetupConfig = field(default_factory=SetupConfig)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     ratelimit: RateLimitConfig = field(default_factory=RateLimitConfig)
 
     def with_overrides(self, *, max_slots: int | None = None) -> Config:
@@ -114,6 +129,7 @@ def load_config(path: Path | None) -> Config:
     setup = raw.get("setup", {}) or {}
     verify = raw.get("verify", {}) or {}
     review = raw.get("review", {}) or {}
+    supervisor = raw.get("supervisor", {}) or {}
     rate = raw.get("ratelimit", {}) or {}
 
     contract = raw.get("contract_path")
@@ -145,6 +161,15 @@ def load_config(path: Path | None) -> Config:
             enabled=bool(review.get("enabled", False)),
             model=review.get("model"),
             timeout_min=int(review.get("timeout_min", 10)),
+        ),
+        supervisor=SupervisorConfig(
+            allowed_tools=(
+                _as_str_tuple(supervisor["allowed_tools"], "supervisor.allowed_tools")
+                if "allowed_tools" in supervisor
+                else DEFAULT_SUPERVISOR_TOOLS
+            ),
+            model=supervisor.get("model"),
+            timeout_min=int(supervisor.get("timeout_min", 10)),
         ),
         ratelimit=RateLimitConfig(
             cooldown_min=int(rate.get("cooldown_min", 20)),

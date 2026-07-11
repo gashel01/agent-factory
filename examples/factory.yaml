@@ -45,6 +45,14 @@ review:
   model: null              # cheap tier recommended, e.g. "haiku"
   timeout_min: 10
 
+supervisor:
+  # The dashboard chat agent. It always reads the workspace ground truth;
+  # extend its reach here — e.g. WebSearch, or MCP tools from a .mcp.json
+  # placed in this workspace folder ("mcp__github__*", "mcp__linear__*").
+  allowed_tools: ["Read", "Glob", "Grep", "Write", "Edit"]
+  model: null              # null = same as agents; a strong model pays off here
+  timeout_min: 10
+
 ratelimit:
   cooldown_min: 20         # doubles on each subsequent pause: 20 → 40 → 80 ...
   max_pauses_before_stop: 6
