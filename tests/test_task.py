@@ -92,6 +92,29 @@ def test_backlog_rejects_duplicate_ids_and_unknown_deps(tmp_path, repo):
         load_backlog(backlog, "main")
 
 
+def test_dependency_on_archived_ticket_is_satisfied(tmp_path, repo):
+    # Regression (live, 2026-07-11): ticket 001 merged and archived to done/,
+    # then a follow-up run failed validation because 002's depends_on ["001"]
+    # no longer resolved. Archived dependencies must count as satisfied.
+    backlog = tmp_path / "backlog"
+    write_ticket(backlog, "002", repo, depends_on='["001"]')
+    done = backlog / "done"
+    done.mkdir()
+    (backlog / "001.md").write_text("---\nid: \"001\"\ntitle: t\nrepo: .\n---\nx",
+                                    encoding="utf-8")
+    (backlog / "001.md").rename(done / "run-001.md")
+
+    tasks = load_backlog(backlog, "main")
+
+    assert tasks[0].id == "002"
+    assert tasks[0].depends_on == ()  # satisfied dependency dropped
+
+    # but a truly unknown id still fails loudly
+    write_ticket(backlog, "003", repo, depends_on='["ghost"]')
+    with pytest.raises(TicketError, match="unknown ids"):
+        load_backlog(backlog, "main")
+
+
 def test_render_includes_failure_notes(tmp_path, repo):
     task = parse_ticket(write_ticket(tmp_path / "backlog", "001", repo), "main")
     task.failure_notes.append("pytest exited 1: assertion failed")

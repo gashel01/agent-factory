@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -152,6 +153,20 @@ def parse_ticket(path: Path, default_base_branch: str) -> Task:
     )
 
 
+_ID_RE = re.compile(r'^id:\s*["\']?([\w.-]+)["\']?\s*$', re.M)
+
+
+def archived_ids(backlog_dir: Path) -> set[str]:
+    """Ids of tickets already merged and archived to backlog/done/."""
+    done = backlog_dir / "done"
+    ids: set[str] = set()
+    if done.is_dir():
+        for path in done.glob("*.md"):
+            if match := _ID_RE.search(path.read_text(encoding="utf-8", errors="replace")):
+                ids.add(match.group(1))
+    return ids
+
+
 def load_backlog(backlog_dir: Path, default_base_branch: str) -> list[Task]:
     if not backlog_dir.is_dir():
         raise TicketError(f"backlog directory not found: {backlog_dir}")
@@ -166,7 +181,12 @@ def load_backlog(backlog_dir: Path, default_base_branch: str) -> list[Task]:
             raise TicketError(f"duplicate task id '{t.id}' in {t.path.name} and {seen[t.id].name}")
         seen[t.id] = t.path
     ids = set(seen)
+    done = archived_ids(backlog_dir)
     for t in tasks:
+        # A dependency on an archived (already-merged) ticket is satisfied:
+        # drop it so a follow-up run doesn't dead-lock on its own history.
+        if satisfied := [d for d in t.depends_on if d in done and d not in ids]:
+            t.depends_on = tuple(d for d in t.depends_on if d not in satisfied)
         missing = [d for d in t.depends_on if d not in ids]
         if missing:
             raise TicketError(f"{t.path.name}: depends_on references unknown ids: {missing}")
