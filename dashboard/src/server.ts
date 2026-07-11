@@ -1,15 +1,15 @@
 /**
  * agent-factory dashboard server — zero runtime dependencies (node:http + node:fs).
  *
- * Three responsibilities, cleanly separated:
- *  - READ the append-only events.jsonl written by the dispatcher, stream it over SSE;
- *  - WRITE operator commands to control.jsonl (the dispatcher polls it) — one
- *    writer per file, in each direction, never a shared one;
- *  - LAUNCH `factory plan` / `factory run` as child processes on request, so the
- *    whole workflow (goal → tickets → run → watch) works from the browser.
+ * Manages one or more WORKSPACES (a directory holding factory.yaml, backlog/ and
+ * runs/). Per workspace it: reads the dispatcher's append-only events.jsonl and
+ * streams it over SSE; writes operator commands to control.jsonl (the dispatcher
+ * polls it) — one writer per file, in each direction; and launches `factory plan`
+ * / `factory run` as child processes so the whole workflow runs from the browser.
  *
- * Cross-platform by construction: file growth is detected by polling size+offset
- * (fs.watch is unreliable for appends on Windows network/temp paths).
+ * The workspace registry lives in workspaces.json next to the server's initial
+ * --workdir. Cross-platform by construction: file growth is detected by polling
+ * size+offset (fs.watch is unreliable for appends on Windows network/temp paths).
  */
 
 import { spawn } from "node:child_process";
@@ -29,17 +29,15 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface Options {
-  workdir: string; // where backlog/, factory.yaml and runs/ live
-  runs: string;
+  workdir: string;
   port: number;
   host: string;
-  factory: string[]; // how to invoke the CLI, e.g. ["uv","run","factory"]
+  factory: string[];
 }
 
 function parseArgs(argv: string[]): Options {
   const opts: Options = {
     workdir: ".",
-    runs: "",
     port: 8765,
     host: "127.0.0.1",
     factory: ["uv", "run", "factory"],
@@ -47,13 +45,11 @@ function parseArgs(argv: string[]): Options {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--workdir" && argv[i + 1]) opts.workdir = argv[++i]!;
-    else if (arg === "--runs" && argv[i + 1]) opts.runs = argv[++i]!;
     else if (arg === "--port" && argv[i + 1]) opts.port = Number(argv[++i]);
     else if (arg === "--host" && argv[i + 1]) opts.host = argv[++i]!; // non-local = your call
     else if (arg === "--factory" && argv[i + 1]) opts.factory = argv[++i]!.split(" ");
   }
   opts.workdir = resolve(opts.workdir);
-  opts.runs = resolve(opts.runs || join(opts.workdir, "runs"));
   return opts;
 }
 
@@ -80,7 +76,6 @@ class RunTailer {
     return this.run ? join(this.runsDir, this.run, "events.jsonl") : null;
   }
 
-  /** Switch to a new run: notify clients, replay its log from the top. */
   switchTo(run: string): void {
     this.run = run;
     this.offset = 0;
@@ -107,7 +102,6 @@ class RunTailer {
     this.clients.add(client);
   }
 
-  /** Poll for appended bytes; emit any complete new lines. */
   poll(): void {
     if (!this.file || !existsSync(this.file)) return;
     const size = statSync(this.file).size;
@@ -128,41 +122,91 @@ class RunTailer {
   }
 }
 
-/* ------------------------------- CLI jobs ------------------------------- */
+/* ------------------------------ workspaces ------------------------------ */
 
 interface Job {
   state: "idle" | "running" | "done" | "error";
   output: string;
 }
 
-const jobs: Record<"plan" | "run", Job> = {
-  plan: { state: "idle", output: "" },
-  run: { state: "idle", output: "" },
-};
+interface Workspace {
+  name: string;
+  workdir: string;
+  tailer: RunTailer;
+  jobs: { plan: Job; run: Job };
+}
 
-function spawnJob(kind: "plan" | "run", opts: Options, args: string[]): void {
-  jobs[kind] = { state: "running", output: "" };
+const SAFE_WS = /^[\w][\w .-]{0,40}$/;
+
+class Registry {
+  readonly workspaces = new Map<string, Workspace>();
+
+  constructor(readonly file: string) {}
+
+  load(defaultWorkdir: string): void {
+    let entries: Array<{ name: string; workdir: string }> = [];
+    if (existsSync(this.file)) {
+      try {
+        entries = (JSON.parse(readFileSync(this.file, "utf-8")) as { workspaces?: [] })
+          .workspaces ?? [];
+      } catch {
+        entries = [];
+      }
+    }
+    if (!entries.some((e) => resolve(e.workdir) === defaultWorkdir)) {
+      entries.unshift({ name: basename(defaultWorkdir) || "default", workdir: defaultWorkdir });
+    }
+    for (const entry of entries) this.register(entry.name, entry.workdir);
+    this.save();
+  }
+
+  register(name: string, workdir: string): Workspace {
+    const dir = resolve(workdir);
+    const runs = join(dir, "runs");
+    const ws: Workspace = {
+      name,
+      workdir: dir,
+      tailer: new RunTailer(runs, latestRun(runs)),
+      jobs: { plan: { state: "idle", output: "" }, run: { state: "idle", output: "" } },
+    };
+    this.workspaces.set(name, ws);
+    return ws;
+  }
+
+  save(): void {
+    const entries = [...this.workspaces.values()].map(({ name, workdir }) => ({ name, workdir }));
+    writeFileSync(this.file, JSON.stringify({ workspaces: entries }, null, 2), "utf-8");
+  }
+
+  resolve(url: URL): Workspace | null {
+    const name = url.searchParams.get("ws");
+    if (name) return this.workspaces.get(name) ?? null;
+    return this.workspaces.values().next().value ?? null;
+  }
+}
+
+function spawnJob(ws: Workspace, kind: "plan" | "run", factory: string[], args: string[]): void {
+  ws.jobs[kind] = { state: "running", output: "" };
   // NEVER shell:true — goals are user text (spaces, parentheses, quotes) and
-  // must reach the CLI as one argv entry, not be re-parsed by cmd.exe.
-  // Windows note: the command must resolve to an .exe (uv, python, a full
-  // path); .cmd shims need an explicit path in --factory.
-  const [cmd, ...prefix] = opts.factory;
+  // must reach the CLI as one argv entry. Windows: the command must resolve
+  // to an .exe (uv, python, a full path); .cmd shims need an explicit path.
+  const [cmd, ...prefix] = factory;
   const child = spawn(cmd!, [...prefix, ...args], {
-    cwd: opts.workdir,
+    cwd: ws.workdir,
     shell: false,
     windowsHide: true,
   });
   const append = (chunk: Buffer) => {
-    jobs[kind].output = (jobs[kind].output + chunk.toString("utf-8")).slice(-20_000);
+    ws.jobs[kind].output = (ws.jobs[kind].output + chunk.toString("utf-8")).slice(-20_000);
   };
   child.stdout.on("data", append);
   child.stderr.on("data", append);
   child.on("error", (err) => {
-    jobs[kind].state = "error";
-    jobs[kind].output += `\n${String(err)}`;
+    ws.jobs[kind].state = "error";
+    ws.jobs[kind].output += `\n${String(err)}`;
   });
   child.on("exit", (code) => {
-    jobs[kind].state = code === 0 ? "done" : "error";
+    ws.jobs[kind].state = code === 0 ? "done" : "error";
   });
 }
 
@@ -187,15 +231,16 @@ function main(): void {
   const opts = parseArgs(process.argv.slice(2));
   const here = dirname(fileURLToPath(import.meta.url));
   const publicDir = resolve(here, "..", "public");
-  const backlogDir = join(opts.workdir, "backlog");
 
-  // No run yet is a normal state now: the browser is where work gets created.
-  const tailer = new RunTailer(opts.runs, latestRun(opts.runs));
+  const registry = new Registry(join(opts.workdir, "workspaces.json"));
+  registry.load(opts.workdir);
 
   setInterval(() => {
-    const newest = latestRun(opts.runs);
-    if (newest && newest !== tailer.run) tailer.switchTo(newest); // a new run started
-    tailer.poll();
+    for (const ws of registry.workspaces.values()) {
+      const newest = latestRun(ws.tailer.runsDir);
+      if (newest && newest !== ws.tailer.run) ws.tailer.switchTo(newest);
+      ws.tailer.poll();
+    }
   }, 500);
 
   const server = createServer(async (req, res) => {
@@ -211,14 +256,66 @@ function main(): void {
       res.end(readFileSync(join(here, "client.js")));
       return;
     }
+
+    /* ---------------- workspace management ---------------- */
+
+    if (url.pathname === "/api/workspaces" && req.method === "GET") {
+      json(res, 200, {
+        workspaces: [...registry.workspaces.values()].map((ws) => ({
+          name: ws.name,
+          workdir: ws.workdir,
+          currentRun: ws.tailer.run,
+        })),
+      });
+      return;
+    }
+    if (url.pathname === "/api/workspaces" && req.method === "POST") {
+      try {
+        const { name, workdir } = JSON.parse(await readBody(req)) as {
+          name?: string;
+          workdir?: string;
+        };
+        if (!name || !SAFE_WS.test(name)) throw new Error("bad workspace name");
+        if (registry.workspaces.has(name)) throw new Error("name already exists");
+        if (!workdir || !existsSync(workdir)) throw new Error("workdir does not exist");
+        mkdirSync(join(workdir, "backlog"), { recursive: true });
+        registry.register(name, workdir);
+        registry.save();
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+    if (url.pathname.startsWith("/api/workspaces/") && req.method === "DELETE") {
+      const name = decodeURIComponent(url.pathname.slice("/api/workspaces/".length));
+      if (registry.workspaces.size <= 1) {
+        json(res, 400, { ok: false, error: "cannot remove the last workspace" });
+        return;
+      }
+      registry.workspaces.delete(name); // registry entry only; files stay on disk
+      registry.save();
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    /* ---------------- everything below is per-workspace (?ws=) ---------------- */
+
+    const ws = registry.resolve(url);
+    if (!ws) {
+      json(res, 404, { ok: false, error: "unknown workspace" });
+      return;
+    }
+    const backlogDir = join(ws.workdir, "backlog");
+
     if (url.pathname === "/api/events") {
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
         connection: "keep-alive",
       });
-      tailer.attach(res);
-      req.on("close", () => tailer.clients.delete(res));
+      ws.tailer.attach(res);
+      req.on("close", () => ws.tailer.clients.delete(res));
       return;
     }
 
@@ -228,9 +325,9 @@ function main(): void {
         const ops = ["pause", "resume", "stop", "kill", "retry"];
         if (!op || !ops.includes(op)) throw new Error(`op must be one of ${ops.join(", ")}`);
         if (task !== undefined && !/^[\w.-]+$/.test(task)) throw new Error("bad task id");
-        if (!tailer.run) throw new Error("no active run");
+        if (!ws.tailer.run) throw new Error("no active run");
         const line = JSON.stringify({ ts: new Date().toISOString(), op, task });
-        appendFileSync(join(opts.runs, tailer.run, "control.jsonl"), line + "\n", "utf-8");
+        appendFileSync(join(ws.tailer.runsDir, ws.tailer.run, "control.jsonl"), line + "\n", "utf-8");
         json(res, 200, { ok: true });
       } catch (err) {
         json(res, 400, { ok: false, error: String(err) });
@@ -240,11 +337,11 @@ function main(): void {
 
     if (url.pathname === "/api/log") {
       const task = url.searchParams.get("task") ?? "";
-      if (!/^[\w.-]+$/.test(task) || !tailer.run) {
+      if (!/^[\w.-]+$/.test(task) || !ws.tailer.run) {
         res.writeHead(400).end("bad task id or no run");
         return;
       }
-      const file = join(opts.runs, tailer.run, "agents", `${task}.stdout.jsonl`);
+      const file = join(ws.tailer.runsDir, ws.tailer.run, "agents", `${task}.stdout.jsonl`);
       if (!existsSync(file)) {
         res.writeHead(404).end("no log for this task (yet)");
         return;
@@ -256,13 +353,17 @@ function main(): void {
       return;
     }
 
-    /* ---------- workflow: plan / backlog / run, all from the browser ---------- */
-
     if (url.pathname === "/api/status") {
       const backlog = existsSync(backlogDir)
         ? readdirSync(backlogDir).filter((f) => f.endsWith(".md")).length
         : 0;
-      json(res, 200, { plan: jobs.plan, run: jobs.run, backlogCount: backlog, currentRun: tailer.run });
+      json(res, 200, {
+        plan: ws.jobs.plan,
+        run: ws.jobs.run,
+        backlogCount: backlog,
+        currentRun: ws.tailer.run,
+        workspace: ws.name,
+      });
       return;
     }
 
@@ -271,10 +372,10 @@ function main(): void {
         const { goal, repo } = JSON.parse(await readBody(req)) as { goal?: string; repo?: string };
         if (!goal?.trim()) throw new Error("goal is required");
         if (!repo?.trim()) throw new Error("repo path is required");
-        if (jobs.plan.state === "running" || jobs.run.state === "running") {
-          throw new Error("a job is already running");
+        if (ws.jobs.plan.state === "running" || ws.jobs.run.state === "running") {
+          throw new Error("a job is already running in this workspace");
         }
-        spawnJob("plan", opts, ["plan", goal.trim(), "--repo", repo.trim()]);
+        spawnJob(ws, "plan", opts.factory, ["plan", goal.trim(), "--repo", repo.trim()]);
         json(res, 200, { ok: true });
       } catch (err) {
         json(res, 400, { ok: false, error: String(err) });
@@ -285,10 +386,10 @@ function main(): void {
     if (url.pathname === "/api/run" && req.method === "POST") {
       try {
         const { slots } = JSON.parse(await readBody(req)) as { slots?: number };
-        if (jobs.run.state === "running") throw new Error("a run is already in progress");
+        if (ws.jobs.run.state === "running") throw new Error("a run is already in progress");
         const args = ["run"];
         if (slots && Number.isFinite(slots) && slots > 0) args.push("--slots", String(slots));
-        spawnJob("run", opts, args);
+        spawnJob(ws, "run", opts.factory, args);
         json(res, 200, { ok: true });
       } catch (err) {
         json(res, 400, { ok: false, error: String(err) });
@@ -301,10 +402,7 @@ function main(): void {
         ? readdirSync(backlogDir)
             .filter((f) => f.endsWith(".md"))
             .sort()
-            .map((f) => ({
-              file: f,
-              content: readFileSync(join(backlogDir, f), "utf-8"),
-            }))
+            .map((f) => ({ file: f, content: readFileSync(join(backlogDir, f), "utf-8") }))
         : [];
       json(res, 200, { tickets });
       return;
@@ -340,7 +438,8 @@ function main(): void {
 
   server.listen(opts.port, opts.host, () => {
     console.log(
-      `dashboard: http://${opts.host}:${opts.port}  (workdir: ${opts.workdir}, runs: ${opts.runs})`,
+      `dashboard: http://${opts.host}:${opts.port}  ` +
+        `(${registry.workspaces.size} workspace(s), registry: ${registry.file})`,
     );
   });
 }

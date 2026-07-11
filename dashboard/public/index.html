@@ -72,6 +72,13 @@
   .progress-seg.active { background: var(--active); animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.55; } }
 
+  .ws-picker {
+    font: 600 13px/1 system-ui, sans-serif; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--hairline); border-radius: 8px;
+    padding: 7px 10px; cursor: pointer; max-width: 180px;
+  }
+  .ws-picker:hover { border-color: var(--muted); }
+
   /* ------- buttons ------- */
   .btn {
     font: 600 13px/1 system-ui, sans-serif; cursor: pointer; border-radius: 8px;

@@ -387,6 +387,30 @@ function render(): void {
   header.append(left);
 
   const controls = el("div", "topbar-controls");
+  if (workspaceList.length) {
+    const picker = document.createElement("select");
+    picker.className = "ws-picker";
+    for (const w of workspaceList) {
+      const opt = document.createElement("option");
+      opt.value = w.name;
+      opt.textContent = w.name;
+      opt.selected = w.name === currentWs;
+      picker.append(opt);
+    }
+    const addOpt = document.createElement("option");
+    addOpt.value = "__add__";
+    addOpt.textContent = "＋ add workspace…";
+    picker.append(addOpt);
+    picker.addEventListener("change", () => {
+      if (picker.value === "__add__") {
+        picker.value = currentWs;
+        void showAddWorkspace();
+      } else {
+        switchWorkspace(picker.value);
+      }
+    });
+    controls.append(picker);
+  }
   if (!model.endedTs && model.run) {
     if (model.manualPause || model.ratePause) {
       controls.append(btn("▶ Resume", "primary", () => void sendControl("resume")));
@@ -565,7 +589,7 @@ async function showLog(taskId: string, title: string): Promise<void> {
   overlay.append(panel);
   document.body.append(overlay);
 
-  const res = await fetch(`/api/log?task=${encodeURIComponent(taskId)}`);
+  const res = await fetch(api(`/api/log?task=${encodeURIComponent(taskId)}`));
   if (!res.ok) {
     bodyHost.textContent = "Nothing recorded for this task yet.";
     return;
@@ -595,11 +619,85 @@ function ticketTitle(content: string): string {
   return match ? match[1]!.replace(/^["']|["']$/g, "") : "(untitled)";
 }
 
+/** Current workspace: every API call is scoped to it via ?ws=. */
+let currentWs = localStorage.getItem("factory.ws") ?? "";
+
+function api(path: string): string {
+  if (!currentWs) return path;
+  return path + (path.includes("?") ? "&" : "?") + "ws=" + encodeURIComponent(currentWs);
+}
+
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  const res = await fetch(api(path), init);
   const data = (await res.json()) as T & { ok?: boolean; error?: string };
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
   return data;
+}
+
+interface WorkspaceInfo {
+  name: string;
+  workdir: string;
+  currentRun: string | null;
+}
+
+let workspaceList: WorkspaceInfo[] = [];
+
+async function loadWorkspaces(): Promise<void> {
+  const { workspaces } = await fetchJSON<{ workspaces: WorkspaceInfo[] }>("/api/workspaces");
+  workspaceList = workspaces;
+  if (!workspaces.some((w) => w.name === currentWs)) {
+    currentWs = workspaces[0]?.name ?? "";
+    localStorage.setItem("factory.ws", currentWs);
+  }
+}
+
+function switchWorkspace(name: string): void {
+  currentWs = name;
+  localStorage.setItem("factory.ws", name);
+  connectEvents(); // fresh SSE stream, model resets on its run event
+}
+
+async function showAddWorkspace(): Promise<void> {
+  const overlay = el("div", "overlay");
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  const panel = el("div", "log-panel work-panel");
+  const head = el("div", "log-head");
+  head.append(el("h3", "", "Add a workspace"));
+  head.append(btn("✕", "ghost close", () => overlay.remove()));
+  panel.append(head);
+  const form = el("div", "work-form");
+  form.append(el("label", "work-label", "Name"));
+  const nameInput = document.createElement("input");
+  nameInput.className = "work-input";
+  nameInput.placeholder = "my-project";
+  form.append(nameInput);
+  form.append(el("label", "work-label", "Folder (holds factory.yaml, backlog, runs)"));
+  const dirInput = document.createElement("input");
+  dirInput.className = "work-input";
+  dirInput.placeholder = "C:\\path\\to\\a\\work\\folder";
+  form.append(dirInput);
+  form.append(
+    btn("Add", "primary", async () => {
+      try {
+        await fetchJSON("/api/workspaces", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: nameInput.value.trim(), workdir: dirInput.value.trim() }),
+        });
+        await loadWorkspaces();
+        switchWorkspace(nameInput.value.trim());
+        toast(`Workspace "${nameInput.value.trim()}" added.`);
+        overlay.remove();
+      } catch (err) {
+        toast(String(err), true);
+      }
+    }),
+  );
+  panel.append(form);
+  overlay.append(panel);
+  document.body.append(overlay);
 }
 
 async function showWorkPanel(): Promise<void> {
@@ -767,20 +865,27 @@ function scheduleRender(): void {
   });
 }
 
-const source = new EventSource("/api/events");
-source.addEventListener("run", (e) => {
-  const { run } = JSON.parse((e as MessageEvent).data) as { run: string };
-  model = freshModel(run);
+let source: EventSource | null = null;
+
+function connectEvents(): void {
+  source?.close();
+  model = freshModel("");
+  source = new EventSource(api("/api/events"));
+  source.addEventListener("run", (e) => {
+    const { run } = JSON.parse((e as MessageEvent).data) as { run: string | null };
+    model = freshModel(run ?? "");
+    scheduleRender();
+  });
+  source.onmessage = (e) => {
+    try {
+      reduce(JSON.parse(e.data) as FactoryEvent);
+    } catch {
+      return; // torn line mid-write: the next poll resends a complete one
+    }
+    scheduleRender();
+  };
   scheduleRender();
-});
-source.onmessage = (e) => {
-  try {
-    reduce(JSON.parse(e.data) as FactoryEvent);
-  } catch {
-    return; // torn line mid-write: the next poll resends a complete one
-  }
-  scheduleRender();
-};
+}
 
 // Live timers: re-render every second while something is running.
 setInterval(() => {
@@ -788,4 +893,5 @@ setInterval(() => {
   if (active || model.ratePause) scheduleRender();
 }, 1000);
 
+void loadWorkspaces().then(connectEvents);
 render();
