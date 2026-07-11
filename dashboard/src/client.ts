@@ -227,6 +227,19 @@ async function sendControl(op: string, taskId?: string): Promise<void> {
   }
 }
 
+async function quickRun(): Promise<void> {
+  try {
+    await fetchJSON("/api/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    toast("New run starting — remaining tickets replay with the current config.");
+  } catch (err) {
+    toast(String(err), true);
+  }
+}
+
 function toast(message: string, isError = false): void {
   const host = document.getElementById("toasts")!;
   const node = el("div", `toast${isError ? " error" : ""}`, message);
@@ -346,7 +359,13 @@ function taskCard(t: TaskModel, kind: "attention" | "working" | "finished"): HTM
 
   const actions = el("div", "card-actions");
   if (t.state === "FAILED" || t.state === "BLOCKED") {
-    actions.append(btn("↻ Try again", "primary", () => void sendControl("retry", t.id)));
+    if (model.endedTs) {
+      // The dispatcher exited with the run: control commands have no reader.
+      // The ticket is still in the backlog — a new run is the real retry.
+      actions.append(btn("▶ Run again (new run)", "primary", () => void quickRun()));
+    } else {
+      actions.append(btn("↻ Try again", "primary", () => void sendControl("retry", t.id)));
+    }
   }
   if (t.state === "RUNNING") {
     actions.append(confirmButton("Stop this agent", "Sure? Click again", () => void sendControl("kill", t.id)));
