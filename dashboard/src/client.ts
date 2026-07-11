@@ -808,6 +808,40 @@ async function showWorkPanel(): Promise<void> {
   repoInput.placeholder = "C:\\path\\to\\your\\repo";
   repoInput.value = localStorage.getItem("factory.repo") ?? "";
   form.append(repoInput);
+
+  /* repo tools: start from zero, publish, change visibility */
+  const repoTools = el("div", "repo-tools");
+  const visPick = document.createElement("select");
+  visPick.className = "ws-picker";
+  for (const v of ["private", "public"]) {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    visPick.append(opt);
+  }
+  const repoAction = async (endpoint: string, withVisibility: boolean) => {
+    localStorage.setItem("factory.repo", repoInput.value);
+    try {
+      const body: Record<string, string> = { path: repoInput.value.trim() };
+      if (withVisibility) body.visibility = visPick.value;
+      const result = await fetchJSON<{ output?: string }>(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      toast(result.output?.slice(-280) || "Done.");
+    } catch (err) {
+      toast(String(err), true);
+    }
+  };
+  repoTools.append(
+    btn("🆕 Start project here", "ghost", () => void repoAction("/api/repo/init", false)),
+    visPick,
+    btn("⬆ Publish to GitHub", "ghost", () => void repoAction("/api/repo/publish", true)),
+    confirmButton("Set visibility", "Sure? Click again",
+      () => void repoAction("/api/repo/visibility", true)),
+  );
+  form.append(repoTools);
   form.append(el("label", "work-label", "What do you want done?"));
   const goalInput = document.createElement("textarea");
   goalInput.className = "work-input work-goal";

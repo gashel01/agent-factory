@@ -219,6 +219,28 @@ function spawnJob(
   });
 }
 
+/** Run one command to completion (no shell — args reach the exe as real argv). */
+function runCmd(cmd: string, args: string[], cwd: string): Promise<{ code: number; output: string }> {
+  return new Promise((resolvePromise) => {
+    const child = spawn(cmd, args, { cwd, shell: false, windowsHide: true });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    child.on("error", (err) => resolvePromise({ code: -1, output: String(err) }));
+    child.on("exit", (code) => resolvePromise({ code: code ?? -1, output }));
+  });
+}
+
+const BOOTSTRAP_GITIGNORE = [
+  "__pycache__/",
+  "*.pyc",
+  ".venv/",
+  "node_modules/",
+  "dist/",
+  ".env",
+  "",
+].join("\n");
+
 /* --------------------------------- http --------------------------------- */
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -305,6 +327,91 @@ function main(): void {
       registry.workspaces.delete(name); // registry entry only; files stay on disk
       registry.save();
       json(res, 200, { ok: true });
+      return;
+    }
+
+    /* ---------------- repo tools (path-based, workspace-independent) ---------------- */
+
+    if (url.pathname === "/api/repo/init" && req.method === "POST") {
+      try {
+        const { path } = JSON.parse(await readBody(req)) as { path?: string };
+        if (!path?.trim()) throw new Error("path is required");
+        const dir = resolve(path.trim());
+        if (existsSync(join(dir, ".git"))) throw new Error("already a git repository");
+        mkdirSync(dir, { recursive: true });
+        const init = await runCmd("git", ["init", "-b", "main"], dir);
+        if (init.code !== 0) throw new Error(init.output.trim());
+        if (!existsSync(join(dir, ".gitignore"))) {
+          writeFileSync(join(dir, ".gitignore"), BOOTSTRAP_GITIGNORE, "utf-8");
+        }
+        await runCmd("git", ["add", "-A"], dir);
+        const commit = await runCmd(
+          "git",
+          ["commit", "-m", "chore: initial commit (agent-factory bootstrap)"],
+          dir,
+        );
+        if (commit.code !== 0) throw new Error(commit.output.trim());
+        json(res, 200, { ok: true, output: `initialized ${dir} on branch main` });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/repo/publish" && req.method === "POST") {
+      try {
+        const { path, visibility } = JSON.parse(await readBody(req)) as {
+          path?: string;
+          visibility?: string;
+        };
+        if (!path?.trim() || !existsSync(join(resolve(path.trim()), ".git"))) {
+          throw new Error("path must be an existing git repository");
+        }
+        if (visibility !== "private" && visibility !== "public") {
+          throw new Error("visibility must be private or public");
+        }
+        const dir = resolve(path.trim());
+        const result = await runCmd(
+          "gh",
+          ["repo", "create", basename(dir), `--${visibility}`, "--source=.", "--push"],
+          dir,
+        );
+        if (result.code !== 0) throw new Error(result.output.trim() || "gh failed — is it installed and logged in?");
+        json(res, 200, { ok: true, output: result.output.trim() });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/repo/visibility" && req.method === "POST") {
+      try {
+        const { path, visibility } = JSON.parse(await readBody(req)) as {
+          path?: string;
+          visibility?: string;
+        };
+        if (!path?.trim() || !existsSync(join(resolve(path.trim()), ".git"))) {
+          throw new Error("path must be an existing git repository");
+        }
+        if (visibility !== "private" && visibility !== "public") {
+          throw new Error("visibility must be private or public");
+        }
+        const dir = resolve(path.trim());
+        // Newer gh requires an explicit consent flag for visibility changes;
+        // older gh rejects it as unknown — try with, fall back without.
+        let result = await runCmd(
+          "gh",
+          ["repo", "edit", "--visibility", visibility, "--accept-visibility-change-consequences"],
+          dir,
+        );
+        if (result.code !== 0 && /unknown flag/i.test(result.output)) {
+          result = await runCmd("gh", ["repo", "edit", "--visibility", visibility], dir);
+        }
+        if (result.code !== 0) throw new Error(result.output.trim() || "gh failed — is it installed and logged in?");
+        json(res, 200, { ok: true, output: result.output.trim() || `repository is now ${visibility}` });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
       return;
     }
 
