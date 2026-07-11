@@ -28,6 +28,27 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    if "Planning contract" in prompt:
+        tickets = [
+            {
+                "id": "001", "title": "Set up the test harness",
+                "files_hint": ["tests/"], "depends_on": [], "priority": 1,
+                "timeout_min": 15, "verify": ["python -m unittest discover -s tests"],
+                "body": "## Context\nNo tests yet.\n## Success criteria\nharness runs.\n"
+                        "## Out of scope\nfeatures.",
+            },
+            {
+                "id": "002", "title": "Add slugify helper",
+                "files_hint": ["src/text.py"], "depends_on": ["001"], "priority": 2,
+                "timeout_min": 30, "verify": ["python -m unittest discover -s tests"],
+                "body": "## Context\n...\n## Success criteria\ntests pass.\n"
+                        "## Out of scope\nother modules.",
+            },
+        ]
+        payload = {"status": "done", "tickets": tickets}
+        print(json.dumps({"type": "result", "num_turns": 5, "result": json.dumps(payload)}))
+        return 0
+
     if "STUB:RATELIMIT" in prompt:
         print("API Error: 429 rate limit exceeded", file=sys.stderr)
         return 1

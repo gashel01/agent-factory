@@ -46,6 +46,24 @@ factory status
 factory report
 ```
 
+## Co-create tickets with an agent (`factory plan`)
+
+You never have to write ticket markdown by hand. Give the goal in one sentence;
+a single **read-only** planning agent explores the repo and drafts the tickets —
+scoped files, dependencies, executable success criteria:
+
+```bash
+factory plan "Migrate all HTTP calls from requests to httpx, keep the tests green" --repo ../myproject
+# → drafts written to backlog/, IDs numbered after any existing tickets
+factory run --dry-run     # review the schedule, edit or delete drafts freely
+factory run
+```
+
+The planner proposes, you dispose: drafts are ordinary ticket files, never
+executed without your review. If the goal is too vague, the planner refuses
+and asks you a precise question instead of guessing. If the repo has no test
+setup, it makes ticket 001 "set up the test harness" and chains the rest on it.
+
 ## Ticket format
 
 One markdown file = one unit of agent work. YAML front matter + free-form body:

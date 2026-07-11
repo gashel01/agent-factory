@@ -12,7 +12,8 @@ from . import __version__
 from .config import ConfigError, load_config
 from .dispatcher import Dispatcher
 from .events import EventLog
-from .task import TicketError, load_backlog
+from .plan import PlanError, run_planner, write_drafts
+from .task import TicketError, load_backlog, parse_ticket
 from .worktree import GitError, prune
 
 
@@ -112,6 +113,27 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plan(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    repo = args.repo.resolve()
+    if not (repo / ".git").exists():
+        print(f"error: {repo} is not a git repository", file=sys.stderr)
+        return 2
+    log_path = args.runs / "planner" / f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.jsonl"
+    print(f"planning against {repo} … (one read-only agent, ~1-3 min)")
+    contract = asyncio.run(run_planner(cfg, repo, args.goal, log_path))
+    written = write_drafts(contract["tickets"], args.backlog, repo)
+    print(f"\n{len(written)} draft ticket(s) written to {args.backlog}:")
+    for path in written:
+        task = parse_ticket(path, cfg.base_branch)
+        deps = f"  deps={list(task.depends_on)}" if task.depends_on else ""
+        print(f"  {task.id}  {task.title}{deps}")
+        print(f"       verify: {'; '.join(task.verify_commands) or '(none — add one!)'}")
+    # ASCII only: Windows consoles may still run a cp1252 codepage.
+    print("\nReview/edit them, then:  factory run --dry-run  ->  factory run")
+    return 0
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     tasks = load_backlog(args.backlog, cfg.base_branch)
@@ -138,6 +160,13 @@ def main(argv: list[str] | None = None) -> int:
                        help="parse tickets, show schedule and collisions, launch nothing")
     p_run.set_defaults(func=cmd_run)
 
+    p_plan = sub.add_parser("plan", parents=[common],
+                            help="co-create tickets: an agent explores the repo and drafts them")
+    p_plan.add_argument("goal", help="what you want done, in one or two sentences")
+    p_plan.add_argument("--repo", type=Path, default=Path("."),
+                        help="target repository (default: current directory)")
+    p_plan.set_defaults(func=cmd_plan)
+
     p_status = sub.add_parser("status", parents=[common], help="show the latest run")
     p_status.set_defaults(func=cmd_status)
 
@@ -150,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (TicketError, ConfigError, GitError) as exc:
+    except (TicketError, ConfigError, GitError, PlanError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
