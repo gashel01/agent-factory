@@ -419,6 +419,7 @@ function render(): void {
     }
     controls.append(confirmButton("⏹ Stop run", "Sure? Click again", () => void sendControl("stop")));
   }
+  controls.append(btn("💬 Supervisor", "ghost", () => void showSupervisor()));
   controls.append(btn("＋ New work", model.run ? "ghost" : "primary", () => void showWorkPanel()));
   header.append(controls);
   root.append(header);
@@ -655,6 +656,93 @@ function switchWorkspace(name: string): void {
   currentWs = name;
   localStorage.setItem("factory.ws", name);
   connectEvents(); // fresh SSE stream, model resets on its run event
+}
+
+/* ------------------------- supervisor chat ------------------------- */
+
+/** Chat history per workspace, kept for the lifetime of the page. */
+const chatHistory = new Map<string, Array<{ who: "you" | "supervisor"; text: string }>>();
+
+async function showSupervisor(): Promise<void> {
+  const history = chatHistory.get(currentWs) ?? [];
+  chatHistory.set(currentWs, history);
+
+  const overlay = el("div", "overlay");
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  const panel = el("div", "log-panel chat-panel");
+  const head = el("div", "log-head");
+  head.append(el("h3", "", `Supervisor — ${currentWs}`));
+  head.append(btn("✕", "ghost close", () => overlay.remove()));
+  panel.append(head);
+
+  const messages = el("div", "chat-messages");
+  panel.append(messages);
+
+  function renderMessages(thinking = false): void {
+    messages.replaceChildren();
+    if (!history.length) {
+      messages.append(el("p", "chat-hint",
+        "Ask anything about the current run — \"how is it going?\", \"why did task 2 fail?\" — " +
+        "or give an instruction: \"kill task 3 and retry it with a note to use the internal lib\"."));
+    }
+    for (const m of history) {
+      messages.append(el("div", `chat-msg ${m.who}`, m.text));
+    }
+    if (thinking) messages.append(el("div", "chat-msg supervisor thinking", "…"));
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  const inputRow = el("div", "chat-input-row");
+  const input = document.createElement("textarea");
+  input.className = "work-input chat-input";
+  input.placeholder = "Message the supervisor…";
+  const sendBtn = btn("Send", "primary", () => void send()) as HTMLButtonElement;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void send();
+    }
+  });
+  inputRow.append(input, sendBtn);
+  panel.append(inputRow);
+
+  async function send(): Promise<void> {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    history.push({ who: "you", text });
+    renderMessages(true);
+    sendBtn.disabled = true;
+    try {
+      await fetchJSON("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: text }),
+      });
+      const timer = setInterval(async () => {
+        const status = await fetchJSON<{ chat: { state: string; output: string } }>("/api/status");
+        if (status.chat.state === "running") return;
+        clearInterval(timer);
+        sendBtn.disabled = false;
+        const reply = status.chat.output.trim() ||
+          (status.chat.state === "error" ? "The supervisor failed to answer — see server logs."
+                                         : "(no answer)");
+        history.push({ who: "supervisor", text: reply });
+        renderMessages();
+      }, 1500);
+    } catch (err) {
+      sendBtn.disabled = false;
+      history.push({ who: "supervisor", text: `Error: ${String(err)}` });
+      renderMessages();
+    }
+  }
+
+  overlay.append(panel);
+  document.body.append(overlay);
+  renderMessages();
+  input.focus();
 }
 
 async function showAddWorkspace(): Promise<void> {

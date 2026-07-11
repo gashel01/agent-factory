@@ -292,6 +292,7 @@ class Dispatcher:
                 turns=result.turns,
                 wall_s=round(result.wall_s, 1),
                 summary=result.summary,
+                session_id=result.session_id,
             )
 
             if result.status == "ratelimit":

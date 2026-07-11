@@ -61,6 +61,7 @@ class AgentResult:
     turns: int | None
     wall_s: float
     contract: dict | None
+    session_id: str | None = None  # enables resume (answer blocked agents, redirects)
 
 
 @dataclass(frozen=True)
@@ -217,21 +218,27 @@ async def run_agent(
         )
 
     turns = out.result.get("num_turns") if out.result else None
+    raw_session = out.result.get("session_id") if out.result else None
+    session = str(raw_session) if raw_session else None
     rate_limited = out.stderr_rate_limited or (
         out.result is not None and is_rate_limit_result(out.result)
     )
     if rate_limited:
-        return AgentResult("ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None)
+        return AgentResult(
+            "ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None, session
+        )
     if out.returncode != 0 or out.result is None:
         summary = out.stderr_tail or f"agent exited {out.returncode} without a result"
-        return AgentResult("error", summary[:500], turns, out.wall_s, None)
+        return AgentResult("error", summary[:500], turns, out.wall_s, None, session)
 
     contract_json = extract_trailing_json(str(out.result.get("result", "")))
     if contract_json is None:
         # No contract block (crash mid-answer, model drift): let the verify gate decide.
-        return AgentResult("done", "no contract JSON in final message", turns, out.wall_s, None)
+        return AgentResult(
+            "done", "no contract JSON in final message", turns, out.wall_s, None, session
+        )
     status = str(contract_json.get("status", "done"))
     summary = str(contract_json.get("summary", ""))[:500]
     if status not in ("done", "blocked"):
         status = "done"
-    return AgentResult(status, summary, turns, out.wall_s, contract_json)
+    return AgentResult(status, summary, turns, out.wall_s, contract_json, session)

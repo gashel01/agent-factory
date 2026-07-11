@@ -28,6 +28,13 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    if "Supervisor contract" in prompt:
+        answer = {"status": "done", "reply": "1 task is running, none failed.", "actions": []}
+        print(json.dumps({"type": "result", "num_turns": 2,
+                          "session_id": "stub-supervisor-session",
+                          "result": json.dumps(answer)}))
+        return 0
+
     if "Review contract" in prompt:
         if "STUB:REVIEW_REJECT" in prompt:
             verdict = {"status": "done", "verdict": "reject",
@@ -65,6 +72,14 @@ def main() -> int:
     if "STUB:BLOCKED" in prompt:
         contract = {"status": "blocked", "summary": "which database should I use?", "tests": "fail"}
         print(json.dumps({"type": "result", "num_turns": 1, "result": json.dumps(contract)}))
+        return 0
+
+    if "Ticket ID:" not in prompt:
+        # Short prompt without any contract: a resumed supervisor exchange.
+        answer = {"status": "done", "reply": f"resumed: {prompt.strip()[:60]}", "actions": []}
+        print(json.dumps({"type": "result", "num_turns": 1,
+                          "session_id": "stub-supervisor-session",
+                          "result": json.dumps(answer)}))
         return 0
 
     if "STUB:NO_COMMIT" not in prompt:

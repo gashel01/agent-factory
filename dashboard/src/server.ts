@@ -133,7 +133,7 @@ interface Workspace {
   name: string;
   workdir: string;
   tailer: RunTailer;
-  jobs: { plan: Job; run: Job };
+  jobs: { plan: Job; run: Job; chat: Job };
 }
 
 const SAFE_WS = /^[\w][\w .-]{0,40}$/;
@@ -167,7 +167,11 @@ class Registry {
       name,
       workdir: dir,
       tailer: new RunTailer(runs, latestRun(runs)),
-      jobs: { plan: { state: "idle", output: "" }, run: { state: "idle", output: "" } },
+      jobs: {
+        plan: { state: "idle", output: "" },
+        run: { state: "idle", output: "" },
+        chat: { state: "idle", output: "" },
+      },
     };
     this.workspaces.set(name, ws);
     return ws;
@@ -185,7 +189,12 @@ class Registry {
   }
 }
 
-function spawnJob(ws: Workspace, kind: "plan" | "run", factory: string[], args: string[]): void {
+function spawnJob(
+  ws: Workspace,
+  kind: "plan" | "run" | "chat",
+  factory: string[],
+  args: string[],
+): void {
   ws.jobs[kind] = { state: "running", output: "" };
   // NEVER shell:true — goals are user text (spaces, parentheses, quotes) and
   // must reach the CLI as one argv entry. Windows: the command must resolve
@@ -360,10 +369,24 @@ function main(): void {
       json(res, 200, {
         plan: ws.jobs.plan,
         run: ws.jobs.run,
+        chat: ws.jobs.chat,
         backlogCount: backlog,
         currentRun: ws.tailer.run,
         workspace: ws.name,
       });
+      return;
+    }
+
+    if (url.pathname === "/api/chat" && req.method === "POST") {
+      try {
+        const { message } = JSON.parse(await readBody(req)) as { message?: string };
+        if (!message?.trim()) throw new Error("message is required");
+        if (ws.jobs.chat.state === "running") throw new Error("the supervisor is still answering");
+        spawnJob(ws, "chat", opts.factory, ["ask", message.trim()]);
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
       return;
     }
 

@@ -209,6 +209,23 @@
   .ticket-editor { width: 100%; min-height: 260px; font: 12px/1.5 ui-monospace, Consolas, monospace; }
   .work-launch { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--hairline); padding-top: 14px; }
 
+  /* supervisor chat */
+  .chat-panel { max-width: 640px; height: 78vh; }
+  .chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+    gap: 10px; padding: 6px 2px; }
+  .chat-hint { color: var(--muted); font-size: 13px; margin: auto 12px; text-align: center; }
+  .chat-msg {
+    max-width: 85%; padding: 9px 13px; border-radius: 12px; font-size: 14px;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .chat-msg.you { align-self: flex-end; background: var(--active); color: #fff;
+    border-bottom-right-radius: 4px; }
+  .chat-msg.supervisor { align-self: flex-start; background: var(--plane);
+    border: 1px solid var(--hairline); border-bottom-left-radius: 4px; }
+  .chat-msg.thinking { color: var(--muted); }
+  .chat-input-row { display: flex; gap: 8px; margin-top: 10px; }
+  .chat-input { flex: 1; min-height: 44px; max-height: 120px; resize: vertical; }
+
   /* toasts */
   #toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column;
     gap: 8px; z-index: 30; }

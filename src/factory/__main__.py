@@ -13,6 +13,7 @@ from .config import ConfigError, load_config
 from .dispatcher import Dispatcher
 from .events import EventLog
 from .plan import PlanError, run_planner, write_drafts
+from .supervise import SuperviseError, ask, format_answer, reset
 from .task import TicketError, load_backlog, parse_ticket
 from .worktree import GitError, prune
 
@@ -136,6 +137,23 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ask(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    workdir = Path.cwd()
+    if args.reset:
+        reset(workdir)
+        print("supervisor conversation reset")
+        if not args.message:
+            return 0
+    if not args.message.strip():
+        print("error: a message is required (or use --reset)", file=sys.stderr)
+        return 2
+    log_path = args.runs / "supervisor" / f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.jsonl"
+    answer = asyncio.run(ask(cfg, workdir, args.message, log_path))
+    print(format_answer(answer))
+    return 0
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     tasks = load_backlog(args.backlog, cfg.base_branch)
@@ -146,6 +164,12 @@ def cmd_clean(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows consoles may default to cp1252; our output is consumed by the
+    # dashboard server (and humans) as UTF-8.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(prog="factory", description=__doc__)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -169,6 +193,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="target repository (default: current directory)")
     p_plan.set_defaults(func=cmd_plan)
 
+    p_ask = sub.add_parser("ask", parents=[common],
+                           help="talk to the supervisor agent about the current run")
+    p_ask.add_argument("message", nargs="?", default="",
+                       help="your question or instruction to the supervisor")
+    p_ask.add_argument("--reset", action="store_true",
+                       help="forget the previous supervisor conversation")
+    p_ask.set_defaults(func=cmd_ask)
+
     p_status = sub.add_parser("status", parents=[common], help="show the latest run")
     p_status.set_defaults(func=cmd_status)
 
@@ -181,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (TicketError, ConfigError, GitError, PlanError) as exc:
+    except (TicketError, ConfigError, GitError, PlanError, SuperviseError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
