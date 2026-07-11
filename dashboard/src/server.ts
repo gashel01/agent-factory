@@ -582,6 +582,28 @@ function main(): void {
       return;
     }
 
+    if (url.pathname === "/api/config" && req.method === "GET") {
+      const file = join(ws.workdir, "factory.yaml");
+      json(res, 200, {
+        content: existsSync(file) ? readFileSync(file, "utf-8") : "",
+        path: file,
+      });
+      return;
+    }
+    if (url.pathname === "/api/config" && req.method === "PUT") {
+      try {
+        const { content } = JSON.parse(await readBody(req)) as { content?: string };
+        if (typeof content !== "string" || !content.trim()) {
+          throw new Error("config cannot be empty");
+        }
+        writeFileSync(join(ws.workdir, "factory.yaml"), content, "utf-8");
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/status") {
       const backlog = existsSync(backlogDir)
         ? readdirSync(backlogDir).filter((f) => f.endsWith(".md")).length

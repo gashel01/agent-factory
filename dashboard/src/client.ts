@@ -450,6 +450,7 @@ function render(): void {
     }
     controls.append(confirmButton("⏹ Stop run", "Sure? Click again", () => void sendControl("stop")));
   }
+  controls.append(btn("⚙ Settings", "ghost", () => void showSettings()));
   controls.append(btn("📁 Repo", "ghost", () => void showRepoExplorer()));
   controls.append(btn("💬 Supervisor", "ghost", () => void showSupervisor()));
   controls.append(btn("＋ New work", model.run ? "ghost" : "primary", () => void showWorkPanel()));
@@ -688,6 +689,79 @@ function switchWorkspace(name: string): void {
   currentWs = name;
   localStorage.setItem("factory.ws", name);
   connectEvents(); // fresh SSE stream, model resets on its run event
+}
+
+/* ------------------------- workspace settings ------------------------- */
+
+const CONFIG_TEMPLATE = `repo_defaults:
+  base_branch: main
+
+concurrency:
+  max_slots: 3
+  stagger_seconds: 15
+
+agent:
+  command: claude
+  permission_mode: acceptEdits
+  allowed_tools:
+    - "Bash(git add:*)"
+    - "Bash(git commit:*)"
+    - "Bash(git status:*)"
+    - "Bash(git diff:*)"
+    - "Bash(pytest:*)"
+    - "Bash(python:*)"
+
+setup:
+  commands: []      # e.g. ["npm install"] or ["uv sync"] — runs in each worktree
+
+review:
+  enabled: false    # adversarial reviewer on each diff (model: haiku recommended)
+  model: haiku
+
+supervisor:
+  allowed_tools: ["Read", "Glob", "Grep", "Write", "Edit"]
+`;
+
+async function showSettings(): Promise<void> {
+  const { content, path } = await fetchJSON<{ content: string; path: string }>("/api/config");
+  const overlay = el("div", "overlay");
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+  const panel = el("div", "log-panel work-panel");
+  const head = el("div", "log-head");
+  head.append(el("h3", "", `Settings — ${currentWs}`));
+  head.append(btn("✕", "ghost close", () => overlay.remove()));
+  panel.append(head);
+  panel.append(el("p", "chat-hint settings-hint",
+    "This is the workspace's factory.yaml. It is read at the START of each run — " +
+    "edit here, save, then launch a run. Agents are denied any tool not in " +
+    "agent.allowed_tools (add \"WebSearch\"/\"WebFetch\" for web access); " +
+    "setup.commands install dependencies in each worktree before the agent starts."));
+  const editor = document.createElement("textarea");
+  editor.className = "work-input ticket-editor settings-editor";
+  editor.value = content || CONFIG_TEMPLATE;
+  panel.append(editor);
+  const foot = el("div", "work-launch");
+  foot.append(el("span", "ticket-file", path));
+  foot.append(
+    btn("Save", "primary", async () => {
+      try {
+        await fetchJSON("/api/config", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ content: editor.value }),
+        });
+        toast("Config saved — it applies to the NEXT run you start.");
+        overlay.remove();
+      } catch (err) {
+        toast(String(err), true);
+      }
+    }),
+  );
+  panel.append(foot);
+  overlay.append(panel);
+  document.body.append(overlay);
 }
 
 /* ------------------------- repo explorer ------------------------- */
