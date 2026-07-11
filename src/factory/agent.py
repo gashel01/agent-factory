@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,20 @@ from .config import AgentConfig
 from .task import Task
 
 RATE_LIMIT_RE = re.compile(r"rate.?limit|usage limit|overloaded|too many requests|\b429\b", re.I)
+
+
+def is_rate_limit_result(record: dict) -> bool:
+    """Structured rate-limit detection on the final result record ONLY.
+
+    Never regex-scan raw stream lines: base64 thinking signatures can contain
+    '429' by chance and turn a successful agent into a false rate-limit
+    (observed live on 2026-07-11). stderr, being plain text, is still scanned.
+    """
+    if record.get("api_error_status") == 429:
+        return True
+    return bool(record.get("is_error")) and bool(
+        RATE_LIMIT_RE.search(str(record.get("result", "")))
+    )
 
 DEFAULT_CONTRACT = """\
 # Execution contract — Agent Factory
@@ -61,8 +76,17 @@ def extract_trailing_json(text: str) -> dict | None:
 
 
 def build_command(cfg: AgentConfig, task: Task) -> list[str]:
+    # Resolve through PATH (and PATHEXT on Windows): a bare "claude" is often a
+    # .cmd/.exe shim that CreateProcess won't find without its full path.
+    exe = shutil.which(cfg.command[0])
+    if exe is None:
+        raise FileNotFoundError(
+            f"agent command '{cfg.command[0]}' not found on PATH — "
+            f"is the CLI installed and the shell environment inherited?"
+        )
     cmd = [
-        *cfg.command,
+        exe,
+        *cfg.command[1:],
         "-p",
         "--output-format",
         "stream-json",
@@ -110,14 +134,14 @@ async def run_agent(
             while line := await proc.stdout.readline():
                 text = line.decode("utf-8", errors="replace")
                 log.write(text)
-                if RATE_LIMIT_RE.search(text):
-                    rate_limited = True
                 try:
                     record = json.loads(text)
                 except json.JSONDecodeError:
                     continue
                 if isinstance(record, dict) and record.get("type") == "result":
                     result_record = record
+                    if is_rate_limit_result(record):
+                        rate_limited = True
 
         async def read_stderr() -> None:
             nonlocal rate_limited

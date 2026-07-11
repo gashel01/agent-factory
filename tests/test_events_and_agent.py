@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from factory.agent import extract_trailing_json
+from factory.agent import extract_trailing_json, is_rate_limit_result
 from factory.events import EventLog
 
 
@@ -38,3 +38,24 @@ def test_extract_trailing_json_variants():
     assert extract_trailing_json("no json here") is None
     # a JSON block without "status" is not a contract
     assert extract_trailing_json('{"foo": 1}') is None
+
+
+def test_rate_limit_detection_is_structured_only():
+    # Regression (live, 2026-07-11): '429' inside a base64 thinking signature
+    # flagged a SUCCESSFUL agent as rate-limited. Success records must never
+    # trip the detector, whatever their payload contains.
+    success = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "api_error_status": None,
+        "result": "done — signature blob: aGVsbG8+429/dGhlcmU= rate limit mentioned in prose",
+    }
+    assert not is_rate_limit_result(success)
+    assert is_rate_limit_result({"type": "result", "api_error_status": 429})
+    assert is_rate_limit_result(
+        {"type": "result", "is_error": True, "result": "API Error: rate limit exceeded"}
+    )
+    assert not is_rate_limit_result(
+        {"type": "result", "is_error": True, "result": "some unrelated failure"}
+    )
