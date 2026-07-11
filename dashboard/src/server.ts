@@ -278,12 +278,18 @@ function main(): void {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
     if (url.pathname === "/") {
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store", // dev tool: a plain refresh must always be current
+      });
       res.end(readFileSync(join(publicDir, "index.html")));
       return;
     }
     if (url.pathname === "/client.js") {
-      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      res.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "no-store",
+      });
       res.end(readFileSync(join(here, "client.js")));
       return;
     }

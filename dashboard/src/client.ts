@@ -237,7 +237,19 @@ async function quickRun(): Promise<void> {
     toast("New run starting — remaining tickets replay with the current config.");
   } catch (err) {
     toast(String(err), true);
+    return;
   }
+  // Surface an early crash (e.g. preflight refusing a dirty repo).
+  let checks = 0;
+  const timer = setInterval(async () => {
+    const status = await fetchJSON<{ run: { state: string; output: string } }>("/api/status");
+    if (status.run.state === "error") {
+      clearInterval(timer);
+      toast(status.run.output.slice(-280) || "The run failed to start.", true);
+    } else if (status.run.state !== "running" || ++checks > 20) {
+      clearInterval(timer);
+    }
+  }, 2000);
 }
 
 function toast(message: string, isError = false): void {
