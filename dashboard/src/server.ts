@@ -1,42 +1,59 @@
 /**
  * agent-factory dashboard server — zero runtime dependencies (node:http + node:fs).
  *
- * Reads the append-only events.jsonl written by the Python dispatcher and streams
- * it to browsers over SSE. Control commands go the other way through their own
- * file: the dashboard appends to control.jsonl, the dispatcher polls it. One
- * writer per file, in each direction — never a shared one.
+ * Three responsibilities, cleanly separated:
+ *  - READ the append-only events.jsonl written by the dispatcher, stream it over SSE;
+ *  - WRITE operator commands to control.jsonl (the dispatcher polls it) — one
+ *    writer per file, in each direction, never a shared one;
+ *  - LAUNCH `factory plan` / `factory run` as child processes on request, so the
+ *    whole workflow (goal → tickets → run → watch) works from the browser.
  *
  * Cross-platform by construction: file growth is detected by polling size+offset
  * (fs.watch is unreliable for appends on Windows network/temp paths).
  */
 
+import { spawn } from "node:child_process";
 import {
   appendFileSync,
   createReadStream,
   existsSync,
+  mkdirSync,
   readFileSync,
   readdirSync,
   statSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
-import { createServer, type ServerResponse } from "node:http";
-import { dirname, join, resolve } from "node:path";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface Options {
+  workdir: string; // where backlog/, factory.yaml and runs/ live
   runs: string;
   port: number;
   host: string;
+  factory: string[]; // how to invoke the CLI, e.g. ["uv","run","factory"]
 }
 
 function parseArgs(argv: string[]): Options {
-  const opts: Options = { runs: "runs", port: 8765, host: "127.0.0.1" };
+  const opts: Options = {
+    workdir: ".",
+    runs: "",
+    port: 8765,
+    host: "127.0.0.1",
+    factory: ["uv", "run", "factory"],
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--runs" && argv[i + 1]) opts.runs = argv[++i]!;
+    if (arg === "--workdir" && argv[i + 1]) opts.workdir = argv[++i]!;
+    else if (arg === "--runs" && argv[i + 1]) opts.runs = argv[++i]!;
     else if (arg === "--port" && argv[i + 1]) opts.port = Number(argv[++i]);
     else if (arg === "--host" && argv[i + 1]) opts.host = argv[++i]!; // non-local = your call
+    else if (arg === "--factory" && argv[i + 1]) opts.factory = argv[++i]!.split(" ");
   }
-  opts.runs = resolve(opts.runs);
+  opts.workdir = resolve(opts.workdir);
+  opts.runs = resolve(opts.runs || join(opts.workdir, "runs"));
   return opts;
 }
 
@@ -56,11 +73,11 @@ class RunTailer {
 
   constructor(
     readonly runsDir: string,
-    public run: string,
+    public run: string | null,
   ) {}
 
-  private get file(): string {
-    return join(this.runsDir, this.run, "events.jsonl");
+  private get file(): string | null {
+    return this.run ? join(this.runsDir, this.run, "events.jsonl") : null;
   }
 
   /** Switch to a new run: notify clients, replay its log from the top. */
@@ -70,6 +87,15 @@ class RunTailer {
     this.buffer = "";
     for (const client of this.clients) {
       client.write(`event: run\ndata: ${JSON.stringify({ run })}\n\n`);
+      this.replayTo(client);
+    }
+  }
+
+  private replayTo(client: ServerResponse): void {
+    if (this.file && existsSync(this.file)) {
+      for (const line of readFileSync(this.file, "utf-8").split("\n")) {
+        if (line.trim()) client.write(`data: ${line}\n\n`);
+      }
     }
   }
 
@@ -77,17 +103,13 @@ class RunTailer {
     client.write(`event: run\ndata: ${JSON.stringify({ run: this.run })}\n\n`);
     // Full replay on connect: the client rebuilds state from event zero,
     // so attaching mid-run and opening a finished run are the same code path.
-    if (existsSync(this.file)) {
-      for (const line of readFileSync(this.file, "utf-8").split("\n")) {
-        if (line.trim()) client.write(`data: ${line}\n\n`);
-      }
-    }
+    this.replayTo(client);
     this.clients.add(client);
   }
 
   /** Poll for appended bytes; emit any complete new lines. */
   poll(): void {
-    if (!existsSync(this.file)) return;
+    if (!this.file || !existsSync(this.file)) return;
     const size = statSync(this.file).size;
     if (size <= this.offset) return;
     const stream = createReadStream(this.file, { start: this.offset, encoding: "utf-8" });
@@ -106,25 +128,77 @@ class RunTailer {
   }
 }
 
+/* ------------------------------- CLI jobs ------------------------------- */
+
+interface Job {
+  state: "idle" | "running" | "done" | "error";
+  output: string;
+}
+
+const jobs: Record<"plan" | "run", Job> = {
+  plan: { state: "idle", output: "" },
+  run: { state: "idle", output: "" },
+};
+
+function spawnJob(kind: "plan" | "run", opts: Options, args: string[]): void {
+  jobs[kind] = { state: "running", output: "" };
+  // NEVER shell:true — goals are user text (spaces, parentheses, quotes) and
+  // must reach the CLI as one argv entry, not be re-parsed by cmd.exe.
+  // Windows note: the command must resolve to an .exe (uv, python, a full
+  // path); .cmd shims need an explicit path in --factory.
+  const [cmd, ...prefix] = opts.factory;
+  const child = spawn(cmd!, [...prefix, ...args], {
+    cwd: opts.workdir,
+    shell: false,
+    windowsHide: true,
+  });
+  const append = (chunk: Buffer) => {
+    jobs[kind].output = (jobs[kind].output + chunk.toString("utf-8")).slice(-20_000);
+  };
+  child.stdout.on("data", append);
+  child.stderr.on("data", append);
+  child.on("error", (err) => {
+    jobs[kind].state = "error";
+    jobs[kind].output += `\n${String(err)}`;
+  });
+  child.on("exit", (code) => {
+    jobs[kind].state = code === 0 ? "done" : "error";
+  });
+}
+
+/* --------------------------------- http --------------------------------- */
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolvePromise) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => resolvePromise(body));
+  });
+}
+
+function json(res: ServerResponse, code: number, payload: unknown): void {
+  res.writeHead(code, { "content-type": "application/json" });
+  res.end(JSON.stringify(payload));
+}
+
+const SAFE_NAME = /^[\w.-]+\.md$/;
+
 function main(): void {
   const opts = parseArgs(process.argv.slice(2));
   const here = dirname(fileURLToPath(import.meta.url));
   const publicDir = resolve(here, "..", "public");
+  const backlogDir = join(opts.workdir, "backlog");
 
-  const initial = latestRun(opts.runs);
-  if (!initial) {
-    console.error(`no runs with events.jsonl under ${opts.runs}`);
-    process.exit(1);
-  }
-  const tailer = new RunTailer(opts.runs, initial);
+  // No run yet is a normal state now: the browser is where work gets created.
+  const tailer = new RunTailer(opts.runs, latestRun(opts.runs));
 
   setInterval(() => {
     const newest = latestRun(opts.runs);
-    if (newest && newest !== tailer.run) tailer.switchTo(newest); // a new `factory run` started
+    if (newest && newest !== tailer.run) tailer.switchTo(newest); // a new run started
     tailer.poll();
   }, 500);
 
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
 
     if (url.pathname === "/") {
@@ -147,30 +221,27 @@ function main(): void {
       req.on("close", () => tailer.clients.delete(res));
       return;
     }
+
     if (url.pathname === "/api/control" && req.method === "POST") {
-      let body = "";
-      req.on("data", (chunk) => (body += chunk));
-      req.on("end", () => {
-        try {
-          const { op, task } = JSON.parse(body) as { op?: string; task?: string };
-          const ops = ["pause", "resume", "stop", "kill", "retry"];
-          if (!op || !ops.includes(op)) throw new Error(`op must be one of ${ops.join(", ")}`);
-          if (task !== undefined && !/^[\w.-]+$/.test(task)) throw new Error("bad task id");
-          const line = JSON.stringify({ ts: new Date().toISOString(), op, task });
-          appendFileSync(join(opts.runs, tailer.run, "control.jsonl"), line + "\n", "utf-8");
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
-        } catch (err) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: String(err) }));
-        }
-      });
+      try {
+        const { op, task } = JSON.parse(await readBody(req)) as { op?: string; task?: string };
+        const ops = ["pause", "resume", "stop", "kill", "retry"];
+        if (!op || !ops.includes(op)) throw new Error(`op must be one of ${ops.join(", ")}`);
+        if (task !== undefined && !/^[\w.-]+$/.test(task)) throw new Error("bad task id");
+        if (!tailer.run) throw new Error("no active run");
+        const line = JSON.stringify({ ts: new Date().toISOString(), op, task });
+        appendFileSync(join(opts.runs, tailer.run, "control.jsonl"), line + "\n", "utf-8");
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
       return;
     }
+
     if (url.pathname === "/api/log") {
       const task = url.searchParams.get("task") ?? "";
-      if (!/^[\w.-]+$/.test(task)) {
-        res.writeHead(400).end("bad task id");
+      if (!/^[\w.-]+$/.test(task) || !tailer.run) {
+        res.writeHead(400).end("bad task id or no run");
         return;
       }
       const file = join(opts.runs, tailer.run, "agents", `${task}.stdout.jsonl`);
@@ -184,11 +255,93 @@ function main(): void {
       res.end(tail);
       return;
     }
+
+    /* ---------- workflow: plan / backlog / run, all from the browser ---------- */
+
+    if (url.pathname === "/api/status") {
+      const backlog = existsSync(backlogDir)
+        ? readdirSync(backlogDir).filter((f) => f.endsWith(".md")).length
+        : 0;
+      json(res, 200, { plan: jobs.plan, run: jobs.run, backlogCount: backlog, currentRun: tailer.run });
+      return;
+    }
+
+    if (url.pathname === "/api/plan" && req.method === "POST") {
+      try {
+        const { goal, repo } = JSON.parse(await readBody(req)) as { goal?: string; repo?: string };
+        if (!goal?.trim()) throw new Error("goal is required");
+        if (!repo?.trim()) throw new Error("repo path is required");
+        if (jobs.plan.state === "running" || jobs.run.state === "running") {
+          throw new Error("a job is already running");
+        }
+        spawnJob("plan", opts, ["plan", goal.trim(), "--repo", repo.trim()]);
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/run" && req.method === "POST") {
+      try {
+        const { slots } = JSON.parse(await readBody(req)) as { slots?: number };
+        if (jobs.run.state === "running") throw new Error("a run is already in progress");
+        const args = ["run"];
+        if (slots && Number.isFinite(slots) && slots > 0) args.push("--slots", String(slots));
+        spawnJob("run", opts, args);
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/backlog" && req.method === "GET") {
+      const tickets = existsSync(backlogDir)
+        ? readdirSync(backlogDir)
+            .filter((f) => f.endsWith(".md"))
+            .sort()
+            .map((f) => ({
+              file: f,
+              content: readFileSync(join(backlogDir, f), "utf-8"),
+            }))
+        : [];
+      json(res, 200, { tickets });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/backlog/")) {
+      const file = basename(decodeURIComponent(url.pathname.slice("/api/backlog/".length)));
+      if (!SAFE_NAME.test(file)) {
+        json(res, 400, { ok: false, error: "bad ticket filename" });
+        return;
+      }
+      const path = join(backlogDir, file);
+      if (req.method === "PUT") {
+        const { content } = JSON.parse(await readBody(req)) as { content?: string };
+        if (typeof content !== "string" || !content.startsWith("---")) {
+          json(res, 400, { ok: false, error: "ticket must start with YAML front matter" });
+          return;
+        }
+        mkdirSync(backlogDir, { recursive: true });
+        writeFileSync(path, content, "utf-8");
+        json(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "DELETE") {
+        if (existsSync(path)) unlinkSync(path);
+        json(res, 200, { ok: true });
+        return;
+      }
+    }
+
     res.writeHead(404).end("not found");
   });
 
   server.listen(opts.port, opts.host, () => {
-    console.log(`dashboard: http://${opts.host}:${opts.port}  (runs: ${opts.runs})`);
+    console.log(
+      `dashboard: http://${opts.host}:${opts.port}  (workdir: ${opts.workdir}, runs: ${opts.runs})`,
+    );
   });
 }
 

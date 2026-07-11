@@ -272,6 +272,9 @@ function btn(label: string, cls: string, onClick: () => void): HTMLElement {
 }
 
 function headline(): { text: string; tone: string } {
+  if (!model.run) {
+    return { text: "No run yet — create some work.", tone: "warning" };
+  }
   const tasks = [...model.tasks.values()];
   const failed = tasks.filter((t) => t.state === "FAILED").length;
   const blocked = tasks.filter((t) => t.state === "BLOCKED").length;
@@ -384,7 +387,7 @@ function render(): void {
   header.append(left);
 
   const controls = el("div", "topbar-controls");
-  if (!model.endedTs) {
+  if (!model.endedTs && model.run) {
     if (model.manualPause || model.ratePause) {
       controls.append(btn("▶ Resume", "primary", () => void sendControl("resume")));
     } else {
@@ -392,6 +395,7 @@ function render(): void {
     }
     controls.append(confirmButton("⏹ Stop run", "Sure? Click again", () => void sendControl("stop")));
   }
+  controls.append(btn("＋ New work", model.run ? "ghost" : "primary", () => void showWorkPanel()));
   header.append(controls);
   root.append(header);
   root.append(progressBar());
@@ -577,6 +581,178 @@ async function showLog(taskId: string, title: string): Promise<void> {
     }),
   );
   panel.append(foot);
+}
+
+/* ------------------------ New work: plan → edit → run ------------------------ */
+
+interface Ticket {
+  file: string;
+  content: string;
+}
+
+function ticketTitle(content: string): string {
+  const match = content.match(/^title:\s*(.+)$/m);
+  return match ? match[1]!.replace(/^["']|["']$/g, "") : "(untitled)";
+}
+
+async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, init);
+  const data = (await res.json()) as T & { ok?: boolean; error?: string };
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data;
+}
+
+async function showWorkPanel(): Promise<void> {
+  const overlay = el("div", "overlay");
+  const panel = el("div", "log-panel work-panel");
+  const head = el("div", "log-head");
+  head.append(el("h3", "", "New work"));
+  head.append(btn("✕", "ghost close", () => overlay.remove()));
+  panel.append(head);
+  const body = el("div", "log-body");
+  panel.append(body);
+  overlay.append(panel);
+  document.body.append(overlay);
+
+  /* --- step 1: goal + repo → plan --- */
+  const form = el("div", "work-form");
+  form.append(el("label", "work-label", "Repository path"));
+  const repoInput = document.createElement("input");
+  repoInput.className = "work-input";
+  repoInput.placeholder = "C:\\path\\to\\your\\repo";
+  repoInput.value = localStorage.getItem("factory.repo") ?? "";
+  form.append(repoInput);
+  form.append(el("label", "work-label", "What do you want done?"));
+  const goalInput = document.createElement("textarea");
+  goalInput.className = "work-input work-goal";
+  goalInput.placeholder = "One or two sentences. The planner explores the repo and drafts the tickets.";
+  form.append(goalInput);
+  const planBtn = btn("✨ Draft tickets with AI", "primary", () => void startPlan()) as HTMLButtonElement;
+  form.append(planBtn);
+  const planOut = el("pre", "log-pre plan-out");
+  planOut.style.display = "none";
+  form.append(planOut);
+  body.append(form);
+
+  /* --- step 2: backlog, editable in place --- */
+  const backlogZone = el("div", "work-backlog");
+  body.append(backlogZone);
+
+  /* --- step 3: launch --- */
+  const launch = el("div", "work-launch");
+  launch.append(el("label", "work-label inline", "Parallel agents"));
+  const slotsInput = document.createElement("input");
+  slotsInput.type = "number";
+  slotsInput.min = "1";
+  slotsInput.value = "3";
+  slotsInput.className = "work-input slots";
+  launch.append(slotsInput);
+  const runBtn = btn("▶ Start run", "primary", () => void startRun()) as HTMLButtonElement;
+  launch.append(runBtn);
+  body.append(launch);
+
+  async function refreshBacklog(): Promise<void> {
+    const { tickets } = await fetchJSON<{ tickets: Ticket[] }>("/api/backlog");
+    backlogZone.replaceChildren();
+    launch.style.display = tickets.length ? "flex" : "none";
+    if (!tickets.length) return;
+    backlogZone.append(el("h2", "", `Tickets ready (${tickets.length})`));
+    for (const ticket of tickets) {
+      const row = el("div", "ticket-row");
+      const label = el("div", "ticket-title", ticketTitle(ticket.content));
+      label.append(el("span", "ticket-file", ` ${ticket.file}`));
+      row.append(label);
+      const actions = el("div", "card-actions");
+      actions.append(
+        btn("Edit", "ghost", () => {
+          const editor = document.createElement("textarea");
+          editor.className = "work-input ticket-editor";
+          editor.value = ticket.content;
+          const save = btn("Save", "primary", async () => {
+            try {
+              await fetchJSON(`/api/backlog/${encodeURIComponent(ticket.file)}`, {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ content: editor.value }),
+              });
+              toast("Ticket saved.");
+              await refreshBacklog();
+            } catch (err) {
+              toast(String(err), true);
+            }
+          });
+          row.replaceChildren(editor, save);
+        }),
+        confirmButton("Delete", "Sure?", async () => {
+          await fetchJSON(`/api/backlog/${encodeURIComponent(ticket.file)}`, { method: "DELETE" });
+          toast("Ticket deleted.");
+          await refreshBacklog();
+        }),
+      );
+      row.append(actions);
+      backlogZone.append(row);
+    }
+  }
+
+  async function startPlan(): Promise<void> {
+    try {
+      localStorage.setItem("factory.repo", repoInput.value);
+      await fetchJSON("/api/plan", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ goal: goalInput.value, repo: repoInput.value }),
+      });
+    } catch (err) {
+      toast(String(err), true);
+      return;
+    }
+    planBtn.disabled = true;
+    planBtn.textContent = "Planning… (the agent is exploring your repo)";
+    planOut.style.display = "block";
+    const timer = setInterval(async () => {
+      const status = await fetchJSON<{ plan: { state: string; output: string } }>("/api/status");
+      planOut.textContent = status.plan.output.slice(-3000) || "…";
+      planOut.scrollTop = planOut.scrollHeight;
+      if (status.plan.state === "running") return;
+      clearInterval(timer);
+      planBtn.disabled = false;
+      planBtn.textContent = "✨ Draft tickets with AI";
+      if (status.plan.state === "done") {
+        toast("Tickets drafted — review them below.");
+        await refreshBacklog();
+      } else {
+        toast("Planning failed — see the output.", true);
+      }
+    }, 1500);
+  }
+
+  async function startRun(): Promise<void> {
+    try {
+      await fetchJSON("/api/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slots: Number(slotsInput.value) || undefined }),
+      });
+    } catch (err) {
+      toast(String(err), true);
+      return;
+    }
+    toast("Run starting — the board follows automatically.");
+    overlay.remove();
+    // Surface an early crash (e.g. preflight refusing a dirty repo).
+    let checks = 0;
+    const timer = setInterval(async () => {
+      const status = await fetchJSON<{ run: { state: string; output: string } }>("/api/status");
+      if (status.run.state === "error") {
+        clearInterval(timer);
+        toast(status.run.output.slice(-280) || "The run failed to start.", true);
+      } else if (status.run.state !== "running" || ++checks > 20) {
+        clearInterval(timer);
+      }
+    }, 2000);
+  }
+
+  await refreshBacklog();
 }
 
 /* ---------------------------------- wiring ---------------------------------- */

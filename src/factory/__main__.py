@@ -65,7 +65,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                 print(f"  {a} <-> {b}")
         return 0
 
-    run_dir = args.runs / datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    # Absolute, always: worktree paths are handed to `git -C <repo>`, which
+    # resolves relative paths against the REPO, not our cwd.
+    run_dir = (args.runs / datetime.now().strftime("%Y-%m-%d_%H%M%S")).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     print(f"run: {run_dir}")
     counts = asyncio.run(Dispatcher(cfg, tasks, run_dir).run())

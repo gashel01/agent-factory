@@ -348,6 +348,22 @@ class Dispatcher:
             return False
         return True
 
+    def _archive_ticket(self, task: Task) -> None:
+        """Move a merged ticket to backlog/done/ so the next run cannot replay it.
+
+        FAILED and BLOCKED tickets stay in the backlog on purpose: they are
+        unfinished work.
+        """
+        try:
+            done_dir = task.path.parent / "done"
+            done_dir.mkdir(exist_ok=True)
+            target = done_dir / f"{self.run_id}-{task.path.name}"
+            task.path.rename(target)
+            self.log.emit("archived", task=task.id, to=str(target))
+        except OSError as exc:
+            # Never fail a merged task over housekeeping; just record it.
+            self.log.emit("archive_failed", task=task.id, reason=str(exc))
+
     async def _merge_worker(self) -> None:
         while True:
             task, wt = await self._merge_q.get()
@@ -359,6 +375,7 @@ class Dispatcher:
                 if result.ok:
                     self.log.emit("merged", task=task.id, branch=wt.branch)
                     self._set_state(task, TaskState.DONE)
+                    self._archive_ticket(task)
                 else:
                     await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
                     self._retry_or_fail(task, result.reason)

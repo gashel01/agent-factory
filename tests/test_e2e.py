@@ -48,6 +48,9 @@ def test_two_tasks_merge_to_main(tmp_path, repo):
     events = [e["event"] for e in EventLog.replay(tmp_path / "run" / "events.jsonl")]
     assert events[0] == "run_start" and events[-1] == "run_end"
     assert "merged" in events
+    # merged tickets are archived so a second run cannot replay them
+    assert list(backlog.glob("*.md")) == []
+    assert len(list((backlog / "done").glob("*.md"))) == 2
 
 
 def test_agent_without_commit_fails_after_retries(tmp_path, repo):
