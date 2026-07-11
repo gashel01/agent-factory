@@ -28,6 +28,14 @@ def main() -> int:
         time.sleep(60)
         return 0
 
+    if "Capability check" in prompt:
+        verdict = {"status": "done", "internet": "denied",
+                   "commands": [{"cmd": "git --version", "result": "ok"}],
+                   "notes": ""}
+        print(json.dumps({"type": "result", "num_turns": 3,
+                          "result": json.dumps(verdict)}))
+        return 0
+
     if "Supervisor contract" in prompt:
         answer = {"status": "done", "reply": "1 task is running, none failed.", "actions": []}
         print(json.dumps({"type": "result", "num_turns": 2,

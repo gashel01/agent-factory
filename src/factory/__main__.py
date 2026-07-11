@@ -11,6 +11,7 @@ from pathlib import Path
 from . import __version__
 from .config import ConfigError, load_config
 from .dispatcher import Dispatcher
+from .doctor import DoctorError, format_report, run_doctor
 from .events import EventLog
 from .plan import PlanError, run_planner, write_drafts
 from .supervise import SuperviseError, ask, format_answer, reset
@@ -154,6 +155,16 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    log_path = args.runs / "doctor" / f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.jsonl"
+    print("probing agent capabilities (one tiny agent, ~30s)…")
+    report = asyncio.run(run_doctor(cfg, Path.cwd(), log_path))
+    text = format_report(report)
+    print(text)
+    return 1 if "DENIED" in text else 0
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     tasks = load_backlog(args.backlog, cfg.base_branch)
@@ -201,6 +212,10 @@ def main(argv: list[str] | None = None) -> int:
                        help="forget the previous supervisor conversation")
     p_ask.set_defaults(func=cmd_ask)
 
+    p_doctor = sub.add_parser("doctor", parents=[common],
+                              help="verify agent permissions (internet, commands) for real")
+    p_doctor.set_defaults(func=cmd_doctor)
+
     p_status = sub.add_parser("status", parents=[common], help="show the latest run")
     p_status.set_defaults(func=cmd_status)
 
@@ -213,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (TicketError, ConfigError, GitError, PlanError, SuperviseError) as exc:
+    except (TicketError, ConfigError, GitError, PlanError, SuperviseError, DoctorError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

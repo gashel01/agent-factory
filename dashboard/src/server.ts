@@ -133,7 +133,7 @@ interface Workspace {
   name: string;
   workdir: string;
   tailer: RunTailer;
-  jobs: { plan: Job; run: Job; chat: Job };
+  jobs: { plan: Job; run: Job; chat: Job; doctor: Job };
 }
 
 const SAFE_WS = /^[\w][\w .-]{0,40}$/;
@@ -171,6 +171,7 @@ class Registry {
         plan: { state: "idle", output: "" },
         run: { state: "idle", output: "" },
         chat: { state: "idle", output: "" },
+        doctor: { state: "idle", output: "" },
       },
     };
     this.workspaces.set(name, ws);
@@ -191,7 +192,7 @@ class Registry {
 
 function spawnJob(
   ws: Workspace,
-  kind: "plan" | "run" | "chat",
+  kind: "plan" | "run" | "chat" | "doctor",
   factory: string[],
   args: string[],
 ): void {
@@ -612,10 +613,22 @@ function main(): void {
         plan: ws.jobs.plan,
         run: ws.jobs.run,
         chat: ws.jobs.chat,
+        doctor: ws.jobs.doctor,
         backlogCount: backlog,
         currentRun: ws.tailer.run,
         workspace: ws.name,
       });
+      return;
+    }
+
+    if (url.pathname === "/api/doctor" && req.method === "POST") {
+      try {
+        if (ws.jobs.doctor.state === "running") throw new Error("a capability check is already running");
+        spawnJob(ws, "doctor", opts.factory, ["doctor"]);
+        json(res, 200, { ok: true });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
       return;
     }
 

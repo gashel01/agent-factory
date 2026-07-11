@@ -899,18 +899,46 @@ async function showSettings(): Promise<void> {
   }
   if (!content) sync();
 
+  const testResult = el("pre", "doctor-result");
+  testResult.style.display = "none";
+  body.append(testResult);
+
+  async function saveConfig(): Promise<void> {
+    const finalContent = rawTouched ? raw.value : generateConfig(s);
+    await fetchJSON("/api/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: finalContent }),
+    });
+  }
+
   const foot = el("div", "work-launch");
+  const testBtn = btn("🧪 Test these settings", "ghost", async () => {
+    try {
+      await saveConfig(); // test what you see, not what was on disk
+      await fetchJSON("/api/doctor", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    } catch (err) {
+      toast(String(err), true);
+      return;
+    }
+    (testBtn as HTMLButtonElement).disabled = true;
+    testResult.style.display = "block";
+    testResult.textContent = "Testing for real — one tiny agent tries the web and your commands (~30s)…";
+    const timer = setInterval(async () => {
+      const status = await fetchJSON<{ doctor: { state: string; output: string } }>("/api/status");
+      if (status.doctor.state === "running") return;
+      clearInterval(timer);
+      (testBtn as HTMLButtonElement).disabled = false;
+      testResult.textContent = status.doctor.output.trim() ||
+        (status.doctor.state === "error" ? "The check failed — see server logs." : "(no result)");
+    }, 2000);
+  }) as HTMLButtonElement;
+  foot.append(testBtn);
   foot.append(el("span", "setting-hint", "Applies to the next run you start."));
   foot.append(
     btn("Save", "primary", async () => {
       try {
-        // The form is the product; the raw editor wins only if hand-edited.
-        const finalContent = rawTouched ? raw.value : generateConfig(s);
-        await fetchJSON("/api/config", {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ content: finalContent }),
-        });
+        await saveConfig();
         toast("Saved. Your next run uses these settings.");
         overlay.remove();
       } catch (err) {
