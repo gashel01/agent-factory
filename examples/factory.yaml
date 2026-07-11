@@ -1,0 +1,37 @@
+# agent-factory configuration — everything here is optional; defaults are sane.
+
+repo_defaults:
+  base_branch: main
+
+concurrency:
+  # User parameter, no hard ceiling in the code.
+  # 3 is a reasonable default on a Claude subscription plan; on API, raise it
+  # to whatever you want — the rate-limit handler is the safety net, not this number.
+  # Per-run override: `factory run --slots N`
+  max_slots: 3
+  stagger_seconds: 20
+
+agent:
+  command: claude          # any CLI honoring the same flags works (tests use a stub)
+  model: null              # null = the CLI's default; "haiku"/"sonnet" for mechanical tasks
+  permission_mode: acceptEdits
+  # Headless agents cannot answer permission prompts: anything not listed is denied.
+  allowed_tools:
+    - "Bash(git add:*)"
+    - "Bash(git commit:*)"
+    - "Bash(git status:*)"
+    - "Bash(git diff:*)"
+    - "Bash(git log:*)"
+    - "Bash(pytest:*)"
+    - "Bash(python:*)"
+    - "Bash(ruff:*)"
+
+verify:
+  commands: []             # default gate; tickets usually declare their own
+  command_timeout_s: 600
+
+ratelimit:
+  cooldown_min: 20         # doubles on each subsequent pause: 20 → 40 → 80 ...
+  max_pauses_before_stop: 6
+
+# contract_path: ./CONTRACT.md   # override the built-in execution contract
