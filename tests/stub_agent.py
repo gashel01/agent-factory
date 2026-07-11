@@ -7,6 +7,7 @@ embedded in the ticket body:
   STUB:NO_COMMIT   -> exit "done" without committing (verify gate must catch it)
   STUB:BLOCKED     -> report status=blocked with a question
   STUB:RATELIMIT   -> print a rate-limit error line and exit non-zero
+  STUB:SLEEP       -> hang for 60s (kill/timeout paths)
 """
 
 from __future__ import annotations
@@ -15,12 +16,17 @@ import json
 import re
 import subprocess
 import sys
+import time
 
 
 def main() -> int:
     prompt = sys.stdin.read()
     match = re.search(r"Ticket ID:\s*(\S+)", prompt)
     task_id = match.group(1) if match else "unknown"
+
+    if "STUB:SLEEP" in prompt:
+        time.sleep(60)
+        return 0
 
     if "STUB:RATELIMIT" in prompt:
         print("API Error: 429 rate limit exceeded", file=sys.stderr)

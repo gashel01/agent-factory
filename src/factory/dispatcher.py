@@ -11,6 +11,7 @@ Design rules (see AGENT_FACTORY.md):
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import Counter
 from contextlib import suppress
@@ -38,7 +39,10 @@ class Dispatcher:
         self._merge_q: asyncio.Queue[tuple[Task, wt_mod.Worktree]] = asyncio.Queue()
         self._pause_until = 0.0
         self._pause_count = 0
+        self._manual_pause = False
         self._stopped = False
+        self._control_offset = 0
+        self._next_launch_at = 0.0
         self._contract = self._load_contract()
 
     # ---------------------------------------------------------------- helpers
@@ -75,6 +79,61 @@ class Dispatcher:
         cooldown_s = self.cfg.ratelimit.cooldown_min * 60 * 2 ** (self._pause_count - 1)
         self._pause_until = time.monotonic() + cooldown_s
         self.log.emit("paused_ratelimit", pause_n=self._pause_count, cooldown_s=int(cooldown_s))
+
+    # ------------------------------------------------------------- control
+
+    def _poll_control(self) -> None:
+        """Apply operator commands appended by the dashboard to control.jsonl.
+
+        Mirror of events.jsonl with roles swapped: the dashboard is the only
+        writer, the dispatcher the only reader. Offset-based so each command
+        is applied exactly once.
+        """
+        path = self.run_dir / "control.jsonl"
+        if not path.exists():
+            return
+        data = path.read_bytes()
+        if len(data) <= self._control_offset:
+            return
+        chunk = data[self._control_offset :].decode("utf-8", errors="replace")
+        # Only consume complete lines; a torn tail is retried on the next poll.
+        consumed = chunk.rfind("\n") + 1
+        if consumed == 0:
+            return
+        self._control_offset += len(chunk[:consumed].encode("utf-8"))
+        for line in chunk[:consumed].splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                action = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(action, dict):
+                self._apply_control(action)
+
+    def _apply_control(self, action: dict) -> None:
+        op = action.get("op")
+        task_id = action.get("task")
+        self.log.emit("control", op=op, task=task_id)
+        if op == "pause":
+            self._manual_pause = True
+            self.log.emit("paused_manual")
+        elif op == "resume":
+            self._manual_pause = False
+            self._pause_until = 0.0  # a human resume overrides a rate-limit pause
+            self.log.emit("resumed")
+        elif op == "stop":
+            self._stopped = True
+            self.log.emit("stopped", reason="stopped by the operator")
+        elif op == "kill" and task_id in self._active:
+            self._active[task_id].cancel()
+        elif op == "retry" and task_id in self.by_id:
+            task = self.by_id[task_id]
+            if self.state[task_id] in (TaskState.FAILED, TaskState.BLOCKED):
+                task.attempts = 0  # a human retry grants a fresh budget
+                task.failure_notes.append("manually retried from the dashboard")
+                self._set_state(task, TaskState.QUEUED)
 
     def _in_flight_tasks(self) -> list[Task]:
         return [t for t in self.tasks if self.state[t.id] in IN_FLIGHT]
@@ -138,25 +197,39 @@ class Dispatcher:
 
     async def _schedule_loop(self) -> None:
         while self._unfinished():
+            self._poll_control()
             self._active = {k: v for k, v in self._active.items() if not v.done()}
             now = time.monotonic()
 
             if self._stopped and not self._active and self._merge_q.empty():
                 break
 
-            paused = now < self._pause_until
+            paused = self._manual_pause or now < self._pause_until
             can_launch = (
                 not paused
                 and not self._stopped
                 and len(self._active) < self.cfg.max_slots
+                and now >= self._next_launch_at
             )
             if can_launch and (task := self._next_eligible()):
+                # State flips SYNCHRONOUSLY here, not inside the worker coroutine:
+                # eligibility must never depend on whether the worker got scheduled
+                # yet, or the same task is re-selected in a tight loop that starves
+                # the event loop (bug found by faulthandler on 2026-07-11).
+                self._set_state(task, TaskState.RUNNING)
                 self._active[task.id] = asyncio.create_task(self._worker(task))
-                await asyncio.sleep(self.cfg.stagger_seconds)
+                # Stagger as a timestamp, not a sleep: control stays responsive.
+                self._next_launch_at = now + self.cfg.stagger_seconds
+                await asyncio.sleep(0)  # yield so the worker actually starts
                 continue
 
             if self._active:
-                await asyncio.wait(set(self._active.values()), return_when=asyncio.FIRST_COMPLETED)
+                # 1s timeout: workers are awaited AND control keeps being polled.
+                await asyncio.wait(
+                    set(self._active.values()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=1.0,
+                )
                 continue
 
             queued = [t for t in self.tasks if self.state[t.id] is TaskState.QUEUED]
@@ -164,8 +237,8 @@ class Dispatcher:
                           for t in self.tasks)
             if merging:
                 await asyncio.sleep(0.2)
-            elif paused and queued:
-                await asyncio.sleep(min(self._pause_until - now, 5.0))
+            elif queued and (paused or now < self._next_launch_at):
+                await asyncio.sleep(min(1.0, max(self._next_launch_at - now, 0.1)))
             elif queued:
                 # Nothing active, nothing launchable: the remaining graph is unsatisfiable.
                 for t in queued:
@@ -176,7 +249,7 @@ class Dispatcher:
     # ---------------------------------------------------------------- worker
 
     async def _worker(self, task: Task) -> None:
-        self._set_state(task, TaskState.RUNNING)
+        # State is already RUNNING — set by the scheduler at launch time.
         try:
             wt = await asyncio.to_thread(
                 wt_mod.create, task.repo, self.run_dir / "wt", self.run_id, task.id,
@@ -184,6 +257,11 @@ class Dispatcher:
             )
         except wt_mod.GitError as exc:
             self._fail(task, f"worktree creation failed: {exc}")
+            return
+        except asyncio.CancelledError:
+            # Killed before the worktree existed: nothing to clean, but the task
+            # must still reach a terminal state or it stays RUNNING forever.
+            self._fail(task, "killed by the operator")
             return
 
         try:
@@ -225,6 +303,11 @@ class Dispatcher:
 
             self._set_state(task, TaskState.MERGE_QUEUED)
             self._merge_q.put_nowait((task, wt))
+        except asyncio.CancelledError:
+            # Deliberate operator kill (dashboard). Absorbing the cancellation is
+            # intentional: the worker cleans up and records a terminal state.
+            await asyncio.shield(asyncio.to_thread(wt_mod.remove, wt, delete_branch=True))
+            self._fail(task, "killed by the operator")
         except Exception as exc:  # noqa: BLE001 — a worker must never take down the run
             await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
             self._fail(task, f"internal worker error: {exc!r}")

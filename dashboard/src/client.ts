@@ -1,6 +1,11 @@
 /**
- * Dashboard client: replays the SSE event stream into an in-memory model and
- * renders a status board. No framework — the DOM is small and the state is tiny.
+ * Dashboard client — designed around the operator's questions, in order:
+ *   1. "Is everything okay?"        → headline + progress bar, one glance
+ *   2. "Does anything need ME?"     → attention section pinned on top, action beside problem
+ *   3. "What's happening right now?"→ working cards in plain language, live timers
+ *   4. "What already happened?"     → compact done/failed lists, technical timeline folded
+ *
+ * State-machine names never reach the screen; humans read activities.
  */
 
 import type {
@@ -17,6 +22,8 @@ import type {
   VerifyEvent,
 } from "./types.js";
 
+/* ---------------------------------- model ---------------------------------- */
+
 interface TaskModel {
   id: string;
   title: string;
@@ -25,6 +32,8 @@ interface TaskModel {
   wallS: number | null;
   note: string;
   retries: number;
+  runningSince: number | null; // epoch ms, for live timers
+  finishedAt: string | null;
 }
 
 interface Model {
@@ -33,12 +42,13 @@ interface Model {
   startedTs: string | null;
   endedTs: string | null;
   stopped: boolean;
-  pause: PausedEvent | null;
+  ratePause: PausedEvent | null;
+  manualPause: boolean;
   tasks: Map<string, TaskModel>;
   feed: FactoryEvent[];
 }
 
-const FEED_LIMIT = 150;
+const FEED_LIMIT = 200;
 
 function freshModel(run: string): Model {
   return {
@@ -47,7 +57,8 @@ function freshModel(run: string): Model {
     startedTs: null,
     endedTs: null,
     stopped: false,
-    pause: null,
+    ratePause: null,
+    manualPause: false,
     tasks: new Map(),
     feed: [],
   };
@@ -58,7 +69,17 @@ let model = freshModel("");
 function task(id: string): TaskModel {
   let entry = model.tasks.get(id);
   if (!entry) {
-    entry = { id, title: id, state: "QUEUED", turns: null, wallS: null, note: "", retries: 0 };
+    entry = {
+      id,
+      title: id,
+      state: "QUEUED",
+      turns: null,
+      wallS: null,
+      note: "",
+      retries: 0,
+      runningSince: null,
+      finishedAt: null,
+    };
     model.tasks.set(id, entry);
   }
   return entry;
@@ -82,8 +103,18 @@ function reduce(event: FactoryEvent): void {
     }
     case "state": {
       const e = event as StateEvent;
-      task(e.task).state = e.to;
-      if (e.to === "RUNNING") model.pause = null; // work resumed
+      const entry = task(e.task);
+      entry.state = e.to;
+      if (e.to === "RUNNING") {
+        entry.runningSince = Date.parse(e.ts);
+        entry.note = "";
+        model.ratePause = null;
+      }
+      if (e.to === "DONE" || e.to === "FAILED" || e.to === "BLOCKED") {
+        entry.runningSince = null;
+        entry.finishedAt = e.ts;
+      }
+      if (e.to === "QUEUED") entry.runningSince = null;
       break;
     }
     case "agent_result": {
@@ -106,193 +137,443 @@ function reduce(event: FactoryEvent): void {
       entry.note = e.reason;
       break;
     }
-    case "failure": {
-      const e = event as FailureEvent;
-      task(e.task).note = e.reason;
+    case "failure":
+      task((event as FailureEvent).task).note = (event as FailureEvent).reason;
       break;
-    }
-    case "blocked": {
-      const e = event as BlockedEvent;
-      task(e.task).note = `needs a human: ${e.question}`;
+    case "blocked":
+      task((event as BlockedEvent).task).note = (event as BlockedEvent).question;
       break;
-    }
     case "paused_ratelimit":
-      model.pause = event as PausedEvent;
+      model.ratePause = event as PausedEvent;
+      break;
+    case "paused_manual":
+      model.manualPause = true;
+      break;
+    case "resumed":
+      model.manualPause = false;
+      model.ratePause = null;
       break;
     case "run_end": {
       const e = event as RunEndEvent;
       model.endedTs = e.ts;
       model.stopped = e.stopped;
-      model.pause = null;
+      model.ratePause = null;
+      model.manualPause = false;
       break;
     }
   }
 }
 
-/* ---------------------------------- render ---------------------------------- */
+/* ------------------------------ human language ------------------------------ */
 
-// Status roles (icon + label ALWAYS accompany color — color never carries alone).
-const STATE_META: Record<TaskState, { icon: string; role: string }> = {
-  QUEUED: { icon: "◷", role: "muted" },
-  RUNNING: { icon: "▶", role: "active" },
-  VERIFYING: { icon: "🔎", role: "active" },
-  MERGE_QUEUED: { icon: "⇥", role: "active" },
-  MERGING: { icon: "⇄", role: "active" },
-  DONE: { icon: "✓", role: "good" },
-  FAILED: { icon: "✕", role: "critical" },
-  BLOCKED: { icon: "⚠", role: "warning" },
+const ACTIVITY: Record<TaskState, string> = {
+  QUEUED: "Waiting for a free slot",
+  RUNNING: "Agent is working",
+  VERIFYING: "Checking the work (tests)",
+  MERGE_QUEUED: "Work approved — waiting to merge",
+  MERGING: "Merging into your branch",
+  DONE: "Merged",
+  FAILED: "Failed",
+  BLOCKED: "The agent has a question",
 };
+
+const STATE_ICON: Record<TaskState, string> = {
+  QUEUED: "◷",
+  RUNNING: "●",
+  VERIFYING: "🔎",
+  MERGE_QUEUED: "✓",
+  MERGING: "⇄",
+  DONE: "✓",
+  FAILED: "✕",
+  BLOCKED: "✋",
+};
+
+function fmtDuration(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 90) return `${m}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function ago(ts: string): string {
+  const s = (Date.now() - Date.parse(ts)) / 1000;
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ago`;
+}
+
+/* --------------------------------- controls --------------------------------- */
+
+async function sendControl(op: string, taskId?: string): Promise<void> {
+  try {
+    const res = await fetch("/api/control", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op, task: taskId }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const messages: Record<string, string> = {
+      pause: "Pausing — running agents finish, no new ones start.",
+      resume: "Resuming.",
+      stop: "Stopping — running agents finish, the rest stays queued.",
+      kill: `Stopping the agent on ${taskId}…`,
+      retry: `${taskId} is back in the queue with a fresh budget.`,
+    };
+    toast(messages[op] ?? "Sent.");
+  } catch (err) {
+    toast(`Could not send the command: ${String(err)}`, true);
+  }
+}
+
+function toast(message: string, isError = false): void {
+  const host = document.getElementById("toasts")!;
+  const node = el("div", `toast${isError ? " error" : ""}`, message);
+  host.append(node);
+  setTimeout(() => node.remove(), 4000);
+}
+
+/** Destructive actions use a two-step inline confirm — no popups. */
+function confirmButton(label: string, confirmLabel: string, action: () => void): HTMLElement {
+  const btn = el("button", "btn danger-soft", label) as HTMLButtonElement;
+  let armed = false;
+  btn.addEventListener("click", () => {
+    if (!armed) {
+      armed = true;
+      btn.textContent = confirmLabel;
+      btn.classList.add("armed");
+      setTimeout(() => {
+        armed = false;
+        btn.textContent = label;
+        btn.classList.remove("armed");
+      }, 3000);
+    } else {
+      action();
+      btn.remove();
+    }
+  });
+  return btn;
+}
+
+/* ---------------------------------- render ---------------------------------- */
 
 function el(tag: string, cls: string, text?: string): HTMLElement {
   const node = document.createElement(tag);
-  node.className = cls;
+  if (cls) node.className = cls;
   if (text !== undefined) node.textContent = text;
   return node;
 }
 
-function fmtDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
-  return m > 0 ? `${m}m${String(s).padStart(2, "0")}s` : `${s}s`;
+function btn(label: string, cls: string, onClick: () => void): HTMLElement {
+  const node = el("button", `btn ${cls}`, label) as HTMLButtonElement;
+  node.addEventListener("click", onClick);
+  return node;
 }
 
-function runBadge(): HTMLElement {
-  if (model.pause) {
-    return el("span", "badge warning", `⏸ paused (rate limit #${model.pause.pause_n})`);
-  }
+function headline(): { text: string; tone: string } {
+  const tasks = [...model.tasks.values()];
+  const failed = tasks.filter((t) => t.state === "FAILED").length;
+  const blocked = tasks.filter((t) => t.state === "BLOCKED").length;
+  const done = tasks.filter((t) => t.state === "DONE").length;
+
   if (model.endedTs) {
-    return el("span", `badge ${model.stopped ? "warning" : "good"}`,
-      model.stopped ? "⏹ stopped" : "✓ finished");
+    if (failed === 0 && blocked === 0) return { text: "All done — everything merged.", tone: "good" };
+    const parts = [`${done} merged`];
+    if (failed) parts.push(`${failed} failed`);
+    if (blocked) parts.push(`${blocked} waiting on you`);
+    return { text: `Finished: ${parts.join(", ")}.`, tone: failed ? "critical" : "warning" };
   }
-  return el("span", "badge active", "▶ live");
+  if (blocked > 0) return { text: `${blocked} task${blocked > 1 ? "s" : ""} need${blocked > 1 ? "" : "s"} you.`, tone: "warning" };
+  if (model.manualPause) return { text: "Paused by you.", tone: "warning" };
+  if (model.ratePause) {
+    return {
+      text: `Paused — usage limit hit, retrying in ${fmtDuration(model.ratePause.cooldown_s)}. Nothing is lost.`,
+      tone: "warning",
+    };
+  }
+  return { text: "Everything is running fine.", tone: "good" };
+}
+
+function progressBar(): HTMLElement {
+  const tasks = [...model.tasks.values()];
+  const total = tasks.length || 1;
+  const bar = el("div", "progress");
+  const done = tasks.filter((t) => t.state === "DONE").length;
+  const failed = tasks.filter((t) => t.state === "FAILED").length;
+  const active = tasks.filter((t) =>
+    ["RUNNING", "VERIFYING", "MERGING", "MERGE_QUEUED"].includes(t.state),
+  ).length;
+  const seg = (cls: string, count: number) => {
+    if (!count) return;
+    const node = el("div", `progress-seg ${cls}`);
+    node.style.width = `${(count / total) * 100}%`;
+    bar.append(node);
+  };
+  seg("done", done);
+  seg("failed", failed);
+  seg("active", active);
+  return bar;
+}
+
+function taskCard(t: TaskModel, kind: "attention" | "working" | "finished"): HTMLElement {
+  const card = el("article", `card ${kind} state-${t.state.toLowerCase()}`);
+
+  const head = el("div", "card-head");
+  head.append(el("span", "card-activity", `${STATE_ICON[t.state]} ${ACTIVITY[t.state]}`));
+  if (t.state === "RUNNING" && t.runningSince) {
+    head.append(el("span", "card-timer", fmtDuration((Date.now() - t.runningSince) / 1000)));
+  } else if (t.finishedAt) {
+    head.append(el("span", "card-timer", ago(t.finishedAt)));
+  }
+  card.append(head);
+
+  card.append(el("div", "card-title", t.title));
+
+  if (t.note) {
+    const note = el("div", `card-note${kind === "attention" ? " loud" : ""}`, t.note);
+    card.append(note);
+  }
+
+  const facts: string[] = [];
+  if (t.turns !== null) facts.push(`${t.turns} steps`);
+  if (t.wallS !== null && t.state !== "RUNNING") facts.push(fmtDuration(t.wallS));
+  if (t.retries > 0) facts.push(`attempt ${t.retries + 1}`);
+  if (facts.length) card.append(el("div", "card-facts", facts.join(" · ")));
+
+  const actions = el("div", "card-actions");
+  if (t.state === "FAILED" || t.state === "BLOCKED") {
+    actions.append(btn("↻ Try again", "primary", () => void sendControl("retry", t.id)));
+  }
+  if (t.state === "RUNNING") {
+    actions.append(confirmButton("Stop this agent", "Sure? Click again", () => void sendControl("kill", t.id)));
+  }
+  actions.append(btn("What did it do?", "ghost", () => void showLog(t.id, t.title)));
+  card.append(actions);
+
+  return card;
+}
+
+function section(title: string, cls: string, cards: HTMLElement[]): HTMLElement | null {
+  if (!cards.length) return null;
+  const node = el("section", `zone ${cls}`);
+  node.append(el("h2", "", title));
+  const grid = el("div", "zone-grid");
+  grid.append(...cards);
+  node.append(grid);
+  return node;
 }
 
 function render(): void {
   const root = document.getElementById("app")!;
   root.replaceChildren();
 
-  // header
-  const header = el("header", "header");
-  const title = el("div", "run-title");
-  title.append(el("h1", "", `run ${model.run || "…"}`), runBadge());
-  header.append(title);
-  header.append(el("div", "run-meta",
-    `slots ${model.slots ?? "?"} · started ${model.startedTs ?? "…"}` +
-    (model.endedTs ? ` · finished ${model.endedTs}` : "")));
+  const tasks = [...model.tasks.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const done = tasks.filter((t) => t.state === "DONE");
+  const head = headline();
+
+  /* sticky header: headline, progress, global controls */
+  const header = el("header", `topbar tone-${head.tone}`);
+  const left = el("div", "topbar-left");
+  left.append(el("div", "headline", head.text));
+  left.append(
+    el("div", "subline",
+      `${done.length} of ${tasks.length} merged · run ${model.run}` +
+      (model.startedTs ? ` · started ${ago(model.startedTs)}` : "")),
+  );
+  header.append(left);
+
+  const controls = el("div", "topbar-controls");
+  if (!model.endedTs) {
+    if (model.manualPause || model.ratePause) {
+      controls.append(btn("▶ Resume", "primary", () => void sendControl("resume")));
+    } else {
+      controls.append(btn("⏸ Pause", "ghost", () => void sendControl("pause")));
+    }
+    controls.append(confirmButton("⏹ Stop run", "Sure? Click again", () => void sendControl("stop")));
+  }
+  header.append(controls);
   root.append(header);
+  root.append(progressBar());
 
-  // stat tiles
-  const counts = new Map<TaskState, number>();
-  for (const t of model.tasks.values()) counts.set(t.state, (counts.get(t.state) ?? 0) + 1);
-  const tiles = el("section", "tiles");
-  const tileOrder: Array<[string, TaskState[]]> = [
-    ["done", ["DONE"]],
-    ["running", ["RUNNING", "VERIFYING", "MERGING", "MERGE_QUEUED"]],
-    ["queued", ["QUEUED"]],
-    ["failed", ["FAILED"]],
-    ["blocked", ["BLOCKED"]],
-  ];
-  for (const [label, states] of tileOrder) {
-    const value = states.reduce((sum, s) => sum + (counts.get(s) ?? 0), 0);
-    const tile = el("div", `tile ${label}`);
-    tile.append(el("div", "tile-value", String(value)), el("div", "tile-label", label));
-    tiles.append(tile);
+  /* zones, in the order a human scans them */
+  const attention = tasks
+    .filter((t) => t.state === "BLOCKED" || t.state === "FAILED")
+    .map((t) => taskCard(t, "attention"));
+  const working = tasks
+    .filter((t) => ["RUNNING", "VERIFYING", "MERGING", "MERGE_QUEUED"].includes(t.state))
+    .map((t) => taskCard(t, "working"));
+
+  for (const zone of [
+    section("Needs you", "attention", attention),
+    section("Working now", "working", working),
+  ]) {
+    if (zone) root.append(zone);
   }
-  root.append(tiles);
 
-  // task cards
-  const grid = el("section", "grid");
-  for (const t of [...model.tasks.values()].sort((a, b) => a.id.localeCompare(b.id))) {
-    const meta = STATE_META[t.state];
-    const card = el("article", `card ${meta.role}`);
-    const head = el("div", "card-head");
-    head.append(
-      el("span", `chip ${meta.role}`, `${meta.icon} ${t.state}`),
-      el("span", "card-id", t.id),
-    );
-    card.append(head);
-    card.append(el("div", "card-title", t.title));
-    const facts: string[] = [];
-    if (t.turns !== null) facts.push(`${t.turns} turns`);
-    if (t.wallS !== null) facts.push(fmtDuration(t.wallS));
-    if (t.retries > 0) facts.push(`retry ${t.retries}`);
-    if (facts.length) card.append(el("div", "card-facts", facts.join(" · ")));
-    if (t.note) card.append(el("div", "card-note", t.note));
-    const logBtn = el("button", "log-btn", "agent log") as HTMLButtonElement;
-    logBtn.addEventListener("click", () => void showLog(t.id));
-    card.append(logBtn);
-    grid.append(card);
+  const queued = tasks.filter((t) => t.state === "QUEUED");
+  if (queued.length) {
+    const waiting = el("section", "zone waiting");
+    waiting.append(el("h2", "", `Up next (${queued.length})`));
+    const row = el("div", "chip-row");
+    for (const t of queued) row.append(el("span", "queue-chip", t.title));
+    waiting.append(row);
+    root.append(waiting);
   }
-  root.append(grid);
 
-  // event feed (table view of the raw stream — the accessibility fallback)
-  const feed = el("section", "feed");
-  feed.append(el("h2", "", "events"));
+  if (done.length) {
+    const zone = el("section", "zone finished");
+    zone.append(el("h2", "", `Merged (${done.length})`));
+    const list = el("div", "done-list");
+    for (const t of done) {
+      const row = el("div", "done-row");
+      row.append(el("span", "done-check", "✓"));
+      row.append(el("span", "done-title", t.title));
+      const meta: string[] = [];
+      if (t.turns !== null) meta.push(`${t.turns} steps`);
+      if (t.wallS !== null) meta.push(fmtDuration(t.wallS));
+      row.append(el("span", "done-meta", meta.join(" · ")));
+      const more = btn("details", "link", () => void showLog(t.id, t.title));
+      row.append(more);
+      list.append(row);
+    }
+    zone.append(list);
+    root.append(zone);
+  }
+
+  /* technical timeline, folded away for the curious */
+  const details = document.createElement("details");
+  details.className = "timeline";
+  const summary = document.createElement("summary");
+  summary.textContent = "Technical timeline";
+  details.append(summary);
   const list = el("div", "feed-list");
   for (const event of [...model.feed].reverse()) {
     const line = el("div", "feed-line");
-    const time = event.ts?.slice(11, 19) ?? "";
-    line.append(el("span", "feed-ts", time), el("span", "feed-body", describe(event)));
+    line.append(el("span", "feed-ts", event.ts?.slice(11, 19) ?? ""));
+    line.append(el("span", "feed-body", describe(event)));
     list.append(line);
   }
-  feed.append(list);
-  root.append(feed);
+  details.append(list);
+  root.append(details);
 }
 
 function describe(event: FactoryEvent): string {
-  const task = event.task ? `[${event.task}] ` : "";
+  const tag = event.task ? `[${event.task}] ` : "";
   switch (event.event) {
     case "state": {
       const e = event as StateEvent;
-      return `${task}${e.from} → ${e.to}`;
+      return `${tag}${e.from} → ${e.to}`;
     }
     case "agent_result": {
       const e = event as AgentResultEvent;
-      return `${task}agent ${e.status} (${e.turns ?? "?"} turns, ${fmtDuration(e.wall_s)})`;
+      return `${tag}agent ${e.status} (${e.turns ?? "?"} turns, ${fmtDuration(e.wall_s)})`;
     }
     case "verify": {
       const e = event as VerifyEvent;
-      return `${task}verify ${e.ok ? "ok" : "FAILED: " + e.failures.join("; ")}`;
+      return `${tag}verify ${e.ok ? "ok" : "FAILED: " + e.failures.join("; ")}`;
     }
-    case "retry": {
-      const e = event as RetryEvent;
-      return `${task}retry #${e.attempt}: ${e.reason}`;
-    }
+    case "retry":
+      return `${tag}retry #${(event as RetryEvent).attempt}: ${(event as RetryEvent).reason}`;
     case "failure":
-      return `${task}failed: ${(event as FailureEvent).reason}`;
+      return `${tag}failed: ${(event as FailureEvent).reason}`;
     case "blocked":
-      return `${task}blocked: ${(event as BlockedEvent).question}`;
+      return `${tag}blocked: ${(event as BlockedEvent).question}`;
     case "paused_ratelimit": {
       const e = event as PausedEvent;
-      return `rate limit — global pause #${e.pause_n} (${fmtDuration(e.cooldown_s)})`;
+      return `rate limit — pause #${e.pause_n} (${fmtDuration(e.cooldown_s)})`;
     }
+    case "control":
+      return `operator: ${(event as FactoryEvent & { op?: string }).op ?? "?"} ${event.task ?? ""}`;
     case "merged":
-      return `${task}merged into base`;
+      return `${tag}merged into base`;
     case "run_start":
       return `run started (${(event as RunStartEvent).slots} slots)`;
     case "run_end": {
       const e = event as RunEndEvent;
-      const counts = Object.entries(e.counts).map(([k, v]) => `${k}=${v}`).join(" ");
-      return `run ${e.stopped ? "stopped" : "finished"}: ${counts}`;
+      return `run ${e.stopped ? "stopped" : "finished"}: ` +
+        Object.entries(e.counts).map(([k, v]) => `${k}=${v}`).join(" ");
     }
     default:
-      return `${task}${event.event}`;
+      return `${tag}${event.event}`;
   }
 }
 
-async function showLog(taskId: string): Promise<void> {
+/* ------------------------- agent log, human-readable ------------------------- */
+
+interface StreamRecord {
+  type?: string;
+  message?: { content?: Array<{ type?: string; text?: string; name?: string; input?: Record<string, unknown> }> };
+  result?: string;
+}
+
+/** Turn the raw stream-json into a story: what the agent did, step by step. */
+function narrateLog(raw: string): HTMLElement {
+  const story = el("div", "story");
+  for (const line of raw.split("\n")) {
+    let record: StreamRecord;
+    try {
+      record = JSON.parse(line) as StreamRecord;
+    } catch {
+      continue;
+    }
+    if (record.type === "assistant" && record.message?.content) {
+      for (const item of record.message.content) {
+        if (item.type === "text" && item.text?.trim()) {
+          story.append(el("p", "story-say", item.text.trim()));
+        } else if (item.type === "tool_use" && item.name) {
+          const input = item.input ?? {};
+          const detail =
+            (input["file_path"] as string) ??
+            (input["command"] as string) ??
+            (input["pattern"] as string) ??
+            "";
+          const short = detail.length > 90 ? "…" + detail.slice(-88) : detail;
+          story.append(el("div", "story-act", `▸ ${item.name}  ${short}`));
+        }
+      }
+    } else if (record.type === "result" && record.result) {
+      // The result record repeats the assistant's final text: only show it
+      // if it adds something new.
+      const last = story.lastElementChild;
+      if (last?.textContent?.trim() !== record.result.trim()) {
+        story.append(el("p", "story-final", record.result.trim()));
+      }
+    }
+  }
+  if (!story.childElementCount) story.append(el("p", "story-say", "No activity recorded yet."));
+  return story;
+}
+
+async function showLog(taskId: string, title: string): Promise<void> {
   const overlay = el("div", "overlay");
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) overlay.remove();
   });
   const panel = el("div", "log-panel");
-  panel.append(el("h3", "", `agent log — task ${taskId} (tail)`));
-  const pre = el("pre", "log-pre", "loading…");
-  panel.append(pre);
+  const head = el("div", "log-head");
+  head.append(el("h3", "", title));
+  head.append(btn("✕", "ghost close", () => overlay.remove()));
+  panel.append(head);
+  const bodyHost = el("div", "log-body", "loading…");
+  panel.append(bodyHost);
   overlay.append(panel);
   document.body.append(overlay);
+
   const res = await fetch(`/api/log?task=${encodeURIComponent(taskId)}`);
-  pre.textContent = res.ok ? await res.text() : `(${res.status}) ${await res.text()}`;
+  if (!res.ok) {
+    bodyHost.textContent = "Nothing recorded for this task yet.";
+    return;
+  }
+  const raw = await res.text();
+  bodyHost.replaceChildren(narrateLog(raw));
+  const foot = el("div", "log-foot");
+  foot.append(
+    btn("Show raw log", "link", () => {
+      const pre = el("pre", "log-pre", raw);
+      bodyHost.replaceChildren(pre);
+      foot.remove();
+    }),
+  );
+  panel.append(foot);
 }
 
 /* ---------------------------------- wiring ---------------------------------- */
@@ -321,5 +602,11 @@ source.onmessage = (e) => {
   }
   scheduleRender();
 };
+
+// Live timers: re-render every second while something is running.
+setInterval(() => {
+  const active = [...model.tasks.values()].some((t) => t.runningSince !== null);
+  if (active || model.ratePause) scheduleRender();
+}, 1000);
 
 render();

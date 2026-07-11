@@ -2,14 +2,22 @@
  * agent-factory dashboard server — zero runtime dependencies (node:http + node:fs).
  *
  * Reads the append-only events.jsonl written by the Python dispatcher and streams
- * it to browsers over SSE. Strictly a READER: it never writes into a run directory,
- * so it can attach to a live run, detach, or replay a finished one.
+ * it to browsers over SSE. Control commands go the other way through their own
+ * file: the dashboard appends to control.jsonl, the dispatcher polls it. One
+ * writer per file, in each direction — never a shared one.
  *
  * Cross-platform by construction: file growth is detected by polling size+offset
  * (fs.watch is unreliable for appends on Windows network/temp paths).
  */
 
-import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  createReadStream,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -137,6 +145,26 @@ function main(): void {
       });
       tailer.attach(res);
       req.on("close", () => tailer.clients.delete(res));
+      return;
+    }
+    if (url.pathname === "/api/control" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        try {
+          const { op, task } = JSON.parse(body) as { op?: string; task?: string };
+          const ops = ["pause", "resume", "stop", "kill", "retry"];
+          if (!op || !ops.includes(op)) throw new Error(`op must be one of ${ops.join(", ")}`);
+          if (task !== undefined && !/^[\w.-]+$/.test(task)) throw new Error("bad task id");
+          const line = JSON.stringify({ ts: new Date().toISOString(), op, task });
+          appendFileSync(join(opts.runs, tailer.run, "control.jsonl"), line + "\n", "utf-8");
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: String(err) }));
+        }
+      });
       return;
     }
     if (url.pathname === "/api/log") {

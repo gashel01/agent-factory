@@ -176,6 +176,11 @@ async def run_agent(
                 wall_s=time.monotonic() - started,
                 contract=None,
             )
+        except asyncio.CancelledError:
+            # Operator kill: reap the subprocess before propagating.
+            proc.kill()
+            await proc.wait()
+            raise
 
     wall_s = time.monotonic() - started
     turns = result_record.get("num_turns") if result_record else None
