@@ -259,21 +259,33 @@ function toast(message: string, isError = false): void {
   setTimeout(() => node.remove(), 4000);
 }
 
+/**
+ * How many two-step confirms are currently armed. While > 0 the auto-render is
+ * held: a re-render would replace the button node and reset it to step one, so
+ * the second click could never land (this is why "stop" felt broken).
+ */
+let armedCount = 0;
+
 /** Destructive actions use a two-step inline confirm — no popups. */
 function confirmButton(label: string, confirmLabel: string, action: () => void): HTMLElement {
   const btn = el("button", "btn danger-soft", label) as HTMLButtonElement;
   let armed = false;
+  const disarm = (): void => {
+    if (!armed) return;
+    armed = false;
+    armedCount--;
+    btn.textContent = label;
+    btn.classList.remove("armed");
+  };
   btn.addEventListener("click", () => {
     if (!armed) {
       armed = true;
+      armedCount++;
       btn.textContent = confirmLabel;
       btn.classList.add("armed");
-      setTimeout(() => {
-        armed = false;
-        btn.textContent = label;
-        btn.classList.remove("armed");
-      }, 3000);
+      setTimeout(disarm, 3000);
     } else {
+      disarm();
       action();
       btn.remove();
     }
@@ -296,9 +308,25 @@ function btn(label: string, cls: string, onClick: () => void): HTMLElement {
   return node;
 }
 
+/**
+ * A run is "live" only if a dispatcher is actually running for it. If not
+ * (finished, or its process died), operator commands like stop/kill reach a file
+ * nobody reads — so we must not offer them; "Run again" is the real action.
+ */
+function runLive(): boolean {
+  return Boolean(model.run) && !model.endedTs && runActive;
+}
+
 function headline(): { text: string; tone: string } {
   if (!model.run) {
     return { text: "No run yet — create some work.", tone: "warning" };
+  }
+  if (!model.endedTs && !runActive) {
+    return {
+      text: "This run is no longer active — its process has stopped. " +
+        "Start a new run to finish the remaining work.",
+      tone: "warning",
+    };
   }
   const tasks = [...model.tasks.values()];
   const failed = tasks.filter((t) => t.state === "FAILED").length;
@@ -358,7 +386,9 @@ function taskCard(t: TaskModel, kind: "attention" | "working" | "finished"): HTM
   const head = el("div", "card-head");
   head.append(el("span", "card-activity", `${STATE_ICON[t.state]} ${ACTIVITY[t.state]}`));
   if (t.state === "RUNNING" && t.runningSince) {
-    head.append(el("span", "card-timer", fmtDuration((Date.now() - t.runningSince) / 1000)));
+    const timer = el("span", "card-timer", fmtDuration((Date.now() - t.runningSince) / 1000));
+    timer.dataset["since"] = String(t.runningSince); // ticked in place, no re-render
+    head.append(timer);
   } else if (t.finishedAt) {
     head.append(el("span", "card-timer", ago(t.finishedAt)));
   }
@@ -378,16 +408,17 @@ function taskCard(t: TaskModel, kind: "attention" | "working" | "finished"): HTM
   if (facts.length) card.append(el("div", "card-facts", facts.join(" · ")));
 
   const actions = el("div", "card-actions");
+  const live = runLive();
   if (t.state === "FAILED" || t.state === "BLOCKED") {
-    if (model.endedTs) {
-      // The dispatcher exited with the run: control commands have no reader.
-      // The ticket is still in the backlog — a new run is the real retry.
-      actions.append(btn("▶ Run again (new run)", "primary", () => void quickRun()));
-    } else {
+    if (live) {
       actions.append(btn("↻ Try again", "primary", () => void sendControl("retry", t.id)));
+    } else {
+      // No live dispatcher: a retry command would have no reader. The ticket is
+      // still in the backlog — a new run is the real retry.
+      actions.append(btn("▶ Run again (new run)", "primary", () => void quickRun()));
     }
   }
-  if (t.state === "RUNNING") {
+  if (t.state === "RUNNING" && live) {
     actions.append(confirmButton("Stop this agent", "Sure? Click again", () => void sendControl("kill", t.id)));
   }
   actions.append(btn("What did it do?", "ghost", () => void showLog(t.id, t.title)));
@@ -450,16 +481,18 @@ function render(): void {
     });
     controls.append(picker);
   }
-  if (!model.endedTs && model.run) {
+  const live = runLive();
+  if (live) {
     if (model.manualPause || model.ratePause) {
       controls.append(btn("▶ Resume", "primary", () => void sendControl("resume")));
     } else {
       controls.append(btn("⏸ Pause", "ghost", () => void sendControl("pause")));
     }
     controls.append(confirmButton("⏹ Stop run", "Sure? Click again", () => void sendControl("stop")));
-  }
-  if (model.endedTs && tasks.some((t) => t.state === "QUEUED")) {
-    controls.append(btn("▶ Run remaining", "primary", () => void quickRun()));
+  } else if (model.run && tasks.some((t) => t.state !== "DONE")) {
+    // Not live but work remains (queued, or a task the dead run never finished):
+    // a fresh run is the only thing that actually moves it forward.
+    controls.append(btn("▶ Run again (new run)", "primary", () => void quickRun()));
   }
   controls.append(btn("🌐 View result", "ghost", () => void viewResult()));
   controls.append(btn("⚙ Settings", "ghost", () => void showSettings()));
@@ -1554,15 +1587,67 @@ async function showWorkPanel(): Promise<void> {
 
 /* ---------------------------------- wiring ---------------------------------- */
 
-let renderQueued = false;
+/**
+ * Rendering replaces the whole board, which would wipe out whatever the operator
+ * is doing (an armed confirm, a focused field, a value being typed). So renders
+ * are coalesced through a dirty flag and HELD while an interaction is in flight —
+ * the board catches up the instant the interaction ends. This is what made the
+ * dashboard feel unusable before: it rebuilt itself under the user's cursor.
+ */
+let dirty = false;
 function scheduleRender(): void {
-  if (renderQueued) return;
-  renderQueued = true;
-  requestAnimationFrame(() => {
-    renderQueued = false;
-    render();
-  });
+  dirty = true;
 }
+
+function renderHeld(): boolean {
+  if (armedCount > 0) return true;
+  if (document.querySelector(".overlay")) return true; // a modal owns the screen
+  const active = document.activeElement as HTMLElement | null;
+  if (active && active.closest("#app") && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) {
+    return true;
+  }
+  return false;
+}
+
+// One flusher: renders at most ~7×/s, and never on top of an interaction.
+setInterval(() => {
+  if (dirty && !renderHeld()) {
+    dirty = false;
+    render();
+  }
+}, 150);
+
+// Live timers update IN PLACE — no full re-render, so they never fight the user.
+setInterval(() => {
+  const now = Date.now();
+  for (const node of document.querySelectorAll<HTMLElement>("[data-since]")) {
+    node.textContent = fmtDuration((now - Number(node.dataset["since"])) / 1000);
+  }
+  // The rate-limit countdown lives in the headline; refresh it via a normal
+  // (held-aware) render, which is fine because nobody clicks during a pause.
+  if (model.ratePause) scheduleRender();
+}, 1000);
+
+/**
+ * Is a dispatcher actually alive for the shown run? A run started in a previous
+ * server process (or one whose process was killed) leaves the board showing live
+ * controls that write to a control file nobody reads. We poll the server's own
+ * job state to tell the truth and offer "Run again" instead of dead buttons.
+ */
+let runActive = true;
+async function pollRunActive(): Promise<void> {
+  try {
+    const status = await fetchJSON<{ run: { state: string } }>("/api/status");
+    const active = status.run.state === "running";
+    if (active !== runActive) {
+      runActive = active;
+      scheduleRender();
+    }
+  } catch {
+    /* transient — keep the last known value */
+  }
+}
+setInterval(() => void pollRunActive(), 3000);
 
 let source: EventSource | null = null;
 
@@ -1586,11 +1671,8 @@ function connectEvents(): void {
   scheduleRender();
 }
 
-// Live timers: re-render every second while something is running.
-setInterval(() => {
-  const active = [...model.tasks.values()].some((t) => t.runningSince !== null);
-  if (active || model.ratePause) scheduleRender();
-}, 1000);
-
-void loadWorkspaces().then(connectEvents);
+void loadWorkspaces().then(() => {
+  connectEvents();
+  void pollRunActive();
+});
 render();

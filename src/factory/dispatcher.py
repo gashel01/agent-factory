@@ -180,20 +180,40 @@ class Dispatcher:
         try:
             await self._schedule_loop()
             await self._merge_q.join()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            # Ctrl+C or a cancelled run: fall through to the cleanup below so the
+            # log still gets a terminal state for every task and a run_end.
+            self._stopped = True
         finally:
+            # Cancel in-flight workers so their agent subprocesses are killed
+            # rather than orphaned (a leftover `claude` keeps burning credits with
+            # no dispatcher to stop it). Each worker catches the cancellation,
+            # cleans its worktree, and records a terminal state.
             merger.cancel()
-            with suppress(asyncio.CancelledError):
-                await merger
+            for worker in list(self._active.values()):
+                worker.cancel()
+            for pending in (merger, *self._active.values()):
+                with suppress(asyncio.CancelledError, Exception):
+                    await pending
 
-        if self._stopped:
-            # Leave unstarted work QUEUED in the log: the backlog is intact on disk
-            # and a later run picks it up. Nothing is silently dropped.
+            # CRITICAL: a task left in-flight when we exit (crash, Ctrl+C, the
+            # terminal window closed) shows in the dashboard as a "still working"
+            # ghost forever, and its operator commands reach a dispatcher that no
+            # longer exists. Force every unfinished task to a terminal state and
+            # always write run_end — the reader must be able to tell a live run
+            # from a dead one.
             for t in self.tasks:
-                if self.state[t.id] is TaskState.QUEUED:
-                    self.log.emit("skipped", task=t.id, reason="run stopped on rate limit")
+                if self.state[t.id] in IN_FLIGHT:
+                    self._fail(t, "interrupted before completion (the run stopped)")
+            if self._stopped:
+                # Unstarted work stays recoverable: the backlog is intact on disk
+                # and a later run picks it up. Nothing is silently dropped.
+                for t in self.tasks:
+                    if self.state[t.id] is TaskState.QUEUED:
+                        self.log.emit("skipped", task=t.id, reason="run stopped")
+            counts = Counter(str(s) for s in self.state.values())
+            self.log.emit("run_end", counts=dict(counts), stopped=self._stopped)
 
-        counts = Counter(str(s) for s in self.state.values())
-        self.log.emit("run_end", counts=dict(counts), stopped=self._stopped)
         return dict(counts)
 
     async def _schedule_loop(self) -> None:

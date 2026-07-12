@@ -127,3 +127,36 @@ def test_max_slots_is_a_user_parameter(tmp_path, repo, slots):
         write_ticket(backlog, f"00{i}", repo, files_hint=f"[output_00{i}.txt]")
     counts = run_dispatcher(make_config(max_slots=slots), backlog, tmp_path / "run")
     assert counts == {"DONE": 3}
+
+
+def test_interrupted_run_leaves_no_ghost(tmp_path, repo):
+    """A cancelled/crashed dispatcher must still write a terminal state for every
+    task and a run_end — otherwise the dashboard shows a task "still working"
+    forever and its stop/kill commands reach a process that no longer exists.
+    Regression for the orphaned-agent ghost seen live on 2026-07-12.
+    """
+    from factory.task import IN_FLIGHT
+
+    backlog = tmp_path / "backlog"
+    write_ticket(backlog, "001", repo, body="STUB:SLEEP")  # agent hangs 60s
+    tasks = load_backlog(backlog, "main")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    dispatcher = Dispatcher(make_config(), tasks, run_dir)
+
+    async def drive() -> dict[str, int]:
+        run_task = asyncio.create_task(dispatcher.run())
+        for _ in range(200):  # wait until the agent is actually RUNNING
+            if dispatcher.state["001"].name == "RUNNING":
+                break
+            await asyncio.sleep(0.05)
+        run_task.cancel()  # simulate the dispatcher process going away
+        return await run_task
+
+    asyncio.run(drive())
+
+    # No task may be left in-flight, and the run must be sealed with run_end.
+    assert all(state not in IN_FLIGHT for state in dispatcher.state.values())
+    assert dispatcher.state["001"].name == "FAILED"
+    events = [e["event"] for e in EventLog.replay(run_dir / "events.jsonl")]
+    assert events[-1] == "run_end"
