@@ -850,6 +850,7 @@ interface Settings {
   reviewer: boolean;
   reviewerModel: string;
   effort: string; // "" = the CLI's own default; otherwise low…ultracode
+  maxRetries: number; // retries a failing ticket gets before FAILED
 }
 
 // Capped at High on purpose: xhigh/max/ultracode burn far more tokens. They stay
@@ -882,6 +883,7 @@ function parseSettings(content: string): Settings {
     reviewer: /enabled:\s*true/.test(review),
     reviewerModel: review.match(/model:\s*"?(\w+)"?/)?.[1] ?? "haiku",
     effort: content.match(/^\s*effort:\s*"?(\w+)"?/m)?.[1] ?? "",
+    maxRetries: Number(content.match(/max_retries:\s*(\d+)/)?.[1] ?? 1),
   };
 }
 
@@ -909,6 +911,7 @@ function generateConfig(s: Settings): string {
     "concurrency:",
     `  max_slots: ${s.slots}`,
     "  stagger_seconds: 15",
+    `  max_retries: ${s.maxRetries}`,
     "",
     "agent:",
     "  command: claude",
@@ -1037,6 +1040,23 @@ async function showSettings(): Promise<void> {
     "How hard each agent thinks. Higher digs deeper but is slower and spends more; " +
     "'Default' leaves it to Claude Code. Raise it for tricky tasks (charts, data, logic).",
     effortPick,
+  ));
+
+  /* retries — the cost guard the user asked for */
+  const retriesInput = document.createElement("input");
+  retriesInput.type = "number";
+  retriesInput.min = "0";
+  retriesInput.className = "work-input slots";
+  retriesInput.value = String(s.maxRetries);
+  retriesInput.addEventListener("input", () => {
+    s.maxRetries = Math.max(0, Number(retriesInput.value) || 0);
+    sync();
+  });
+  body.append(row(
+    "Retries per task",
+    "How many times a failing ticket is re-attempted before giving up. Each retry is a " +
+    "full agent run that spends usage — keep it low (0 or 1) for costly research tasks.",
+    retriesInput,
   ));
 
   /* parallel agents */
