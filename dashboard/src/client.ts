@@ -611,15 +611,51 @@ function describe(event: FactoryEvent): string {
 
 /* ------------------------- agent log, human-readable ------------------------- */
 
+interface ContentItem {
+  type?: string;
+  text?: string;
+  name?: string;
+  id?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string | Array<{ type?: string; text?: string }>;
+}
 interface StreamRecord {
   type?: string;
-  message?: { content?: Array<{ type?: string; text?: string; name?: string; input?: Record<string, unknown> }> };
+  message?: { content?: ContentItem[] };
   result?: string;
+}
+
+const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
+
+/** A short, human label for what a tool call is doing. */
+function toolDetail(input: Record<string, unknown>): string {
+  const pick = (k: string): string | undefined =>
+    typeof input[k] === "string" ? (input[k] as string) : undefined;
+  return (
+    pick("file_path") ?? pick("command") ?? pick("pattern") ??
+    pick("url") ?? pick("query") ?? pick("path") ??
+    pick("description") ?? pick("prompt") ?? ""
+  );
+}
+
+function clip(text: string, n = 200): string {
+  const t = text.trim().replace(/\s+/g, " ");
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
+}
+
+function toolResultText(content: ContentItem["content"]): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((c) => c.text ?? "").join(" ").trim();
+  }
+  return "";
 }
 
 /** Turn the raw stream-json into a story: what the agent did, step by step. */
 function narrateLog(raw: string): HTMLElement {
   const story = el("div", "story");
+  const delegated = new Set<string>(); // tool_use ids of sub-agent spawns
   for (const line of raw.split("\n")) {
     let record: StreamRecord;
     try {
@@ -633,13 +669,31 @@ function narrateLog(raw: string): HTMLElement {
           story.append(el("p", "story-say", item.text.trim()));
         } else if (item.type === "tool_use" && item.name) {
           const input = item.input ?? {};
-          const detail =
-            (input["file_path"] as string) ??
-            (input["command"] as string) ??
-            (input["pattern"] as string) ??
-            "";
-          const short = detail.length > 90 ? "…" + detail.slice(-88) : detail;
-          story.append(el("div", "story-act", `▸ ${item.name}  ${short}`));
+          if (SUBAGENT_TOOLS.has(item.name)) {
+            // A sub-agent spawn: make it prominent — this is a whole nested
+            // session. Show who it is and the mission it was given.
+            if (item.id) delegated.add(item.id);
+            const who = (input["subagent_type"] as string) ?? "sub-agent";
+            const mission = clip(
+              (input["description"] as string) ?? (input["prompt"] as string) ?? "", 240,
+            );
+            const block = el("div", "story-delegate");
+            block.append(el("div", "delegate-head", `🤖 delegated to ${who}`));
+            if (mission) block.append(el("div", "delegate-mission", mission));
+            story.append(block);
+          } else {
+            const short = clip(toolDetail(input), 90);
+            story.append(el("div", "story-act", `▸ ${item.name}  ${short}`));
+          }
+        }
+      }
+    } else if (record.type === "user" && record.message?.content) {
+      // A tool result. We surface only sub-agent results — the finished output
+      // of a nested session — since ordinary tool outputs are noise here.
+      for (const item of record.message.content) {
+        if (item.type === "tool_result" && item.tool_use_id && delegated.has(item.tool_use_id)) {
+          const text = clip(toolResultText(item.content), 400);
+          if (text) story.append(el("div", "story-subresult", `↳ ${text}`));
         }
       }
     } else if (record.type === "result" && record.result) {
