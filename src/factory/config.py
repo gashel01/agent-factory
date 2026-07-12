@@ -101,6 +101,10 @@ class Config:
     # task that keeps failing review does not silently burn the subscription: each
     # retry is a full agent run. A ticket can still override with its own max_retries.
     default_max_retries: int = 1
+    # Cost ceiling for the whole run, in API-equivalent USD (the number the CLI
+    # reports per agent). None = no cap. When cumulative spend crosses it, no new
+    # agents launch; in-flight ones finish. A visible, adjustable safety net.
+    budget_usd: float | None = None
     contract_path: Path | None = None
     agent: AgentConfig = field(default_factory=AgentConfig)
     setup: SetupConfig = field(default_factory=SetupConfig)
@@ -147,6 +151,7 @@ def load_config(path: Path | None) -> Config:
 
     repo = raw.get("repo_defaults", {}) or {}
     conc = raw.get("concurrency", {}) or {}
+    budget = raw.get("budget", {}) or {}
     agent = raw.get("agent", {}) or {}
     setup = raw.get("setup", {}) or {}
     verify = raw.get("verify", {}) or {}
@@ -160,6 +165,7 @@ def load_config(path: Path | None) -> Config:
         max_slots=int(conc.get("max_slots", 3)),
         stagger_seconds=float(conc.get("stagger_seconds", 20.0)),
         default_max_retries=int(conc.get("max_retries", 1)),
+        budget_usd=(float(budget["max_usd"]) if budget.get("max_usd") not in (None, "") else None),
         contract_path=Path(contract) if contract else None,
         agent=AgentConfig(
             command=_as_str_tuple(agent.get("command", "claude"), "agent.command"),

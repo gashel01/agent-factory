@@ -12,7 +12,7 @@ import json
 import re
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import AgentConfig
@@ -62,6 +62,34 @@ DEFAULT_CONTRACT = """\
 
 
 @dataclass(frozen=True)
+class Usage:
+    """What one agent consumed, read from the CLI's final result record.
+
+    cost_usd is the API-equivalent estimate the CLI reports even on subscription
+    auth — a useful budget proxy, not a real charge. Token counts are actual.
+    """
+
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+
+
+def extract_usage(record: dict | None) -> Usage:
+    if not record:
+        return Usage()
+    u = record.get("usage") or {}
+    return Usage(
+        cost_usd=float(record.get("total_cost_usd") or 0.0),
+        input_tokens=int(u.get("input_tokens") or 0),
+        output_tokens=int(u.get("output_tokens") or 0),
+        cache_read_tokens=int(u.get("cache_read_input_tokens") or 0),
+        cache_creation_tokens=int(u.get("cache_creation_input_tokens") or 0),
+    )
+
+
+@dataclass(frozen=True)
 class AgentResult:
     status: str  # done | blocked | error | timeout | ratelimit
     summary: str
@@ -69,6 +97,7 @@ class AgentResult:
     wall_s: float
     contract: dict | None
     session_id: str | None = None  # enables resume (answer blocked agents, redirects)
+    usage: Usage = field(default_factory=Usage)
 
 
 @dataclass(frozen=True)
@@ -230,25 +259,26 @@ async def run_agent(
     turns = out.result.get("num_turns") if out.result else None
     raw_session = out.result.get("session_id") if out.result else None
     session = str(raw_session) if raw_session else None
+    usage = extract_usage(out.result)
     rate_limited = out.stderr_rate_limited or (
         out.result is not None and is_rate_limit_result(out.result)
     )
     if rate_limited:
         return AgentResult(
-            "ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None, session
+            "ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None, session, usage
         )
     if out.returncode != 0 or out.result is None:
         summary = out.stderr_tail or f"agent exited {out.returncode} without a result"
-        return AgentResult("error", summary[:500], turns, out.wall_s, None, session)
+        return AgentResult("error", summary[:500], turns, out.wall_s, None, session, usage)
 
     contract_json = extract_trailing_json(str(out.result.get("result", "")))
     if contract_json is None:
         # No contract block (crash mid-answer, model drift): let the verify gate decide.
         return AgentResult(
-            "done", "no contract JSON in final message", turns, out.wall_s, None, session
+            "done", "no contract JSON in final message", turns, out.wall_s, None, session, usage
         )
     status = str(contract_json.get("status", "done"))
     summary = str(contract_json.get("summary", ""))[:500]
     if status not in ("done", "blocked"):
         status = "done"
-    return AgentResult(status, summary, turns, out.wall_s, contract_json, session)
+    return AgentResult(status, summary, turns, out.wall_s, contract_json, session, usage)

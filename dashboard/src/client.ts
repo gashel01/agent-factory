@@ -34,6 +34,8 @@ interface TaskModel {
   retries: number;
   runningSince: number | null; // epoch ms, for live timers
   finishedAt: string | null;
+  costUsd: number; // accumulates across retries
+  tokens: number; // input + output, accumulates across retries
 }
 
 interface Model {
@@ -46,6 +48,9 @@ interface Model {
   manualPause: boolean;
   tasks: Map<string, TaskModel>;
   feed: FactoryEvent[];
+  spentUsd: number; // run total, summed from agent results
+  budgetUsd: number | null; // cost ceiling, if one is set
+  budgetHit: boolean;
 }
 
 const FEED_LIMIT = 200;
@@ -61,6 +66,9 @@ function freshModel(run: string): Model {
     manualPause: false,
     tasks: new Map(),
     feed: [],
+    spentUsd: 0,
+    budgetUsd: null,
+    budgetHit: false,
   };
 }
 
@@ -79,6 +87,8 @@ function task(id: string): TaskModel {
       retries: 0,
       runningSince: null,
       finishedAt: null,
+      costUsd: 0,
+      tokens: 0,
     };
     model.tasks.set(id, entry);
   }
@@ -94,6 +104,7 @@ function reduce(event: FactoryEvent): void {
       const e = event as RunStartEvent;
       model.slots = e.slots;
       model.startedTs = e.ts;
+      model.budgetUsd = e.budget_usd ?? null;
       for (const t of e.tasks) {
         const id = typeof t === "string" ? t : t.id;
         const entry = task(id);
@@ -123,8 +134,15 @@ function reduce(event: FactoryEvent): void {
       entry.turns = e.turns;
       entry.wallS = e.wall_s;
       if (e.summary) entry.note = e.summary;
+      entry.costUsd += e.cost_usd ?? 0;
+      entry.tokens += (e.input_tokens ?? 0) + (e.output_tokens ?? 0);
+      // spent_usd is the authoritative cumulative total from the dispatcher.
+      if (typeof e.spent_usd === "number") model.spentUsd = e.spent_usd;
       break;
     }
+    case "budget_exceeded":
+      model.budgetHit = true;
+      break;
     case "verify": {
       const e = event as VerifyEvent;
       if (!e.ok) task(e.task).note = e.failures.join("; ");
@@ -195,6 +213,18 @@ function fmtDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   if (m < 90) return `${m}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
   return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function fmtUsd(v: number): string {
+  if (v === 0) return "$0";
+  if (v < 0.01) return "<$0.01";
+  return `$${v.toFixed(v < 10 ? 2 : v < 100 ? 1 : 0)}`;
+}
+
+function fmtTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 function ago(ts: string): string {
@@ -335,6 +365,13 @@ function headline(): { text: string; tone: string } {
 
   if (model.endedTs) {
     const queued = tasks.filter((t) => t.state === "QUEUED").length;
+    if (model.budgetHit) {
+      return {
+        text: `Stopped — budget reached (${fmtUsd(model.spentUsd)}). ` +
+          "Raise it in Settings, then run again to finish the rest.",
+        tone: "warning",
+      };
+    }
     if (model.stopped || queued > 0) {
       return {
         text: `Stopped — ${queued} task${queued > 1 ? "s" : ""} still waiting ` +
@@ -380,6 +417,32 @@ function progressBar(): HTMLElement {
   return bar;
 }
 
+function usageStrip(): HTMLElement | null {
+  const tasks = [...model.tasks.values()];
+  const spent = model.spentUsd || tasks.reduce((s, t) => s + t.costUsd, 0);
+  const tokens = tasks.reduce((s, t) => s + t.tokens, 0);
+  if (spent === 0 && model.budgetUsd === null) return null;
+
+  const strip = el("div", "usage-strip");
+  const left = el("div", "usage-left");
+  left.append(el("span", "usage-figure", fmtUsd(spent)));
+  left.append(el("span", "usage-label", `spent this run · ${fmtTokens(tokens)} tokens`));
+  strip.append(left);
+
+  if (model.budgetUsd !== null && model.budgetUsd > 0) {
+    const pct = Math.min(100, (spent / model.budgetUsd) * 100);
+    const right = el("div", "usage-right");
+    const barWrap = el("div", "budget-bar");
+    const fill = el("div", `budget-fill${pct >= 100 ? " over" : pct >= 80 ? " warn" : ""}`);
+    fill.style.width = `${pct}%`;
+    barWrap.append(fill);
+    right.append(barWrap);
+    right.append(el("div", "budget-cap", `${fmtUsd(spent)} / ${fmtUsd(model.budgetUsd)} budget`));
+    strip.append(right);
+  }
+  return strip;
+}
+
 function taskCard(t: TaskModel, kind: "attention" | "working" | "finished"): HTMLElement {
   const card = el("article", `card ${kind} state-${t.state.toLowerCase()}`);
 
@@ -404,6 +467,7 @@ function taskCard(t: TaskModel, kind: "attention" | "working" | "finished"): HTM
   const facts: string[] = [];
   if (t.turns !== null) facts.push(`${t.turns} steps`);
   if (t.wallS !== null && t.state !== "RUNNING") facts.push(fmtDuration(t.wallS));
+  if (t.costUsd > 0) facts.push(`${fmtUsd(t.costUsd)} · ${fmtTokens(t.tokens)} tok`);
   if (t.retries > 0) facts.push(`attempt ${t.retries + 1}`);
   if (facts.length) card.append(el("div", "card-facts", facts.join(" · ")));
 
@@ -504,6 +568,8 @@ function render(): void {
   header.append(controls);
   root.append(header);
   root.append(progressBar());
+  const strip = usageStrip();
+  if (strip) root.append(strip);
 
   /* zones, in the order a human scans them */
   const attention = tasks
@@ -542,6 +608,7 @@ function render(): void {
       const meta: string[] = [];
       if (t.turns !== null) meta.push(`${t.turns} steps`);
       if (t.wallS !== null) meta.push(fmtDuration(t.wallS));
+      if (t.costUsd > 0) meta.push(fmtUsd(t.costUsd));
       row.append(el("span", "done-meta", meta.join(" · ")));
       const more = btn("details", "link", () => void showLog(t.id, t.title));
       row.append(more);
@@ -851,6 +918,7 @@ interface Settings {
   reviewerModel: string;
   effort: string; // "" = the CLI's own default; otherwise low…ultracode
   maxRetries: number; // retries a failing ticket gets before FAILED
+  budgetUsd: string; // "" = no cap; otherwise a dollar figure
 }
 
 // Capped at High on purpose: xhigh/max/ultracode burn far more tokens. They stay
@@ -884,6 +952,7 @@ function parseSettings(content: string): Settings {
     reviewerModel: review.match(/model:\s*"?(\w+)"?/)?.[1] ?? "haiku",
     effort: content.match(/^\s*effort:\s*"?(\w+)"?/m)?.[1] ?? "",
     maxRetries: Number(content.match(/max_retries:\s*(\d+)/)?.[1] ?? 1),
+    budgetUsd: content.match(/max_usd:\s*([\d.]+)/)?.[1] ?? "",
   };
 }
 
@@ -913,6 +982,7 @@ function generateConfig(s: Settings): string {
     "  stagger_seconds: 15",
     `  max_retries: ${s.maxRetries}`,
     "",
+    ...(s.budgetUsd ? ["budget:", `  max_usd: ${s.budgetUsd}`, ""] : []),
     "agent:",
     "  command: claude",
     "  permission_mode: acceptEdits",
@@ -1040,6 +1110,23 @@ async function showSettings(): Promise<void> {
     "How hard each agent thinks. Higher digs deeper but is slower and spends more; " +
     "'Default' leaves it to Claude Code. Raise it for tricky tasks (charts, data, logic).",
     effortPick,
+  ));
+
+  /* run budget — a visible, adjustable cost ceiling */
+  const budgetInput = document.createElement("input");
+  budgetInput.type = "number";
+  budgetInput.min = "0";
+  budgetInput.step = "0.5";
+  budgetInput.className = "work-input slots";
+  budgetInput.placeholder = "none";
+  budgetInput.value = s.budgetUsd;
+  budgetInput.addEventListener("input", () => { s.budgetUsd = budgetInput.value.trim(); sync(); });
+  body.append(row(
+    "Run budget (USD)",
+    "Stop launching new agents once the run's estimated spend crosses this. " +
+    "In-flight agents finish; the rest waits. Leave empty for no cap. It's an " +
+    "API-equivalent estimate, not a real charge on a subscription.",
+    budgetInput,
   ));
 
   /* retries — the cost guard the user asked for */
