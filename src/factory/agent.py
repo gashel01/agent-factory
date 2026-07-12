@@ -20,6 +20,13 @@ from .task import Task
 
 RATE_LIMIT_RE = re.compile(r"rate.?limit|usage limit|overloaded|too many requests|\b429\b", re.I)
 
+# stream-json is newline-delimited, but a single record can carry a whole file's
+# contents (a Write tool call, a Read result) — a task emitting inline SVG charts
+# produces lines far past asyncio's default 64 KiB readline buffer, which then
+# raises "Separator is found, but chunk is longer than limit" and kills the task.
+# 64 MiB is a ceiling, not an allocation: only the actual line is held in memory.
+_STREAM_LIMIT = 64 * 1024 * 1024
+
 
 def is_rate_limit_result(record: dict) -> bool:
     """Structured rate-limit detection on the final result record ONLY.
@@ -100,6 +107,7 @@ async def stream_headless(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        limit=_STREAM_LIMIT,  # big stream-json records (inline SVG, file writes)
     )
 
     with log_path.open("w", encoding="utf-8", errors="replace") as log:

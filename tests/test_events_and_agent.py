@@ -59,3 +59,30 @@ def test_rate_limit_detection_is_structured_only():
     assert not is_rate_limit_result(
         {"type": "result", "is_error": True, "result": "some unrelated failure"}
     )
+
+
+def test_stream_headless_handles_oversized_line(tmp_path):
+    """A single stream-json record bigger than asyncio's default 64 KiB readline
+    buffer (e.g. a task writing inline SVG charts) used to raise
+    'Separator is found, but chunk is longer than limit' and kill the task.
+    Regression for the Stats-section failure on 2026-07-12.
+    """
+    import asyncio
+    import sys
+
+    from factory.agent import stream_headless
+
+    big_len = 300_000  # ~300 KB on one line, well past the old 64 KiB limit
+    # The child builds the huge line itself: passing it as an argv would blow the
+    # OS command-line length ceiling (WinError 206). Keep the argv tiny.
+    child = (
+        "import json,sys;"
+        f"big='S'*{big_len};"
+        "sys.stdout.write(json.dumps({'type':'result','num_turns':1,'result':big}))"
+    )
+    cmd = [sys.executable, "-c", child]
+
+    out = asyncio.run(stream_headless(cmd, "prompt", tmp_path, tmp_path / "log.jsonl", 30.0))
+
+    assert out.result is not None
+    assert out.result["result"] == "S" * big_len
