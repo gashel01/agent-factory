@@ -160,3 +160,25 @@ def test_interrupted_run_leaves_no_ghost(tmp_path, repo):
     assert dispatcher.state["001"].name == "FAILED"
     events = [e["event"] for e in EventLog.replay(run_dir / "events.jsonl")]
     assert events[-1] == "run_end"
+
+
+def test_budget_stops_the_run(tmp_path, repo):
+    """A cost ceiling halts new launches once cumulative spend crosses it; the
+    unspent tickets stay QUEUED for a later run. Each stub agent 'costs' $1."""
+    backlog = tmp_path / "backlog"
+    for i in range(3):
+        write_ticket(backlog, f"00{i}", repo, files_hint=f"[output_00{i}.txt]")
+    # slots=1 → strictly sequential, so the budget bites deterministically.
+    cfg = make_config(max_slots=1, budget_usd=1.5)
+    counts = run_dispatcher(cfg, backlog, tmp_path / "run")
+
+    events = list(EventLog.replay(tmp_path / "run" / "events.jsonl"))
+    kinds = [e["event"] for e in events]
+    assert "budget_exceeded" in kinds
+    # Two agents ran (spend 1.0 then 2.0 ≥ 1.5); the third never launched.
+    assert counts.get("DONE", 0) == 2
+    assert counts.get("QUEUED", 0) == 1
+    # Per-agent cost is recorded on the result events.
+    results = [e for e in events if e["event"] == "agent_result"]
+    assert all(r["cost_usd"] == 1.0 for r in results)
+    assert results[-1]["spent_usd"] == 2.0

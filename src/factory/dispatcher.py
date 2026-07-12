@@ -45,6 +45,7 @@ class Dispatcher:
         self._control_offset = 0
         self._next_launch_at = 0.0
         self._contract = self._load_contract()
+        self._spent_usd = 0.0  # cumulative API-equivalent cost across the run
 
     # ---------------------------------------------------------------- helpers
 
@@ -70,6 +71,22 @@ class Dispatcher:
             self._set_state(task, TaskState.QUEUED)
         else:
             self._fail(task, f"retries exhausted ({task.attempts - 1}): {reason}")
+
+    def _enforce_budget(self) -> None:
+        """Stop launching new agents once the run's cost ceiling is crossed.
+
+        In-flight agents finish (their work isn't wasted); queued work stays on
+        disk for a later run. The operator can raise the budget and re-run.
+        """
+        cap = self.cfg.budget_usd
+        if cap is not None and self._spent_usd >= cap and not self._stopped:
+            self._stopped = True
+            self.log.emit(
+                "budget_exceeded",
+                spent_usd=round(self._spent_usd, 4),
+                budget_usd=cap,
+            )
+            self.log.emit("stopped", reason=f"budget reached (${self._spent_usd:.2f} / ${cap:.2f})")
 
     def _trigger_pause(self) -> None:
         self._pause_count += 1
@@ -174,6 +191,7 @@ class Dispatcher:
             "run_start",
             run=self.run_id,
             slots=self.cfg.max_slots,
+            budget_usd=self.cfg.budget_usd,
             tasks=[{"id": t.id, "title": t.title} for t in self.tasks],
         )
         merger = asyncio.create_task(self._merge_worker())
@@ -305,6 +323,8 @@ class Dispatcher:
             result = await agent_mod.run_agent(
                 self.cfg.agent, task, wt.path, self._contract, log_path
             )
+            u = result.usage
+            self._spent_usd += u.cost_usd
             self.log.emit(
                 "agent_result",
                 task=task.id,
@@ -313,7 +333,13 @@ class Dispatcher:
                 wall_s=round(result.wall_s, 1),
                 summary=result.summary,
                 session_id=result.session_id,
+                cost_usd=round(u.cost_usd, 4),
+                input_tokens=u.input_tokens,
+                output_tokens=u.output_tokens,
+                cache_read_tokens=u.cache_read_tokens,
+                spent_usd=round(self._spent_usd, 4),
             )
+            self._enforce_budget()
 
             if result.status == "ratelimit":
                 await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)

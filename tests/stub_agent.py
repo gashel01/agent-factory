@@ -99,7 +99,11 @@ def main() -> int:
 
     contract = {"status": "done", "summary": f"completed {task_id}", "tests": "pass"}
     final = f"All done.\n{json.dumps(contract)}"
-    print(json.dumps({"type": "result", "num_turns": 3, "result": final}))
+    print(json.dumps({
+        "type": "result", "num_turns": 3, "result": final,
+        "total_cost_usd": 1.0,
+        "usage": {"input_tokens": 100, "output_tokens": 200, "cache_read_input_tokens": 50},
+    }))
     return 0
 
 

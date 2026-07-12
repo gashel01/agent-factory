@@ -21,6 +21,7 @@ export interface RunStartEvent extends BaseEvent {
   event: "run_start";
   run: string;
   slots: number;
+  budget_usd?: number | null;
   tasks: Array<{ id: string; title: string } | string>; // string form: pre-0.2 logs
 }
 
@@ -38,6 +39,17 @@ export interface AgentResultEvent extends BaseEvent {
   turns: number | null;
   wall_s: number;
   summary: string;
+  cost_usd?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  spent_usd?: number; // cumulative across the run at this point
+}
+
+export interface BudgetEvent extends BaseEvent {
+  event: "budget_exceeded";
+  spent_usd: number;
+  budget_usd: number;
 }
 
 export interface VerifyEvent extends BaseEvent {
@@ -88,4 +100,5 @@ export type FactoryEvent =
   | BlockedEvent
   | PausedEvent
   | RunEndEvent
+  | BudgetEvent
   | BaseEvent;
