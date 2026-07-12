@@ -296,6 +296,14 @@
   .settings-advanced { margin-top: 12px; }
   .settings-advanced summary { color: var(--muted); font-size: 12.5px; cursor: pointer; }
 
+  /* live preview modal */
+  .preview-panel { max-width: 620px; }
+  .preview-status { font-size: 14px; color: var(--ink); margin: 4px 0 12px; }
+  .preview-out {
+    max-height: 200px; overflow-y: auto; background: var(--plane);
+    border: 1px solid var(--hairline); border-radius: 10px; padding: 10px 12px; margin-top: 12px;
+  }
+
   /* toasts */
   #toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column;
     gap: 8px; z-index: 30; }

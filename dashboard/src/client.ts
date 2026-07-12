@@ -461,6 +461,7 @@ function render(): void {
   if (model.endedTs && tasks.some((t) => t.state === "QUEUED")) {
     controls.append(btn("▶ Run remaining", "primary", () => void quickRun()));
   }
+  controls.append(btn("🌐 View result", "ghost", () => void viewResult()));
   controls.append(btn("⚙ Settings", "ghost", () => void showSettings()));
   controls.append(btn("📁 Repo", "ghost", () => void showRepoExplorer()));
   controls.append(btn("💬 Supervisor", "ghost", () => void showSupervisor()));
@@ -1116,6 +1117,122 @@ async function showRepoExplorer(): Promise<void> {
 
   await loadBranches();
   await loadTree();
+}
+
+/* ------------------------- live preview ("View result") ------------------------- */
+
+interface PreviewStatus {
+  kind: "web" | "static" | "none";
+  state: "idle" | "starting" | "ready" | "error";
+  url: string | null;
+  output: string;
+}
+
+/** One click: figure out what the product is and open it in the browser. */
+async function viewResult(): Promise<void> {
+  const repo = repoPath();
+  if (!repo) {
+    toast("Set a repository path in the New work panel first.", true);
+    return;
+  }
+  let detected: { kind: PreviewStatus["kind"]; script?: string };
+  try {
+    detected = await fetchJSON(`/api/preview/detect?repo=${encodeURIComponent(repo)}`);
+  } catch (err) {
+    toast(String(err), true);
+    return;
+  }
+  if (detected.kind === "none") {
+    // Not a web app — the "result" is the code itself. Show the files instead.
+    toast("Not a web project — opening the files instead.");
+    void showRepoExplorer();
+    return;
+  }
+  try {
+    await fetchJSON("/api/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repo }),
+    });
+  } catch (err) {
+    toast(String(err), true);
+    return;
+  }
+  showPreviewModal(detected.kind);
+}
+
+function showPreviewModal(kind: PreviewStatus["kind"]): void {
+  const overlay = el("div", "overlay");
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const close = (): void => {
+    if (timer) clearInterval(timer);
+    overlay.remove();
+  };
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  const panel = el("div", "log-panel preview-panel");
+  const head = el("div", "log-head");
+  head.append(el("h3", "", "Live preview"));
+  head.append(btn("✕", "ghost close", close));
+  panel.append(head);
+  const status = el("div", "preview-status",
+    kind === "web"
+      ? "Booting the dev server… first start can take a moment while it installs and compiles."
+      : "Serving the site…");
+  const actions = el("div", "card-actions");
+  const out = el("pre", "log-pre preview-out");
+  out.style.display = "none";
+  panel.append(status, actions, out);
+  overlay.append(panel);
+  document.body.append(overlay);
+
+  let opened = false;
+  timer = setInterval(async () => {
+    let p: PreviewStatus;
+    try {
+      p = await fetchJSON<PreviewStatus>("/api/preview");
+    } catch {
+      return;
+    }
+    if (p.output.trim()) {
+      out.style.display = "block";
+      out.textContent = p.output.slice(-1500);
+      out.scrollTop = out.scrollHeight;
+    }
+    if (p.state === "ready" && p.url) {
+      const url = p.url;
+      status.textContent = `Ready — the site is live at ${url}`;
+      actions.replaceChildren(
+        btn("▸ Open the site", "primary", () => window.open(url, "_blank")),
+        confirmButton("Stop the preview server", "Sure? Click again", async () => {
+          try {
+            await fetchJSON("/api/preview/stop", { method: "POST" });
+            toast("Preview server stopped.");
+          } catch (err) {
+            toast(String(err), true);
+          }
+          close();
+        }),
+      );
+      // Try to auto-open once; popup blockers may swallow it, hence the button.
+      if (!opened) {
+        opened = true;
+        window.open(url, "_blank");
+      }
+      if (timer) clearInterval(timer);
+      timer = null;
+    } else if (p.state === "error") {
+      status.textContent = "Could not start the preview — see the output below.";
+      out.style.display = "block";
+      if (timer) clearInterval(timer);
+      timer = null;
+    } else if (p.state === "idle") {
+      status.textContent = "The preview server stopped.";
+      if (timer) clearInterval(timer);
+      timer = null;
+    }
+  }, 1500);
 }
 
 /* ------------------------- supervisor chat ------------------------- */

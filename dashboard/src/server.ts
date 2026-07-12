@@ -12,7 +12,7 @@
  * size+offset (fs.watch is unreliable for appends on Windows network/temp paths).
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import {
   appendFileSync,
   createReadStream,
@@ -24,8 +24,13 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface Options {
@@ -129,11 +134,29 @@ interface Job {
   output: string;
 }
 
+/**
+ * A live preview of the built product. One per workspace: starting a new one
+ * stops the old. `web` runs the repo's own dev server (npm run dev|start|…) and
+ * scrapes the localhost URL it prints; `static` serves a plain index.html tree
+ * ourselves on an ephemeral port. The browser tab is opened by the CLIENT (it
+ * already runs in a browser) — the server only hands back the URL.
+ */
+interface Preview {
+  kind: "web" | "static" | "none";
+  state: "idle" | "starting" | "ready" | "error";
+  url: string | null;
+  output: string;
+  repo: string | null;
+  proc: ChildProcess | null;
+  server: Server | null;
+}
+
 interface Workspace {
   name: string;
   workdir: string;
   tailer: RunTailer;
   jobs: { plan: Job; run: Job; chat: Job; doctor: Job };
+  preview: Preview;
 }
 
 const SAFE_WS = /^[\w][\w .-]{0,40}$/;
@@ -173,6 +196,7 @@ class Registry {
         chat: { state: "idle", output: "" },
         doctor: { state: "idle", output: "" },
       },
+      preview: { kind: "none", state: "idle", url: null, output: "", repo: null, proc: null, server: null },
     };
     this.workspaces.set(name, ws);
     return ws;
@@ -230,6 +254,219 @@ function runCmd(cmd: string, args: string[], cwd: string): Promise<{ code: numbe
     child.on("error", (err) => resolvePromise({ code: -1, output: String(err) }));
     child.on("exit", (code) => resolvePromise({ code: code ?? -1, output }));
   });
+}
+
+/* ------------------------------ live preview ------------------------------ */
+
+/** What can we open in a browser for this repo, and how? */
+function detectPreview(repo: string): { kind: Preview["kind"]; script?: string } {
+  const pkgPath = join(repo, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { scripts?: Record<string, string> };
+      const scripts = pkg.scripts ?? {};
+      // A dev server first (hot reload); a plain start/serve otherwise.
+      for (const name of ["dev", "start", "serve", "preview"]) {
+        if (typeof scripts[name] === "string") return { kind: "web", script: name };
+      }
+    } catch {
+      // malformed package.json — fall through to the static check
+    }
+  }
+  for (const idx of ["index.html", "public/index.html", "dist/index.html", "build/index.html"]) {
+    if (existsSync(join(repo, idx))) return { kind: "static" };
+  }
+  return { kind: "none" };
+}
+
+/** Kill a child and everything it spawned (npm → node → …). */
+function killTree(child: ChildProcess): void {
+  if (child.pid === undefined) return;
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+  } else {
+    try {
+      process.kill(-child.pid, "SIGTERM"); // negative pid → the process group
+    } catch {
+      child.kill("SIGTERM");
+    }
+  }
+}
+
+function stopPreview(ws: Workspace): void {
+  if (ws.preview.proc) {
+    killTree(ws.preview.proc);
+    ws.preview.proc = null;
+  }
+  if (ws.preview.server) {
+    try {
+      ws.preview.server.close();
+    } catch {
+      /* already closing */
+    }
+    ws.preview.server = null;
+  }
+  ws.preview.state = "idle";
+  ws.preview.url = null;
+}
+
+// First localhost URL a dev server prints — how we learn which port it chose.
+const LOCAL_URL = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d{2,5})?\/?\S*/i;
+
+// npm is npm.cmd on Windows; a .cmd needs a shell to launch. The commands are
+// fixed and any script name is one of our four hard-coded values, so no user
+// text reaches the shell.
+function npmSpawn(repo: string, args: string[]): ChildProcess {
+  const isWin = process.platform === "win32";
+  return spawn(isWin ? "npm.cmd" : "npm", args, {
+    cwd: repo,
+    shell: isWin,
+    windowsHide: true,
+    detached: !isWin, // its own process group on POSIX, so killTree gets the tree
+    // BROWSER=none stops CRA/others from opening a browser on the server host —
+    // the operator's own browser opens the tab instead.
+    env: { ...process.env, BROWSER: "none", FORCE_COLOR: "0", NO_COLOR: "1" },
+  });
+}
+
+/**
+ * A freshly-merged repo has no node_modules at its root (agents installed inside
+ * their worktrees), so a dev server would fail with "vite: not found". Install
+ * first when they're missing, then boot.
+ */
+function startWebPreview(ws: Workspace, repo: string, script: string): void {
+  if (existsSync(join(repo, "node_modules"))) {
+    spawnDevServer(ws, repo, script);
+    return;
+  }
+  ws.preview.output = "Installing dependencies (first preview only)…\n";
+  const install = npmSpawn(repo, ["install"]);
+  ws.preview.proc = install;
+  const onData = (chunk: Buffer): void => {
+    ws.preview.output = (ws.preview.output + chunk.toString("utf-8")).slice(-8000);
+  };
+  install.stdout?.on("data", onData);
+  install.stderr?.on("data", onData);
+  install.on("error", (err) => {
+    ws.preview.state = "error";
+    ws.preview.output += `\n${String(err)}`;
+  });
+  install.on("exit", (code) => {
+    ws.preview.proc = null;
+    if (ws.preview.state !== "starting") return; // stopped by the operator
+    if (code === 0) {
+      spawnDevServer(ws, repo, script);
+    } else {
+      ws.preview.state = "error";
+      ws.preview.output += `\n(dependency install failed with code ${code})`;
+    }
+  });
+}
+
+function spawnDevServer(ws: Workspace, repo: string, script: string): void {
+  const child = npmSpawn(repo, ["run", script]);
+  ws.preview.proc = child;
+  const onData = (chunk: Buffer): void => {
+    ws.preview.output = (ws.preview.output + chunk.toString("utf-8")).slice(-8000);
+    if (ws.preview.state === "starting") {
+      const match = ws.preview.output.match(LOCAL_URL);
+      if (match) {
+        ws.preview.url = match[0].replace("0.0.0.0", "localhost").replace(/\/$/, "");
+        ws.preview.state = "ready";
+      }
+    }
+  };
+  child.stdout?.on("data", onData);
+  child.stderr?.on("data", onData);
+  child.on("error", (err) => {
+    ws.preview.state = "error";
+    ws.preview.output += `\n${String(err)}`;
+  });
+  child.on("exit", (code) => {
+    if (ws.preview.state === "starting") {
+      ws.preview.state = "error";
+      ws.preview.output += `\n(the dev server exited with code ${code} before serving a page)`;
+    } else if (ws.preview.state === "ready") {
+      ws.preview.state = "idle"; // it was killed (Stop) or crashed after serving
+      ws.preview.url = null;
+    }
+    ws.preview.proc = null;
+  });
+}
+
+const MIME: Record<string, string> = {
+  ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
+  ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".ico": "image/x-icon", ".webp": "image/webp", ".woff": "font/woff", ".woff2": "font/woff2",
+  ".ttf": "font/ttf", ".map": "application/json", ".txt": "text/plain", ".wasm": "application/wasm",
+};
+
+function serveStatic(root: string, req: IncomingMessage, res: ServerResponse): void {
+  try {
+    let pathname = decodeURIComponent(new URL(req.url ?? "/", "http://localhost").pathname);
+    if (pathname.endsWith("/")) pathname += "index.html";
+    const filePath = resolve(join(root, pathname));
+    if (filePath !== resolve(root) && !filePath.startsWith(resolve(root) + sep)) {
+      res.writeHead(403).end("forbidden");
+      return;
+    }
+    const serveFile = (file: string): void => {
+      res.writeHead(200, { "content-type": MIME[extname(file).toLowerCase()] ?? "application/octet-stream" });
+      createReadStream(file).pipe(res);
+    };
+    if (existsSync(filePath) && statSync(filePath).isFile()) {
+      serveFile(filePath);
+      return;
+    }
+    // SPA fallback: unknown paths render index.html so client routing works.
+    const index = join(root, "index.html");
+    if (existsSync(index)) {
+      serveFile(index);
+      return;
+    }
+    res.writeHead(404).end("not found");
+  } catch {
+    res.writeHead(500).end("error");
+  }
+}
+
+function startStaticServer(ws: Workspace, repo: string): void {
+  const root = existsSync(join(repo, "index.html")) ? repo
+    : existsSync(join(repo, "public", "index.html")) ? join(repo, "public")
+    : existsSync(join(repo, "dist", "index.html")) ? join(repo, "dist")
+    : join(repo, "build");
+  const srv = createServer((req, res) => serveStatic(root, req, res));
+  srv.on("error", (err) => {
+    ws.preview.state = "error";
+    ws.preview.output += `\n${String(err)}`;
+  });
+  srv.listen(0, "127.0.0.1", () => {
+    const addr = srv.address();
+    const port = addr && typeof addr === "object" ? addr.port : 0;
+    ws.preview.url = `http://localhost:${port}`;
+    ws.preview.state = "ready";
+    ws.preview.output = `serving ${root}`;
+  });
+  ws.preview.server = srv;
+}
+
+function startPreview(ws: Workspace, repo: string): Preview["kind"] {
+  stopPreview(ws); // one preview per workspace
+  const detected = detectPreview(repo);
+  ws.preview = {
+    kind: detected.kind, state: "starting", url: null, output: "", repo, proc: null, server: null,
+  };
+  if (detected.kind === "web" && detected.script) {
+    startWebPreview(ws, repo, detected.script);
+  } else if (detected.kind === "static") {
+    startStaticServer(ws, repo);
+  } else {
+    ws.preview.state = "error";
+    ws.preview.output =
+      "No web dev script (dev/start/serve/preview) and no index.html — nothing to open in a browser.";
+  }
+  return detected.kind;
 }
 
 const BOOTSTRAP_GITIGNORE = [
@@ -629,6 +866,44 @@ function main(): void {
       } catch (err) {
         json(res, 400, { ok: false, error: String(err) });
       }
+      return;
+    }
+
+    /* ---------------- live preview of the built product ---------------- */
+
+    if (url.pathname === "/api/preview/detect" && req.method === "GET") {
+      const repo = resolve(url.searchParams.get("repo") ?? "");
+      if (!repo || !existsSync(repo)) {
+        json(res, 400, { ok: false, error: "repo path does not exist" });
+        return;
+      }
+      json(res, 200, detectPreview(repo));
+      return;
+    }
+    if (url.pathname === "/api/preview" && req.method === "GET") {
+      json(res, 200, {
+        kind: ws.preview.kind,
+        state: ws.preview.state,
+        url: ws.preview.url,
+        output: ws.preview.output.slice(-2000),
+      });
+      return;
+    }
+    if (url.pathname === "/api/preview" && req.method === "POST") {
+      try {
+        const { repo } = JSON.parse(await readBody(req)) as { repo?: string };
+        const dir = resolve(repo ?? "");
+        if (!dir || !existsSync(dir)) throw new Error("repo path does not exist");
+        const kind = startPreview(ws, dir);
+        json(res, 200, { ok: true, kind });
+      } catch (err) {
+        json(res, 400, { ok: false, error: String(err) });
+      }
+      return;
+    }
+    if (url.pathname === "/api/preview/stop" && req.method === "POST") {
+      stopPreview(ws);
+      json(res, 200, { ok: true });
       return;
     }
 
