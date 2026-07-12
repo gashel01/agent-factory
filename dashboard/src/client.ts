@@ -421,7 +421,9 @@ function taskCard(t: TaskModel, kind: "attention" | "working" | "finished"): HTM
   if (t.state === "RUNNING" && live) {
     actions.append(confirmButton("Stop this agent", "Sure? Click again", () => void sendControl("kill", t.id)));
   }
-  actions.append(btn("What did it do?", "ghost", () => void showLog(t.id, t.title)));
+  const watching = inFlight(t.state);
+  actions.append(btn(watching ? "👁 Watch live" : "What did it do?",
+    watching ? "primary" : "ghost", () => void showLog(t.id, t.title)));
   card.append(actions);
 
   return card;
@@ -653,37 +655,85 @@ function narrateLog(raw: string): HTMLElement {
   return story;
 }
 
+const IN_FLIGHT: TaskState[] = ["RUNNING", "VERIFYING", "REVIEWING", "MERGING", "MERGE_QUEUED"];
+function inFlight(state: TaskState | undefined): boolean {
+  return state !== undefined && IN_FLIGHT.includes(state);
+}
+
+/**
+ * Window into one ticket's Claude session. While the agent is still working it
+ * FOLLOWS live — polling the growing stream and re-narrating, auto-scrolling to
+ * the newest step — so the run stops feeling opaque. Stops on its own when the
+ * ticket reaches a terminal state or the panel is closed.
+ */
 async function showLog(taskId: string, title: string): Promise<void> {
   const overlay = el("div", "overlay");
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const close = (): void => {
+    if (timer) clearInterval(timer);
+    overlay.remove();
+  };
   overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) overlay.remove();
+    if (e.target === overlay) close();
   });
   const panel = el("div", "log-panel");
   const head = el("div", "log-head");
-  head.append(el("h3", "", title));
-  head.append(btn("✕", "ghost close", () => overlay.remove()));
+  const titleWrap = el("div", "log-title");
+  titleWrap.append(el("h3", "", title));
+  const liveTag = el("span", "live-tag", "● live");
+  liveTag.style.display = "none";
+  titleWrap.append(liveTag);
+  head.append(titleWrap);
+  head.append(btn("✕", "ghost close", close));
   panel.append(head);
   const bodyHost = el("div", "log-body", "loading…");
   panel.append(bodyHost);
+
+  const foot = el("div", "log-foot");
+  let rawMode = false;
+  const rawToggle = btn("Show raw log", "link", () => {
+    rawMode = !rawMode;
+    (rawToggle as HTMLButtonElement).textContent = rawMode ? "Show as story" : "Show raw log";
+    void refresh();
+  }) as HTMLButtonElement;
+  foot.append(rawToggle);
+  panel.append(foot);
   overlay.append(panel);
   document.body.append(overlay);
 
-  const res = await fetch(api(`/api/log?task=${encodeURIComponent(taskId)}`));
-  if (!res.ok) {
-    bodyHost.textContent = "Nothing recorded for this task yet.";
-    return;
+  let hasContent = false;
+  async function refresh(): Promise<void> {
+    let raw: string;
+    try {
+      const res = await fetch(api(`/api/log?task=${encodeURIComponent(taskId)}`));
+      if (!res.ok) {
+        if (!hasContent) bodyHost.textContent = "Nothing recorded for this task yet.";
+        return;
+      }
+      raw = await res.text();
+    } catch {
+      return; // transient — keep what's on screen, next tick retries
+    }
+    hasContent = true;
+    // Stay pinned to the newest step unless the reader scrolled up to look back.
+    const stick = bodyHost.scrollHeight - bodyHost.scrollTop - bodyHost.clientHeight < 60;
+    bodyHost.replaceChildren(rawMode ? el("pre", "log-pre", raw) : narrateLog(raw));
+    if (stick) bodyHost.scrollTop = bodyHost.scrollHeight;
   }
-  const raw = await res.text();
-  bodyHost.replaceChildren(narrateLog(raw));
-  const foot = el("div", "log-foot");
-  foot.append(
-    btn("Show raw log", "link", () => {
-      const pre = el("pre", "log-pre", raw);
-      bodyHost.replaceChildren(pre);
-      foot.remove();
-    }),
-  );
-  panel.append(foot);
+
+  await refresh();
+
+  if (inFlight(model.tasks.get(taskId)?.state)) {
+    liveTag.style.display = "";
+    timer = setInterval(async () => {
+      await refresh();
+      if (!inFlight(model.tasks.get(taskId)?.state)) {
+        liveTag.style.display = "none";
+        if (timer) clearInterval(timer);
+        timer = null;
+      }
+    }, 1500);
+  }
 }
 
 /* ------------------------ New work: plan → edit → run ------------------------ */
