@@ -99,7 +99,7 @@ def _norm(hint: str) -> str:
     return hint.replace("\\", "/").strip("/").lower() + "/"
 
 
-def parse_ticket(path: Path, default_base_branch: str) -> Task:
+def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int = 2) -> Task:
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---"):
         raise TicketError(f"{path.name}: missing YAML front matter (file must start with '---')")
@@ -144,7 +144,7 @@ def parse_ticket(path: Path, default_base_branch: str) -> Task:
         files_hint=_str_tuple("files_hint"),
         depends_on=tuple(str(d) for d in (meta.get("depends_on") or [])),
         priority=int(meta.get("priority", 5)),
-        max_retries=int(meta.get("max_retries", 2)),
+        max_retries=int(meta.get("max_retries", default_max_retries)),
         budget=Budget(
             timeout_min=int(budget_raw.get("timeout_min", 30)),
             max_turns=int(budget_raw.get("max_turns", 50)),
@@ -167,11 +167,14 @@ def archived_ids(backlog_dir: Path) -> set[str]:
     return ids
 
 
-def load_backlog(backlog_dir: Path, default_base_branch: str) -> list[Task]:
+def load_backlog(
+    backlog_dir: Path, default_base_branch: str, default_max_retries: int = 2
+) -> list[Task]:
     if not backlog_dir.is_dir():
         raise TicketError(f"backlog directory not found: {backlog_dir}")
     tasks = [
-        parse_ticket(p, default_base_branch) for p in sorted(backlog_dir.glob("*.md"))
+        parse_ticket(p, default_base_branch, default_max_retries)
+        for p in sorted(backlog_dir.glob("*.md"))
     ]
     if not tasks:
         raise TicketError(f"no *.md tickets found in {backlog_dir}")

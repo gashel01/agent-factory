@@ -97,6 +97,10 @@ class Config:
     # The rate-limit handler is the actual safety net, not this number.
     max_slots: int = 3
     stagger_seconds: float = 20.0
+    # Retries a failing ticket gets before it is marked FAILED. Low by default so a
+    # task that keeps failing review does not silently burn the subscription: each
+    # retry is a full agent run. A ticket can still override with its own max_retries.
+    default_max_retries: int = 1
     contract_path: Path | None = None
     agent: AgentConfig = field(default_factory=AgentConfig)
     setup: SetupConfig = field(default_factory=SetupConfig)
@@ -155,6 +159,7 @@ def load_config(path: Path | None) -> Config:
         base_branch=str(repo.get("base_branch", "main")),
         max_slots=int(conc.get("max_slots", 3)),
         stagger_seconds=float(conc.get("stagger_seconds", 20.0)),
+        default_max_retries=int(conc.get("max_retries", 1)),
         contract_path=Path(contract) if contract else None,
         agent=AgentConfig(
             command=_as_str_tuple(agent.get("command", "claude"), "agent.command"),

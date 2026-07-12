@@ -46,7 +46,7 @@ def _replay_states(run_dir: Path) -> tuple[dict[str, str], dict]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = load_config(args.config).with_overrides(max_slots=args.slots)
-    tasks = load_backlog(args.backlog, cfg.base_branch)
+    tasks = load_backlog(args.backlog, cfg.base_branch, cfg.default_max_retries)
 
     if args.dry_run:
         print(f"{len(tasks)} ticket(s) parsed, slots={cfg.max_slots}")

@@ -42,3 +42,15 @@ def test_build_command_includes_effort_flag(tmp_path, repo):
 
     # No effort configured → the flag is absent (the CLI keeps its own default).
     assert "--effort" not in build_command(AgentConfig(), task)
+
+
+def test_default_max_retries_applies_to_tickets(tmp_path, repo):
+    from factory.task import load_backlog
+
+    cfg = _write_config(tmp_path, "concurrency:\n  max_retries: 0\n")
+    assert cfg.default_max_retries == 0
+
+    backlog = tmp_path / "backlog"
+    write_ticket(backlog, "001", repo)  # no per-ticket max_retries
+    task = load_backlog(backlog, "main", cfg.default_max_retries)[0]
+    assert task.max_retries == 0
