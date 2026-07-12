@@ -268,6 +268,75 @@ function TaskCard(
   );
 }
 
+/* --------------------------------- kanban --------------------------------- */
+
+const COLUMNS: Array<{ key: string; title: string; states: TaskState[]; tone: string }> = [
+  { key: "queued", title: "Up next", states: ["QUEUED"], tone: "neutral" },
+  { key: "working", title: "Working", states: ["RUNNING"], tone: "accent" },
+  { key: "checking", title: "Checking", states: ["VERIFYING", "REVIEWING"], tone: "accent" },
+  { key: "merging", title: "Merging", states: ["MERGE_QUEUED", "MERGING"], tone: "accent" },
+  { key: "done", title: "Merged", states: ["DONE"], tone: "good" },
+  { key: "attention", title: "Needs you", states: ["FAILED", "BLOCKED"], tone: "critical" },
+];
+
+function KanbanCard(
+  { t, live, now, onLog }: { t: TaskModel; live: boolean; now: number; onLog: () => void },
+): JSX.Element {
+  const meta: string[] = [];
+  if (t.state === "RUNNING" && t.runningSince) meta.push(fmtDuration((now - t.runningSince) / 1000));
+  else if (t.wallS !== null) meta.push(fmtDuration(t.wallS));
+  if (t.costUsd > 0) meta.push(fmtUsd(t.costUsd));
+  if (t.retries > 0) meta.push(`try ${t.retries + 1}`);
+  const attention = t.state === "FAILED" || t.state === "BLOCKED";
+  return (
+    <div className={`kcard state-${t.state.toLowerCase()}`} onClick={onLog} title="Open its history">
+      <div className="kcard-head">
+        <span className="kcard-id">{t.id}</span>
+        <span className="kcard-icon">{STATE_ICON[t.state]}</span>
+      </div>
+      <div className="kcard-title">{t.title}</div>
+      {t.note && attention && <div className="kcard-note">{t.note}</div>}
+      {meta.length > 0 && <div className="kcard-meta">{meta.join(" · ")}</div>}
+      <div className="kcard-actions" onClick={(e) => e.stopPropagation()}>
+        {attention && (live
+          ? <button className="btn link" onClick={() => void sendControl("retry", t.id)}>↻ retry</button>
+          : <button className="btn link" onClick={() => void quickRun()}>▶ run again</button>)}
+        {t.state === "RUNNING" && live && (
+          <button className="btn link" onClick={() => void sendControl("kill", t.id)}>■ stop</button>
+        )}
+        <button className="btn link" onClick={onLog}>{inFlight(t.state) ? "👁 watch" : "history"}</button>
+      </div>
+    </div>
+  );
+}
+
+function Kanban(
+  { tasks, live, now, onLog }:
+  { tasks: TaskModel[]; live: boolean; now: number; onLog: (t: TaskModel) => void },
+): JSX.Element {
+  const byState = (states: TaskState[]) => tasks.filter((t) => states.includes(t.state));
+  return (
+    <div className="kanban">
+      {COLUMNS.map((col) => {
+        const items = byState(col.states);
+        return (
+          <div key={col.key} className={`kcol tone-${col.tone}`}>
+            <div className="kcol-head">
+              <span className="kcol-title">{col.title}</span>
+              <span className="kcol-count">{items.length}</span>
+            </div>
+            <div className="kcol-body">
+              {items.length === 0
+                ? <div className="kcol-empty">—</div>
+                : items.map((t) => <KanbanCard key={t.id} t={t} live={live} now={now} onLog={() => onLog(t)} />)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Zone({ title, cls, children }: { title: string; cls: string; children: ReactNode }): JSX.Element {
   return (
     <section className={`zone ${cls}`}>
@@ -283,6 +352,14 @@ function App(): JSX.Element {
   const [ws, setWsState] = useState(getWs());
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [modal, setModal] = useState<ModalState>(null);
+  const [view, setViewState] = useState<"kanban" | "focus">(() => {
+    try { return (localStorage.getItem("factory.view") as "kanban" | "focus") || "kanban"; }
+    catch { return "kanban"; }
+  });
+  const setView = (v: "kanban" | "focus"): void => {
+    setViewState(v);
+    try { localStorage.setItem("factory.view", v); } catch { /* */ }
+  };
   const [model, tick] = useEventStream(ws);
   const runActive = useRunActive(tick);
   const anyRunning = [...model.tasks.values()].some((t) => t.runningSince !== null);
@@ -317,6 +394,10 @@ function App(): JSX.Element {
           </div>
         </div>
         <div className="topbar-controls">
+          <div className="view-toggle">
+            <button className={`btn seg${view === "kanban" ? " on" : ""}`} onClick={() => setView("kanban")}>Kanban</button>
+            <button className={`btn seg${view === "focus" ? " on" : ""}`} onClick={() => setView("focus")}>Focus</button>
+          </div>
           {workspaces.length > 0 && (
             <select className="picker" value={ws}
               onChange={(e) => {
@@ -347,42 +428,50 @@ function App(): JSX.Element {
       <Progress tasks={tasks} />
       <UsageStrip model={model} />
 
-      {attention.length > 0 && (
-        <Zone title="Needs you" cls="attention">
-          {attention.map((t) => <TaskCard key={t.id} t={t} kind="attention" live={live} now={now} onLog={() => openLog(t)} />)}
-        </Zone>
-      )}
-      {working.length > 0 && (
-        <Zone title="Working now" cls="working">
-          {working.map((t) => <TaskCard key={t.id} t={t} kind="working" live={live} now={now} onLog={() => openLog(t)} />)}
-        </Zone>
-      )}
-      {queued.length > 0 && (
-        <section className="zone waiting">
-          <h2>Up next ({queued.length})</h2>
-          <div className="chip-row">{queued.map((t) => <span key={t.id} className="queue-chip">{t.title}</span>)}</div>
-        </section>
-      )}
-      {done.length > 0 && (
-        <section className="zone finished">
-          <h2>Merged ({done.length})</h2>
-          <div className="done-list">
-            {done.map((t) => {
-              const meta: string[] = [];
-              if (t.turns !== null) meta.push(`${t.turns} steps`);
-              if (t.wallS !== null) meta.push(fmtDuration(t.wallS));
-              if (t.costUsd > 0) meta.push(fmtUsd(t.costUsd));
-              return (
-                <div key={t.id} className="done-row">
-                  <span className="done-check">✓</span>
-                  <span className="done-title">{t.title}</span>
-                  <span className="done-meta">{meta.join(" · ")}</span>
-                  <button className="btn link" onClick={() => openLog(t)}>details</button>
-                </div>
-              );
-            })}
-          </div>
-        </section>
+      {tasks.length === 0 ? (
+        <div className="empty-state">No tickets yet. Use “＋ New work” to draft some with AI.</div>
+      ) : view === "kanban" ? (
+        <Kanban tasks={tasks} live={live} now={now} onLog={openLog} />
+      ) : (
+        <>
+          {attention.length > 0 && (
+            <Zone title="Needs you" cls="attention">
+              {attention.map((t) => <TaskCard key={t.id} t={t} kind="attention" live={live} now={now} onLog={() => openLog(t)} />)}
+            </Zone>
+          )}
+          {working.length > 0 && (
+            <Zone title="Working now" cls="working">
+              {working.map((t) => <TaskCard key={t.id} t={t} kind="working" live={live} now={now} onLog={() => openLog(t)} />)}
+            </Zone>
+          )}
+          {queued.length > 0 && (
+            <section className="zone waiting">
+              <h2>Up next ({queued.length})</h2>
+              <div className="chip-row">{queued.map((t) => <span key={t.id} className="queue-chip">{t.title}</span>)}</div>
+            </section>
+          )}
+          {done.length > 0 && (
+            <section className="zone finished">
+              <h2>Merged ({done.length})</h2>
+              <div className="done-list">
+                {done.map((t) => {
+                  const meta: string[] = [];
+                  if (t.turns !== null) meta.push(`${t.turns} steps`);
+                  if (t.wallS !== null) meta.push(fmtDuration(t.wallS));
+                  if (t.costUsd > 0) meta.push(fmtUsd(t.costUsd));
+                  return (
+                    <div key={t.id} className="done-row">
+                      <span className="done-check">✓</span>
+                      <span className="done-title">{t.title}</span>
+                      <span className="done-meta">{meta.join(" · ")}</span>
+                      <button className="btn link" onClick={() => openLog(t)}>details</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+        </>
       )}
 
       <details className="timeline">

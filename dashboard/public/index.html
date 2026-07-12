@@ -143,6 +143,50 @@
     .budget-fill.over { background: var(--critical); }
     .budget-cap { font-size: 12px; color: var(--muted); }
 
+    /* ------------------------------- view toggle ------------------------------- */
+    .view-toggle { display: inline-flex; background: var(--plane); border: 1px solid var(--border); border-radius: 999px; padding: 2px; }
+    .btn.seg { padding: 6px 14px; border-radius: 999px; color: var(--muted); border: none; }
+    .btn.seg:hover { background: transparent; color: var(--ink-2); }
+    .btn.seg.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+
+    /* ------------------------------- kanban ------------------------------- */
+    /* full-bleed: a proper board uses the whole window, not the 1080 column */
+    .kanban {
+      width: 100vw; margin-left: calc(50% - 50vw); padding: 0 24px 10px;
+      display: grid; grid-auto-flow: column; grid-auto-columns: minmax(210px, 1fr);
+      gap: 12px; overflow-x: auto;
+    }
+    .kcol { background: var(--plane); border: 1px solid var(--hairline); border-radius: var(--radius); display: flex; flex-direction: column; min-height: 120px; }
+    .kcol-head { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border-bottom: 1px solid var(--hairline); position: sticky; top: 0; }
+    .kcol-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .kcol-count { font-size: 11px; font-weight: 700; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; min-width: 20px; text-align: center; padding: 1px 6px; }
+    .kcol.tone-accent .kcol-head { box-shadow: inset 3px 0 0 var(--accent); }
+    .kcol.tone-good .kcol-head { box-shadow: inset 3px 0 0 var(--good); }
+    .kcol.tone-critical .kcol-head { box-shadow: inset 3px 0 0 var(--critical); }
+    .kcol-body { display: flex; flex-direction: column; gap: 8px; padding: 10px; flex: 1; }
+    .kcol-empty { color: var(--muted); text-align: center; font-size: 13px; padding: 14px 0; opacity: .5; }
+    .kcard {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 11px; padding: 11px 12px;
+      cursor: pointer; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 6px;
+      transition: transform .08s, border-color .12s; position: relative; overflow: hidden;
+    }
+    .kcard:hover { transform: translateY(-1px); border-color: var(--accent); }
+    .kcard::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: transparent; }
+    .kcard.state-running::before { background: var(--accent); }
+    .kcard.state-verifying::before, .kcard.state-reviewing::before { background: var(--warning); }
+    .kcard.state-merge_queued::before, .kcard.state-merging::before { background: var(--accent); }
+    .kcard.state-done::before { background: var(--good); }
+    .kcard.state-failed::before, .kcard.state-blocked::before { background: var(--critical); }
+    .kcard-head { display: flex; align-items: center; justify-content: space-between; }
+    .kcard-id { font: 700 11px ui-monospace, Consolas, monospace; color: var(--muted); }
+    .kcard-icon { font-size: 13px; }
+    .kcard-title { font-size: 13px; font-weight: 600; line-height: 1.35; }
+    .kcard-note { font-size: 11.5px; color: var(--critical); background: var(--critical-soft); border-radius: 7px; padding: 6px 8px; max-height: 66px; overflow: hidden; }
+    .kcard-meta { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .kcard-actions { display: flex; flex-wrap: wrap; gap: 2px; }
+    .kcard-actions .btn.link { padding: 3px 6px; font-size: 12px; }
+    .empty-state { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 14px; }
+
     /* ------------------------------- zones + cards ------------------------------- */
     .zone { margin-bottom: 22px; }
     .zone > h2 {
