@@ -5,13 +5,17 @@
   "description": "Live dashboard for agent-factory runs — tails events.jsonl over SSE. Zero runtime dependencies.",
   "type": "module",
   "scripts": {
-    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js && esbuild src/client.ts --bundle --format=iife --outfile=dist/client.js",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js && esbuild src/app.tsx --bundle --format=iife --outfile=dist/client.js --loader:.tsx=tsx --minify --define:process.env.NODE_ENV='\"production\"'",
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "esbuild": "^0.24.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "typescript": "^5.6.0"
   }
 }
