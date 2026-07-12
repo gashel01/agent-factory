@@ -26,6 +26,12 @@ class ConfigError(Exception):
     """Raised when factory.yaml is malformed; the message is user-actionable."""
 
 
+# Claude Code reasoning-effort levels, from cheapest/fastest to deepest. The CLI
+# is the source of truth; we validate here only to fail with a clear message
+# instead of a cryptic subprocess error.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultracode")
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     command: tuple[str, ...] = ("claude",)
@@ -33,6 +39,7 @@ class AgentConfig:
     permission_mode: str = "acceptEdits"
     allowed_tools: tuple[str, ...] = DEFAULT_ALLOWED_TOOLS
     extra_args: tuple[str, ...] = ()
+    effort: str | None = None  # --effort <level>; None = the CLI's own default
 
 
 @dataclass(frozen=True)
@@ -102,6 +109,17 @@ class Config:
         return replace(self, max_slots=max_slots) if max_slots else self
 
 
+def _validate_effort(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text not in EFFORT_LEVELS:
+        raise ConfigError(
+            f"agent.effort must be one of {', '.join(EFFORT_LEVELS)}, got {value!r}"
+        )
+    return text
+
+
 def _as_str_tuple(value: object, key: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -148,6 +166,7 @@ def load_config(path: Path | None) -> Config:
                 else DEFAULT_ALLOWED_TOOLS
             ),
             extra_args=_as_str_tuple(agent.get("extra_args"), "agent.extra_args"),
+            effort=_validate_effort(agent.get("effort")),
         ),
         setup=SetupConfig(
             commands=_as_str_tuple(setup.get("commands"), "setup.commands"),

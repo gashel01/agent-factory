@@ -849,7 +849,18 @@ interface Settings {
   setupCommands: string; // comma-separated, human-entered
   reviewer: boolean;
   reviewerModel: string;
+  effort: string; // "" = the CLI's own default; otherwise low…ultracode
 }
+
+// Capped at High on purpose: xhigh/max/ultracode burn far more tokens. They stay
+// reachable for power users via the Advanced raw YAML (effort: xhigh), just not
+// one click away where they'd be picked by accident.
+const EFFORT_CHOICES: Array<[string, string]> = [
+  ["", "Default"],
+  ["low", "Low"],
+  ["medium", "Medium"],
+  ["high", "High"],
+];
 
 /** Read our known knobs out of the stored YAML (tolerant, regex-based). */
 function parseSettings(content: string): Settings {
@@ -870,6 +881,7 @@ function parseSettings(content: string): Settings {
     setupCommands: setupCmds.join(", "),
     reviewer: /enabled:\s*true/.test(review),
     reviewerModel: review.match(/model:\s*"?(\w+)"?/)?.[1] ?? "haiku",
+    effort: content.match(/^\s*effort:\s*"?(\w+)"?/m)?.[1] ?? "",
   };
 }
 
@@ -901,6 +913,7 @@ function generateConfig(s: Settings): string {
     "agent:",
     "  command: claude",
     "  permission_mode: acceptEdits",
+    ...(s.effort ? [`  effort: ${s.effort}`] : []),
     "  allowed_tools:",
     ...tools.map((t) => `    - ${t}`),
     "",
@@ -1001,6 +1014,29 @@ async function showSettings(): Promise<void> {
     "Code reviewer",
     "A second AI double-checks every change before it is merged: scope, gamed tests, obvious bugs.",
     reviewControls,
+  ));
+
+  /* reasoning effort */
+  const effortPick = document.createElement("select");
+  effortPick.className = "ws-picker";
+  const effortChoices = [...EFFORT_CHOICES];
+  // Preserve an advanced-set expensive level (xhigh/max/…) instead of dropping it.
+  if (s.effort && !effortChoices.some(([v]) => v === s.effort)) {
+    effortChoices.push([s.effort, `${s.effort} (expensive)`]);
+  }
+  for (const [value, label] of effortChoices) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    opt.selected = value === s.effort;
+    effortPick.append(opt);
+  }
+  effortPick.addEventListener("change", () => { s.effort = effortPick.value; sync(); });
+  body.append(row(
+    "Reasoning effort",
+    "How hard each agent thinks. Higher digs deeper but is slower and spends more; " +
+    "'Default' leaves it to Claude Code. Raise it for tricky tasks (charts, data, logic).",
+    effortPick,
   ));
 
   /* parallel agents */

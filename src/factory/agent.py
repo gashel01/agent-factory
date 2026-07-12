@@ -197,6 +197,8 @@ def build_command(cfg: AgentConfig, task: Task) -> list[str]:
     ]
     if cfg.model:
         cmd += ["--model", cfg.model]
+    if cfg.effort:
+        cmd += ["--effort", cfg.effort]
     if cfg.allowed_tools:
         cmd += ["--allowedTools", ",".join(cfg.allowed_tools)]
     cmd += list(cfg.extra_args)
