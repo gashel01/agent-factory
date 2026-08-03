@@ -5,10 +5,12 @@ repo_defaults:
 
 concurrency:
   # User parameter, no hard ceiling in the code.
-  # 3 is a reasonable default on a Claude subscription plan; on API, raise it
-  # to whatever you want — the rate-limit handler is the safety net, not this number.
+  # 2 is a conservative default on a Claude subscription plan: every agent shares
+  # ONE plan rate-limit bucket with your own interactive Claude Code, so extra
+  # concurrency competes with it. On API, or when you're not working alongside a
+  # run, raise it freely — the rate-limit handler is the safety net, not this number.
   # Per-run override: `factory run --slots N`
-  max_slots: 3
+  max_slots: 2
   stagger_seconds: 20
 
 agent:
@@ -50,7 +52,10 @@ supervisor:
   # extend its reach here — e.g. WebSearch, or MCP tools from a .mcp.json
   # placed in this workspace folder ("mcp__github__*", "mcp__linear__*").
   allowed_tools: ["Read", "Glob", "Grep", "Write", "Edit"]
-  model: null              # null = same as agents; a strong model pays off here
+  # A live run snapshot is fed to the supervisor on every message, so a cheap tier
+  # answers fast and doesn't draw the run's coding-model quota. Default: "haiku".
+  # null → same cheap default; "" → same model as the coding agents; or pin an id.
+  model: haiku
   timeout_min: 10
 
 ratelimit:

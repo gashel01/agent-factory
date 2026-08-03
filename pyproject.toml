@@ -10,6 +10,14 @@ dependencies = ["pyyaml>=6.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
+# Semantic lesson recall. Optional: without it, lessons are still injected using
+# a built-in keyword ranker. `fastembed` upgrades recall from keyword to
+# semantic (downloads a small model on first use).
+memory = ["mcpaisuite-memorymcp>=1.1.0"]
+semantic = ["mcpaisuite-memorymcp>=1.1.0", "fastembed>=0.3"]
+# SWE-bench harness: load instances from HuggingFace. Not needed for a local
+# JSONL slice or the harness tests.
+bench = ["datasets>=2.0"]
 
 [project.scripts]
 factory = "factory.__main__:main"
@@ -23,10 +31,12 @@ packages = ["src/factory"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# so `from benchmarks.swebench...` imports resolve from the repo root
+pythonpath = ["."]

@@ -1,12 +1,15 @@
 /** Pure state + formatting logic, shared by the React app. No DOM, no React. */
 
 import type {
+  AgentProgressEvent,
   AgentResultEvent,
+  BlockedContext,
   BlockedEvent,
   BudgetEvent,
   FactoryEvent,
   FailureEvent,
   PausedEvent,
+  PlanLimitEvent,
   RetryEvent,
   RunEndEvent,
   RunStartEvent,
@@ -27,6 +30,13 @@ export interface TaskModel {
   finishedAt: string | null;
   costUsd: number;
   tokens: number;
+  liveTurns: number;   // C6: current attempt's turn count while running (0 when idle)
+  liveTokens: number;  // C6: current attempt's token estimate while running
+  diff: { repo: string; from: string; to: string } | null;
+  model: string | null;
+  effort: string | null;
+  prUrl: string | null;
+  blockedContext: BlockedContext | null;  // git ground truth when BLOCKED (else null)
 }
 
 export interface Model {
@@ -42,6 +52,10 @@ export interface Model {
   spentUsd: number;
   budgetUsd: number | null;
   budgetHit: boolean;
+  integration: { running: boolean; results: Array<{ repo: string; ok: boolean; failures: string[] }> };
+  sync: { ahead: number; behind: number; pulled: boolean } | null;
+  mode: "subscription" | "api";
+  planLimit: { status: string; resetsAt: number | null; window: string } | null;
 }
 
 const FEED_LIMIT = 200;
@@ -60,6 +74,10 @@ export function freshModel(run: string): Model {
     spentUsd: 0,
     budgetUsd: null,
     budgetHit: false,
+    integration: { running: false, results: [] },
+    sync: null,
+    mode: "subscription",
+    planLimit: null,
   };
 }
 
@@ -69,10 +87,37 @@ function task(model: Model, id: string): TaskModel {
     entry = {
       id, title: id, state: "QUEUED", turns: null, wallS: null, note: "",
       retries: 0, runningSince: null, finishedAt: null, costUsd: 0, tokens: 0,
+      liveTurns: 0, liveTokens: 0, diff: null,
+      model: null, effort: null, prUrl: null, blockedContext: null,
     };
     model.tasks.set(id, entry);
   }
   return entry;
+}
+
+export interface HistoryTicket {
+  id: string;
+  title: string;
+  costUsd: number;
+  tokens: number;
+  finishedAt: string | null;
+  diff: { repo: string; from: string; to: string } | null;
+}
+
+/** Seed the board with merged tickets from earlier runs so the work is
+ *  cumulative. Applied before the live run's events, which overwrite any
+ *  shared id — so a ticket being re-run shows its live state, not the stale one. */
+export function seedHistory(model: Model, tickets: HistoryTicket[]): Model {
+  for (const h of tickets) {
+    const entry = task(model, h.id);
+    entry.title = h.title;
+    entry.state = "DONE";
+    entry.costUsd = h.costUsd;
+    entry.tokens = h.tokens;
+    entry.finishedAt = h.finishedAt;
+    entry.diff = h.diff;
+  }
+  return model;
 }
 
 /** Fold one event into the model (mutates and returns it). */
@@ -86,10 +131,15 @@ export function reduce(model: Model, event: FactoryEvent): Model {
       model.slots = e.slots;
       model.startedTs = e.ts;
       model.budgetUsd = e.budget_usd ?? null;
+      model.mode = e.mode === "api" ? "api" : "subscription";
       for (const t of e.tasks) {
         const id = typeof t === "string" ? t : t.id;
         const entry = task(model, id);
-        if (typeof t !== "string") entry.title = t.title;
+        if (typeof t !== "string") {
+          entry.title = t.title;
+          if (t.model) entry.model = t.model;
+          if (t.effort) entry.effort = t.effort;
+        }
       }
       break;
     }
@@ -100,6 +150,8 @@ export function reduce(model: Model, event: FactoryEvent): Model {
       if (e.to === "RUNNING") {
         entry.runningSince = Date.parse(e.ts);
         entry.note = "";
+        entry.blockedContext = null;  // fresh attempt: last block's facts are stale
+        entry.liveTurns = 0; entry.liveTokens = 0;  // fresh attempt: reset live counters
         model.ratePause = null;
       }
       if (e.to === "DONE" || e.to === "FAILED" || e.to === "BLOCKED") {
@@ -117,7 +169,20 @@ export function reduce(model: Model, event: FactoryEvent): Model {
       if (e.summary) entry.note = e.summary;
       entry.costUsd += e.cost_usd ?? 0;
       entry.tokens += (e.input_tokens ?? 0) + (e.output_tokens ?? 0);
+      entry.liveTurns = 0; entry.liveTokens = 0;  // attempt done — authoritative totals folded in
       if (typeof e.spent_usd === "number") model.spentUsd = e.spent_usd;
+      break;
+    }
+    case "agent_progress": {
+      const e = event as AgentProgressEvent;
+      const entry = task(model, e.task);
+      entry.liveTurns = e.turns;
+      entry.liveTokens = e.tokens;
+      break;
+    }
+    case "plan_limit": {
+      const e = event as PlanLimitEvent;
+      model.planLimit = { status: e.status, resetsAt: e.resets_at ?? null, window: e.window };
       break;
     }
     case "verify": {
@@ -135,9 +200,50 @@ export function reduce(model: Model, event: FactoryEvent): Model {
     case "failure":
       task(model, (event as FailureEvent).task).note = (event as FailureEvent).reason;
       break;
-    case "blocked":
-      task(model, (event as BlockedEvent).task).note = (event as BlockedEvent).question;
+    case "blocked": {
+      const e = event as BlockedEvent;
+      const entry = task(model, e.task);
+      entry.note = e.question;
+      entry.blockedContext = e.context ?? null;
       break;
+    }
+    case "merged": {
+      const e = event as unknown as { task: string; repo?: string; base?: string; commit?: string };
+      if (e.repo && e.base && e.commit) {
+        task(model, e.task).diff = { repo: e.repo, from: e.base, to: e.commit };
+      }
+      break;
+    }
+    case "awaiting_approval": {
+      // Same shape as `merged`: capture the diff range so "Revoir" can open it
+      // even before (and after) the branch is merged/deleted.
+      const e = event as unknown as { task: string; repo?: string; base?: string; commit?: string };
+      if (e.repo && e.base && e.commit) {
+        task(model, e.task).diff = { repo: e.repo, from: e.base, to: e.commit };
+      }
+      break;
+    }
+    case "pr_opened": {
+      const e = event as unknown as { task: string; url?: string };
+      task(model, e.task).prUrl = e.url || "";
+      break;
+    }
+    case "sync": {
+      const e = event as unknown as { ahead?: number; behind?: number; pulled?: boolean };
+      model.sync = { ahead: e.ahead ?? 0, behind: e.behind ?? 0, pulled: Boolean(e.pulled) };
+      break;
+    }
+    case "integration_start":
+      model.integration.running = true;
+      break;
+    case "integration": {
+      const e = event as unknown as { repo?: string; ok?: boolean; failures?: string[] };
+      model.integration.running = false;
+      model.integration.results.push({
+        repo: e.repo ?? "", ok: Boolean(e.ok), failures: e.failures ?? [],
+      });
+      break;
+    }
     case "budget_exceeded":
       model.budgetHit = true;
       model.spentUsd = (event as BudgetEvent).spent_usd;
@@ -171,6 +277,7 @@ export const ACTIVITY: Record<TaskState, string> = {
   RUNNING: "Agent is working",
   VERIFYING: "Checking the work (tests)",
   REVIEWING: "Second agent reviewing the diff",
+  AWAITING_APPROVAL: "Ready for your approval before it merges",
   MERGE_QUEUED: "Work approved — waiting to merge",
   MERGING: "Merging into your branch",
   DONE: "Merged",
@@ -178,11 +285,8 @@ export const ACTIVITY: Record<TaskState, string> = {
   BLOCKED: "The agent has a question",
 };
 
-export const STATE_ICON: Record<TaskState, string> = {
-  QUEUED: "◷", RUNNING: "●", VERIFYING: "🔎", REVIEWING: "⚖", MERGE_QUEUED: "✓",
-  MERGING: "⇄", DONE: "✓", FAILED: "✕", BLOCKED: "✋",
-};
-
+// Note: AWAITING_APPROVAL is deliberately NOT here — it needs a human, so the UI
+// treats it like "needs you", not like busy work in flight.
 export const IN_FLIGHT_STATES: TaskState[] =
   ["RUNNING", "VERIFYING", "REVIEWING", "MERGING", "MERGE_QUEUED"];
 export function inFlight(state: TaskState | undefined): boolean {
@@ -198,9 +302,19 @@ export function fmtDuration(seconds: number): string {
 
 export function ago(ts: string): string {
   const s = (Date.now() - Date.parse(ts)) / 1000;
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ago`;
+  if (!Number.isFinite(s) || s < 0) return "just now";
+  if (s < 45) return "just now";
+  if (s < 90) return "a minute ago";
+  const plural = (n: number, unit: string): string => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+  const m = s / 60;
+  if (m < 60) return plural(Math.round(m), "min");
+  const h = m / 60;
+  if (h < 24) return plural(Math.round(h), "hour");
+  const d = h / 24;
+  if (d < 7) return plural(Math.round(d), "day");
+  if (d < 30) return plural(Math.round(d / 7), "week");
+  if (d < 365) return plural(Math.round(d / 30), "month");
+  return plural(Math.round(d / 365), "year");
 }
 
 export function fmtUsd(v: number): string {
@@ -213,6 +327,54 @@ export function fmtTokens(n: number): string {
   if (n < 1000) return `${n}`;
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
   return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/* ------------------------------ unified diff parsing ------------------------------ */
+
+export interface DiffLine { kind: "add" | "del" | "ctx" | "hunk"; text: string; n?: number }
+export interface DiffFile { path: string; adds: number; dels: number; lines: DiffLine[] }
+export interface ParsedDiff { preamble: string[]; files: DiffFile[] }
+
+const HUNK = /^@@ -\d+(?:,\d+)? \+(\d+)/;
+
+/** Split a `git diff` into per-file groups with add/del tallies, so the UI can
+ *  render each file as its own collapsible section. Anything before the first
+ *  file (a commit header from `git show`) becomes `preamble`. */
+export function parseDiff(text: string): ParsedDiff {
+  const files: DiffFile[] = [];
+  const preamble: string[] = [];
+  let cur: DiffFile | null = null;
+  let newLine = 0; // running line number on the new side of the current hunk
+  for (const raw of text.split("\n")) {
+    if (raw.startsWith("diff --git")) {
+      const m = raw.match(/ b\/(.+)$/);
+      cur = { path: m ? m[1]! : "?", adds: 0, dels: 0, lines: [] };
+      files.push(cur);
+      continue;
+    }
+    if (!cur) { if (raw.trim()) preamble.push(raw); continue; }
+    if (raw.startsWith("+++")) {
+      const m = raw.match(/^\+\+\+ b?\/?(.+)$/);
+      if (m && m[1] && m[1] !== "/dev/null") cur.path = m[1];
+      continue;
+    }
+    if (
+      raw.startsWith("---") || raw.startsWith("index ") || raw.startsWith("new file") ||
+      raw.startsWith("deleted file") || raw.startsWith("similarity ") ||
+      raw.startsWith("rename ") || raw.startsWith("old mode") || raw.startsWith("new mode") ||
+      raw.startsWith("Binary ")
+    ) continue;
+    if (raw.startsWith("@@")) {
+      const hm = raw.match(HUNK);
+      newLine = hm ? Number(hm[1]) : newLine;
+      cur.lines.push({ kind: "hunk", text: raw });
+      continue;
+    }
+    if (raw.startsWith("+")) { cur.adds++; cur.lines.push({ kind: "add", text: raw.slice(1), n: newLine++ }); continue; }
+    if (raw.startsWith("-")) { cur.dels++; cur.lines.push({ kind: "del", text: raw.slice(1) }); continue; }
+    cur.lines.push({ kind: "ctx", text: raw.startsWith(" ") ? raw.slice(1) : raw, n: newLine++ });
+  }
+  return { preamble, files };
 }
 
 /* ------------------------------ agent log story ------------------------------ */
@@ -313,15 +475,30 @@ export interface Settings {
   internet: boolean;
   project: "node" | "python" | "other";
   setupCommands: string;
+  integrationCommands: string;
   reviewer: boolean;
   reviewerModel: string;
+  planModel: string;
+  model: string; // default model for the coding agents ("" = the CLI's own default)
   effort: string;
   maxRetries: number;
   budgetUsd: string;
+  manualApproval: boolean;
+  prNative: boolean;
+  webhookUrl: string;
+  executionMode: "subscription" | "api";
+  isolation: "direct" | "sandbox"; // run agents as host subprocess vs hardened Docker box
+  knowledge: boolean; // agent.mcp_config wired to the project knowledge base (ragmcp)
 }
 
 export const EFFORT_CHOICES: Array<[string, string]> = [
   ["", "Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"],
+];
+
+/** Model tiers for the coding agents; "" = let the CLI pick its own default. */
+export const MODEL_CHOICES: Array<[string, string]> = [
+  ["", "Default (CLI's choice)"], ["haiku", "Haiku — fastest, cheapest"],
+  ["sonnet", "Sonnet — balanced"], ["opus", "Opus — deepest, priciest"],
 ];
 
 export function parseSettings(content: string): Settings {
@@ -330,20 +507,38 @@ export function parseSettings(content: string): Settings {
     return match?.[1] ?? "";
   };
   const setup = section("setup");
+  const agent = section("agent");
+  const integration = section("integration");
   const review = section("review");
-  const setupCmds = [...setup.matchAll(/"([^"]+)"/g)].map((m) => m[1]!).filter((c) => !/^\d+$/.test(c));
+  const plan = section("plan");
+  const approval = section("approval");
+  const prSec = section("pr");
+  const notify = section("notify");
+  const execution = section("execution");
+  const cmds = (s: string): string =>
+    [...s.matchAll(/"([^"]+)"/g)].map((m) => m[1]!).filter((c) => !/^\d+$/.test(c)).join(", ");
+  const setupCmds = cmds(setup);
   const hasNpm = /npm|npx|node/.test(content);
   const hasPy = /pytest|uv sync|ruff/.test(content);
   return {
     slots: Number(content.match(/max_slots:\s*(\d+)/)?.[1] ?? 3),
     internet: /WebSearch/.test(content),
     project: hasNpm ? "node" : hasPy ? "python" : "other",
-    setupCommands: setupCmds.join(", "),
+    setupCommands: setupCmds,
+    integrationCommands: cmds(integration),
     reviewer: /enabled:\s*true/.test(review),
     reviewerModel: review.match(/model:\s*"?(\w+)"?/)?.[1] ?? "haiku",
+    planModel: plan.match(/model:\s*"?([\w-]+)"?/)?.[1] ?? "",
+    model: agent.match(/model:\s*"?([\w.-]+)"?/)?.[1] ?? "",
     effort: content.match(/^\s*effort:\s*"?(\w+)"?/m)?.[1] ?? "",
     maxRetries: Number(content.match(/max_retries:\s*(\d+)/)?.[1] ?? 1),
     budgetUsd: content.match(/max_usd:\s*([\d.]+)/)?.[1] ?? "",
+    manualApproval: /manual:\s*true/.test(approval),
+    prNative: /enabled:\s*true/.test(prSec),
+    webhookUrl: notify.match(/webhook:\s*"?([^"\n]+)"?/)?.[1]?.trim() ?? "",
+    executionMode: /mode:\s*api/.test(execution) ? "api" : "subscription",
+    isolation: /isolation:\s*sandbox/.test(execution) ? "sandbox" : "direct",
+    knowledge: /mcp_config:/.test(agent),
   };
 }
 
@@ -362,6 +557,7 @@ export function generateConfig(s: Settings): string {
   const tools = [...base, ...presets[s.project]];
   if (s.internet) tools.push('"WebSearch"', '"WebFetch"');
   const setup = s.setupCommands.split(",").map((c) => c.trim()).filter(Boolean);
+  const integration = s.integrationCommands.split(",").map((c) => c.trim()).filter(Boolean);
   return [
     "# Generated by the dashboard Settings panel — read at the start of each run.",
     "repo_defaults:",
@@ -373,9 +569,23 @@ export function generateConfig(s: Settings): string {
     `  max_retries: ${s.maxRetries}`,
     "",
     ...(s.budgetUsd ? ["budget:", `  max_usd: ${s.budgetUsd}`, ""] : []),
+    ...(s.manualApproval ? ["approval:", "  manual: true", ""] : []),
+    ...(s.executionMode === "api" || s.isolation === "sandbox"
+      ? [
+          "execution:",
+          ...(s.executionMode === "api" ? ["  mode: api"] : []),
+          ...(s.isolation === "sandbox" ? ["  isolation: sandbox"] : []),
+          "",
+        ]
+      : []),
+    ...(s.prNative ? ["pr:", "  enabled: true", ""] : []),
+    ...(s.webhookUrl.trim() ? ["notify:", `  webhook: "${s.webhookUrl.trim()}"`, ""] : []),
+    ...(s.planModel ? ["plan:", `  model: ${s.planModel}`, ""] : []),
     "agent:",
     "  command: claude",
     "  permission_mode: acceptEdits",
+    ...(s.knowledge ? ["  mcp_config: knowledge/mcp.json"] : []),
+    ...(s.model ? [`  model: ${s.model}`] : []),
     ...(s.effort ? [`  effort: ${s.effort}`] : []),
     "  allowed_tools:",
     ...tools.map((t) => `    - ${t}`),
@@ -384,6 +594,9 @@ export function generateConfig(s: Settings): string {
     `  commands: [${setup.map((c) => `"${c}"`).join(", ")}]`,
     "  timeout_s: 600",
     "",
+    ...(integration.length
+      ? ["integration:", `  commands: [${integration.map((c) => `"${c}"`).join(", ")}]`, "  command_timeout_s: 1200", ""]
+      : []),
     "review:",
     `  enabled: ${s.reviewer}`,
     `  model: ${s.reviewerModel}`,

@@ -8,11 +8,16 @@ rejection sends the task back to the queue with the reasons as evidence.
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agent import extract_trailing_json, is_rate_limit_result, stream_headless
+from .agent import (
+    build_cli,
+    extract_trailing_json,
+    is_rate_limit_result,
+    spawn_env,
+    stream_headless,
+)
 from .config import Config
 from .task import Task
 from .worktree import git
@@ -69,29 +74,19 @@ def build_review_prompt(task: Task, worktree_path: Path) -> str:
 
 
 async def run_review(cfg: Config, task: Task, worktree_path: Path, log_path: Path) -> ReviewResult:
-    exe = shutil.which(cfg.agent.command[0])
-    if exe is None:
-        raise ReviewError(f"agent command '{cfg.agent.command[0]}' not found on PATH")
-    cmd = [
-        exe,
-        *cfg.agent.command[1:],
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--max-turns",
-        "25",
-        "--allowedTools",
-        ",".join(REVIEWER_TOOLS),
-    ]
-    model = cfg.review.model or cfg.agent.model
-    if model:
-        cmd += ["--model", model]
+    cmd = build_cli(
+        cfg.agent.command,
+        max_turns=25,
+        allowed_tools=REVIEWER_TOOLS,
+        model=cfg.review.model or cfg.agent.model,
+        missing=ReviewError,
+    )
 
     prompt = build_review_prompt(task, worktree_path)
     try:
         out = await stream_headless(
-            cmd, prompt, worktree_path, log_path, timeout_s=cfg.review.timeout_min * 60
+            cmd, prompt, worktree_path, log_path, timeout_s=cfg.review.timeout_min * 60,
+            env=spawn_env(cfg.execution_mode),
         )
     except TimeoutError:
         # A silent reviewer must not block good work forever: fail open with a

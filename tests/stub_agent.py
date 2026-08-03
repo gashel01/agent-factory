@@ -24,6 +24,22 @@ def main() -> int:
     match = re.search(r"Ticket ID:\s*(\S+)", prompt)
     task_id = match.group(1) if match else "unknown"
 
+    if "previous attempt on this ticket did not pass" in prompt:
+        # A resumed retry: short corrective prompt, no contract. Prove the resume
+        # actually happened (--resume on argv, same worktree) by committing a fix
+        # that records the resumed session id.
+        if "--resume" in sys.argv:
+            session = sys.argv[sys.argv.index("--resume") + 1]
+            with open("fixed_by_resume.txt", "w", encoding="utf-8") as fh:
+                fh.write(f"resumed session {session}\n")
+            subprocess.run(["git", "add", "-A"], check=True)
+            subprocess.run(["git", "commit", "-m", "fix: finish after resume"], check=True)
+        contract = {"status": "done", "summary": "fixed after resume", "tests": "pass"}
+        print(json.dumps({"type": "result", "num_turns": 1,
+                          "session_id": "stub-agent-session-2",
+                          "result": f"Done.\n{json.dumps(contract)}"}))
+        return 0
+
     if "STUB:SLEEP" in prompt:
         time.sleep(60)
         return 0
@@ -44,6 +60,9 @@ def main() -> int:
         return 0
 
     if "Review contract" in prompt:
+        if "STUB:REVIEW_RATELIMIT" in prompt:
+            print("API Error: 429 rate limit exceeded", file=sys.stderr)
+            return 1
         if "STUB:REVIEW_REJECT" in prompt:
             verdict = {"status": "done", "verdict": "reject",
                        "reasons": ["assertions were weakened to pass"]}
@@ -69,7 +88,10 @@ def main() -> int:
                         "## Out of scope\nother modules.",
             },
         ]
-        payload = {"status": "done", "tickets": tickets}
+        # Reflect whether an existing project map was injected, so tests can
+        # prove the brief reaches the planner instead of a full re-scan.
+        brief = "Stub project map." + (" [reused]" if "# Project map" in prompt else "")
+        payload = {"status": "done", "brief": brief, "tickets": tickets}
         print(json.dumps({"type": "result", "num_turns": 5, "result": json.dumps(payload)}))
         return 0
 
@@ -82,6 +104,14 @@ def main() -> int:
         print(json.dumps({"type": "result", "num_turns": 1, "result": json.dumps(contract)}))
         return 0
 
+    if "STUB:NOOP" in prompt:
+        # The change already exists: report an explicit no-op (done + noop) WITHOUT
+        # committing. The dispatcher must accept this as DONE, not fail on "no commits".
+        contract = {"status": "done", "noop": True,
+                    "summary": "already implemented", "tests": "pass"}
+        print(json.dumps({"type": "result", "num_turns": 1, "result": json.dumps(contract)}))
+        return 0
+
     if "Ticket ID:" not in prompt:
         # Short prompt without any contract: a resumed supervisor exchange.
         answer = {"status": "done", "reply": f"resumed: {prompt.strip()[:60]}", "actions": []}
@@ -90,20 +120,40 @@ def main() -> int:
                           "result": json.dumps(answer)}))
         return 0
 
-    if "STUB:NO_COMMIT" not in prompt:
+    if "STUB:NO_COMMIT" not in prompt and "STUB:RESUME_FIX" not in prompt:
         filename = f"output_{task_id}.txt"
         with open(filename, "w", encoding="utf-8") as fh:
             fh.write(f"work for {task_id}\n")
         subprocess.run(["git", "add", filename], check=True)
         subprocess.run(["git", "commit", "-m", f"feat({task_id}): add output"], check=True)
 
+    # A plan-window snapshot like the real CLI streams (5h reset + status), so the
+    # subscription plan-usage indicator has something to show. Reset is ~2h out so a
+    # live countdown looks real.
+    print(json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "allowed", "resetsAt": int(time.time()) + 7200,
+        "rateLimitType": "five_hour"}}))
+
+    # Emit a couple of streaming assistant turns so live-progress (C6) has something
+    # to report; the real CLI streams these before the final result record.
+    for i in (1, 2):
+        print(json.dumps({"type": "assistant",
+                          "message": {"usage": {"input_tokens": 40 * i, "output_tokens": 10 * i}}}))
+        sys.stdout.flush()
+
     contract = {"status": "done", "summary": f"completed {task_id}", "tests": "pass"}
     final = f"All done.\n{json.dumps(contract)}"
-    print(json.dumps({
+    record = {
         "type": "result", "num_turns": 3, "result": final,
         "total_cost_usd": 1.0,
         "usage": {"input_tokens": 100, "output_tokens": 200, "cache_read_input_tokens": 50},
-    }))
+    }
+    # A session id enables resumed retries; NO_COMMIT keeps none so its retry
+    # path stays the historical cold restart (and keeps failing, as that test
+    # expects).
+    if "STUB:NO_COMMIT" not in prompt:
+        record["session_id"] = f"stub-agent-session-{task_id}"
+    print(json.dumps(record))
     return 0
 
 

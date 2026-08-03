@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Build the sandbox isolation images (agent runtime + egress allow-list proxy).
+# Idempotent; layer caching makes rebuilds fast. Referenced by factory/sandbox.py.
+set -euo pipefail
+here="$(cd "$(dirname "$0")/.." && pwd)"
+echo "Building agent-factory-sandbox:latest ..."
+docker build -t agent-factory-sandbox:latest "$here/sandbox"
+echo "Building agent-factory-egress:latest ..."
+docker build -t agent-factory-egress:latest "$here/sandbox/proxy"
+echo "Done. Sandbox images ready."
