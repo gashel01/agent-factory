@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import sandbox
 from .config import AgentConfig
 from .task import Task
 
@@ -54,8 +57,17 @@ DEFAULT_CONTRACT = """\
   code. Never finish on a red state without explaining why.
 - Commit your work with atomic commits, messages like `feat|fix|test(scope): ...`.
   Do not add any AI attribution to commits.
+- If the ticket's change already exists in the repo (nothing left to do, `git status`
+  clean, no new commit to make), that is a VALID outcome: report status "done" AND set
+  "noop": true, with a summary saying it was already implemented. Do not invent a change
+  to have something to commit, and never manufacture a commit.
+- Never run destructive or history-rewriting git commands (`git reset --hard`,
+  `git rebase`, `git push --force`, `git clean`, `git checkout -- …`). They are blocked
+  at the tool layer and will fail. If one seems necessary to finish, STOP and report
+  status "blocked" explaining exactly why — a human will decide and act.
 - End your final message with a strict JSON block (no markdown fences around it):
-  {"status": "done" | "blocked", "summary": "<one sentence>", "tests": "pass" | "fail"}
+  {"status": "done" | "blocked", "summary": "<one sentence>", "tests": "pass" | "fail",
+   "noop": <true ONLY if the ticket needed no change; omit or false otherwise>}
 - If you are blocked (missing information, a product decision), use status "blocked"
   and ask a precise question in "summary". Do not guess.
 """
@@ -73,7 +85,6 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
 
 
 def extract_usage(record: dict | None) -> Usage:
@@ -85,7 +96,6 @@ def extract_usage(record: dict | None) -> Usage:
         input_tokens=int(u.get("input_tokens") or 0),
         output_tokens=int(u.get("output_tokens") or 0),
         cache_read_tokens=int(u.get("cache_read_input_tokens") or 0),
-        cache_creation_tokens=int(u.get("cache_creation_input_tokens") or 0),
     )
 
 
@@ -98,6 +108,12 @@ class AgentResult:
     contract: dict | None
     session_id: str | None = None  # enables resume (answer blocked agents, redirects)
     usage: Usage = field(default_factory=Usage)
+    # The agent explicitly declared the ticket needed no change (already implemented).
+    # Only an explicit claim is trusted as a no-op — a plain done with no commit is a
+    # broken agent, caught by the verify gate ("no commits on the task branch").
+    noop: bool = False
+    # Plan rate-limit snapshot (subscription): {status, resetsAt, rateLimitType, ...}
+    rate_limit_info: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +125,65 @@ class StreamOutcome:
     stderr_rate_limited: bool
     stderr_tail: str
     wall_s: float
+    # Latest plan-window info the CLI streamed (rate_limit_event), if any.
+    rate_limit_info: dict | None = None
+
+
+def _record_tokens(record: dict) -> int:
+    """Tokens billed for one assistant turn (input + output). Cache reads are not
+    added — they are the cheap part and would inflate the live counter."""
+    usage = (record.get("message") or {}).get("usage") or {}
+    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+
+
+def describe_step(record: dict) -> str | None:
+    """A short, human-readable line describing what an agent did this turn, from
+    one stream-json ``assistant`` record. Prefers the tool it reached for (which
+    file it read, what it searched); falls back to the first line of narration.
+
+    Returns None when the record carries nothing worth showing (e.g. an empty
+    turn), so callers can skip it. Kept dependency-free — the dashboard shows
+    these lines as a live activity feed while the planner explores the repo.
+    """
+    content = (record.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    narration: str | None = None
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use":
+            name = str(block.get("name", ""))
+            inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+            if name == "Read":
+                target = str(inp.get("file_path") or inp.get("path") or "").replace("\\", "/")
+                if not target:
+                    return "reading a file"
+                return f"reading {target.rsplit('/', 1)[-1] or target}"
+            if name == "Glob":
+                return f"finding files matching {inp.get('pattern', '…')}"
+            if name == "Grep":
+                return f'searching for "{inp.get("pattern", "…")}"'
+            return f"{name.lower()}…" if name else None
+        if block.get("type") == "text" and narration is None:
+            text = str(block.get("text", "")).strip()
+            if text:
+                first = text.splitlines()[0].strip()
+                narration = first[:100] + ("…" if len(first) > 100 else "")
+    return narration
+
+
+def spawn_env(mode: str) -> dict[str, str] | None:
+    """The environment for a spawned agent, per execution mode.
+
+    "subscription" strips ANTHROPIC_API_KEY so the CLI falls back to the logged-in
+    subscription (no real charge, draws from the plan). "api" inherits the parent
+    environment unchanged (env=None), so a key already present is used and billed.
+    We never read, store, or transmit the key value — only whether to pass it.
+    """
+    if mode == "api":
+        return None
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
 
 async def stream_headless(
@@ -117,16 +192,23 @@ async def stream_headless(
     cwd: Path,
     log_path: Path,
     timeout_s: float,
+    on_progress: Callable[[int, int], None] | None = None,
+    on_activity: Callable[[dict], None] | None = None,
+    env: dict[str, str] | None = None,
 ) -> StreamOutcome:
     """Spawn one headless agent: prompt on stdin, stream-json on stdout.
 
     Raises TimeoutError (budget) or CancelledError (operator kill) — the
     subprocess is reaped in both cases. Used by the coding agent, the planner,
     and the reviewer, so process handling has exactly one implementation.
+
+    ``env`` is the child environment (None = inherit the parent's). Callers build
+    it with spawn_env(mode) to control subscription vs API execution.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     result_record: dict | None = None
+    rate_limit_info: dict | None = None
     stderr_limited = False
     stderr_tail: list[str] = []
 
@@ -137,6 +219,7 @@ async def stream_headless(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         limit=_STREAM_LIMIT,  # big stream-json records (inline SVG, file writes)
+        env=env,
     )
 
     with log_path.open("w", encoding="utf-8", errors="replace") as log:
@@ -148,8 +231,10 @@ async def stream_headless(
             proc.stdin.close()
 
         async def read_stdout() -> None:
-            nonlocal result_record
+            nonlocal result_record, rate_limit_info
             assert proc.stdout is not None
+            turns = 0
+            tokens = 0
             while line := await proc.stdout.readline():
                 text = line.decode("utf-8", errors="replace")
                 log.write(text)
@@ -157,8 +242,23 @@ async def stream_headless(
                     record = json.loads(text)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(record, dict) and record.get("type") == "result":
+                if not isinstance(record, dict):
+                    continue
+                # The CLI streams the plan-window state (5h/weekly reset, status) —
+                # keep the latest so the dashboard can show plan usage on a subscription.
+                if isinstance(record.get("rate_limit_info"), dict):
+                    rate_limit_info = record["rate_limit_info"]
+                if record.get("type") == "result":
                     result_record = record
+                elif record.get("type") == "assistant":
+                    # Report live progress as the agent works, so the dashboard can
+                    # show a growing turn/token count instead of nothing until the end.
+                    turns += 1
+                    tokens += _record_tokens(record)
+                    if on_progress is not None:
+                        on_progress(turns, tokens)
+                    if on_activity is not None:
+                        on_activity(record)
 
         async def read_stderr() -> None:
             nonlocal stderr_limited
@@ -186,6 +286,7 @@ async def stream_headless(
         stderr_rate_limited=stderr_limited,
         stderr_tail="; ".join(stderr_tail),
         wall_s=time.monotonic() - started,
+        rate_limit_info=rate_limit_info,
     )
 
 
@@ -203,35 +304,111 @@ def extract_trailing_json(text: str) -> dict | None:
     return None
 
 
-def build_command(cfg: AgentConfig, task: Task) -> list[str]:
+def build_cli(
+    command: tuple[str, ...],
+    *,
+    max_turns: int,
+    allowed_tools: tuple[str, ...],
+    model: str | None = None,
+    effort: str | None = None,
+    permission_mode: str | None = None,
+    resume: str | None = None,
+    mcp_config: str | None = None,
+    disallowed_tools: tuple[str, ...] = (),
+    extra_args: tuple[str, ...] = (),
+    missing: Callable[[str], Exception] | None = None,
+) -> list[str]:
+    """The shared `claude -p` headless invocation used by the coding agent, the
+    planner, the reviewer, the supervisor and the doctor. Each differs only in
+    turn budget, tool allowlist and model — everything else (stream-json, verbose,
+    PATH resolution) is identical, so it lives here once.
+
+    `missing` builds the exception raised when the CLI isn't on PATH, so each
+    caller keeps its own typed error; the default is FileNotFoundError.
+    """
     # Resolve through PATH (and PATHEXT on Windows): a bare "claude" is often a
     # .cmd/.exe shim that CreateProcess won't find without its full path.
-    exe = shutil.which(cfg.command[0])
+    exe = shutil.which(command[0])
     if exe is None:
-        raise FileNotFoundError(
-            f"agent command '{cfg.command[0]}' not found on PATH — "
-            f"is the CLI installed and the shell environment inherited?"
-        )
-    cmd = [
-        exe,
-        *cfg.command[1:],
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",  # required by the CLI when streaming with -p
-        "--permission-mode",
-        cfg.permission_mode,
-        "--max-turns",
-        str(task.budget.max_turns),
-    ]
-    if cfg.model:
-        cmd += ["--model", cfg.model]
-    if cfg.effort:
-        cmd += ["--effort", cfg.effort]
-    if cfg.allowed_tools:
-        cmd += ["--allowedTools", ",".join(cfg.allowed_tools)]
-    cmd += list(cfg.extra_args)
+        msg = f"agent command '{command[0]}' not found on PATH"
+        raise (missing(msg) if missing else FileNotFoundError(
+            f"{msg} — is the CLI installed and the shell environment inherited?"
+        ))
+    cmd = [exe, *command[1:], "-p", "--output-format", "stream-json", "--verbose"]
+    if permission_mode:
+        cmd += ["--permission-mode", permission_mode]
+    cmd += ["--max-turns", str(max_turns)]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
+    if resume:
+        cmd += ["--resume", resume]
+    if mcp_config:
+        # Give the agent the project's knowledge base as an MCP server (ragmcp),
+        # and ONLY that one — --strict-mcp-config ignores any ambient .mcp.json in
+        # the cwd so the run is reproducible. The tools it exposes still have to be
+        # in --allowedTools (the caller adds them); see build_command.
+        cmd += ["--mcp-config", mcp_config, "--strict-mcp-config"]
+    if allowed_tools:
+        cmd += ["--allowedTools", ",".join(allowed_tools)]
+    if disallowed_tools:
+        # A hard safety floor: even a resumed, operator-answered agent cannot run
+        # these. A denied call surfaces to the agent, which (per the contract)
+        # reports blocked instead of finding a workaround.
+        cmd += ["--disallowedTools", ",".join(disallowed_tools)]
+    cmd += list(extra_args)
     return cmd
+
+
+# The ragmcp retrieval tools the agent may call when a project knowledge base is
+# wired in. Auto-added to the allowlist so enabling a knowledge base is one setting,
+# not two (the mcp-config AND remembering to permit its tools).
+KNOWLEDGE_TOOLS = ("mcp__ragmcp__search_documents", "mcp__ragmcp__list_sources")
+
+# Destructive / history-rewriting git operations an agent must NEVER run itself:
+# a bad `reset --hard` target eats sibling commits, `rebase`/`push --force` rewrite
+# shared history, `clean`/`checkout --` wipe the tree. Denied at the CLI permission
+# layer (a hard safety floor, not a per-project setting) so the only path for a
+# genuinely necessary destructive step is: agent reports blocked → a human acts.
+# The pattern is a command PREFIX: "git reset --hard 059d7a9" matches "git reset --hard".
+DESTRUCTIVE_GIT_DENY = (
+    "Bash(git reset --hard:*)",
+    "Bash(git reset --keep:*)",
+    "Bash(git reset --merge:*)",
+    "Bash(git push --force:*)",
+    "Bash(git push -f:*)",
+    "Bash(git push --force-with-lease:*)",
+    "Bash(git rebase:*)",
+    "Bash(git clean:*)",
+    "Bash(git checkout --:*)",
+    "Bash(git checkout .:*)",
+    "Bash(git branch -D:*)",
+    "Bash(git branch -d:*)",
+    "Bash(git filter-branch:*)",
+    "Bash(git update-ref -d:*)",
+)
+
+
+def build_command(cfg: AgentConfig, task: Task) -> list[str]:
+    # A ticket may pin its own model and effort (cheap tier for a trivial change,
+    # a stronger/deeper one for a hard task) and, on a retry, resume its previous
+    # session (context + repo knowledge intact) — all overriding the run defaults.
+    allowed = cfg.allowed_tools
+    if cfg.mcp_config:
+        allowed = (*allowed, *KNOWLEDGE_TOOLS)
+    return build_cli(
+        cfg.command,
+        max_turns=task.budget.max_turns,
+        allowed_tools=allowed,
+        model=task.model or cfg.model,
+        effort=task.effort or cfg.effort,
+        permission_mode=cfg.permission_mode,
+        resume=task.resume_session,
+        mcp_config=cfg.mcp_config,
+        disallowed_tools=DESTRUCTIVE_GIT_DENY,
+        extra_args=cfg.extra_args,
+    )
 
 
 async def run_agent(
@@ -240,12 +417,59 @@ async def run_agent(
     worktree_path: Path,
     contract: str,
     log_path: Path,
+    lessons: str = "",
+    project_brief: str = "",
+    on_progress: Callable[[int, int], None] | None = None,
+    mode: str = "subscription",
+    isolation: str = "direct",
 ) -> AgentResult:
-    prompt = f"{contract}\n\n---\n\n# Ticket\n\n{task.render()}\n"
+    if task.resume_session:
+        # Resumed retry: the session already carries the contract, ticket, brief
+        # and repo knowledge — only the corrective feedback is new information.
+        latest = task.failure_notes[-1] if task.failure_notes else "the attempt did not pass"
+        prompt = (
+            "Your previous attempt on this ticket did not pass.\n"
+            f"Feedback: {latest}\n"
+            "Your worktree is untouched — your files and commits are still here. "
+            "Fix the problem, re-run the success criteria, and finish the ticket "
+            "contract as before (commit your changes, end with the JSON block).\n"
+        )
+    else:
+        prompt = f"{contract}\n"
+        if project_brief:
+            # A shared map of the repo (from planning): the agent reads this instead
+            # of rediscovering the project's layout and conventions on every ticket.
+            prompt += f"\n---\n\n# Project map (read before exploring)\n\n{project_brief}\n"
+        prompt += f"\n---\n\n# Ticket\n\n{task.render()}\n"
+        if lessons:
+            # Lessons recalled from earlier work: rules the operator recorded so a
+            # past mistake is not repeated. They come after the ticket so the agent
+            # reads the task first, then the constraints that apply to it.
+            prompt += (
+                "\n---\n\n# Lessons from earlier work (apply these before you start)\n\n"
+                f"{lessons}\n"
+            )
+    cmd = build_command(cfg, task)
+    env = spawn_env(mode)
+    if isolation == "sandbox":
+        # Wrap the SAME claude invocation in a hardened container. The box
+        # authenticates via the mounted OAuth token, so we never inject the API
+        # key into it (env=None) — even in "api" execution mode, the sandbox draws
+        # on the logged-in subscription rather than putting a key where the agent's
+        # own python could read and exfiltrate it.
+        try:
+            await asyncio.to_thread(sandbox.ensure_infra)
+        except sandbox.SandboxError as exc:
+            return AgentResult("error", f"sandbox unavailable: {exc}"[:500],
+                               None, 0.0, None)
+        cmd = sandbox.wrap(cmd, worktree_path)
+        env = None
     try:
         out = await stream_headless(
-            build_command(cfg, task), prompt, worktree_path, log_path,
+            cmd, prompt, worktree_path, log_path,
             timeout_s=task.budget.timeout_min * 60,
+            on_progress=on_progress,
+            env=env,
         )
     except TimeoutError:
         return AgentResult(
@@ -263,22 +487,31 @@ async def run_agent(
     rate_limited = out.stderr_rate_limited or (
         out.result is not None and is_rate_limit_result(out.result)
     )
+    rli = out.rate_limit_info
     if rate_limited:
         return AgentResult(
-            "ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None, session, usage
+            "ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None, session, usage,
+            rate_limit_info=rli,
         )
     if out.returncode != 0 or out.result is None:
         summary = out.stderr_tail or f"agent exited {out.returncode} without a result"
-        return AgentResult("error", summary[:500], turns, out.wall_s, None, session, usage)
+        return AgentResult(
+            "error", summary[:500], turns, out.wall_s, None, session, usage, rate_limit_info=rli
+        )
 
     contract_json = extract_trailing_json(str(out.result.get("result", "")))
     if contract_json is None:
         # No contract block (crash mid-answer, model drift): let the verify gate decide.
         return AgentResult(
-            "done", "no contract JSON in final message", turns, out.wall_s, None, session, usage
+            "done", "no contract JSON in final message", turns, out.wall_s, None, session, usage,
+            rate_limit_info=rli,
         )
     status = str(contract_json.get("status", "done"))
     summary = str(contract_json.get("summary", ""))[:500]
     if status not in ("done", "blocked"):
         status = "done"
-    return AgentResult(status, summary, turns, out.wall_s, contract_json, session, usage)
+    noop = status == "done" and bool(contract_json.get("noop"))
+    return AgentResult(
+        status, summary, turns, out.wall_s, contract_json, session, usage,
+        noop=noop, rate_limit_info=rli,
+    )

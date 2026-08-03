@@ -10,13 +10,21 @@ The planner proposes, the human disposes — drafts are never executed silently.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-import shutil
 from pathlib import Path
 
-from .agent import extract_trailing_json, is_rate_limit_result, stream_headless
+from .agent import (
+    build_cli,
+    describe_step,
+    extract_trailing_json,
+    is_rate_limit_result,
+    spawn_env,
+    stream_headless,
+)
 from .config import Config
+from .task import archived_ids
 
 #: Exploration only — the planner must not be able to modify the repo.
 PLANNER_TOOLS = ("Read", "Glob", "Grep")
@@ -31,22 +39,73 @@ tickets that independent coding agents can execute IN PARALLEL.
 Rules for a good decomposition:
 - 1 to 8 tickets. Fewer, well-scoped tickets beat many vague ones.
 - Each ticket is self-contained: an agent sees only the ticket text and the repo.
-- Two tickets must not touch the same files; declare each ticket's files in
-  files_hint (paths or directories). Use depends_on only for true ordering.
+- Two tickets must not touch the same files — this holds even for dependent
+  tickets. Declare each ticket's files in files_hint (paths or directories).
+  Use depends_on only for true ordering, never to split edits to ONE file.
+- No overlapping scope. Each ticket must own a DISJOINT slice of work that
+  produces its own real diff. If finishing ticket A would naturally also do
+  ticket B's work (e.g. A adds a component AND wires it into the same App file
+  B was going to edit), they are ONE ticket — merge them. A ticket whose work a
+  prior ticket already did has nothing to commit and fails the verify gate.
 - Every ticket needs an EXECUTABLE success criterion: a shell command that
   exits 0 on success (a test command, ideally). If the repo has no test setup,
   make ticket 001 "set up the test harness" and let the others depend on it.
+- verify commands run through the PLATFORM's default shell — on Windows that is
+  cmd.exe, which has NO grep/test/sed/cat/ls. Never use POSIX-only utilities in
+  verify. Use the repo's own runner (pytest, npm test, tsc --noEmit) or a
+  one-liner in the repo's language (node -e / python -c) for content checks.
 - Each body must contain: ## Context, ## Success criteria, ## Out of scope.
 - Budget honestly: timeout_min 10-45 depending on size.
 
+Also return a "brief": a compact, durable project map (~150-300 words) that a
+FUTURE agent can read INSTEAD of re-exploring the whole repo. Include: what the
+project is, the directory layout that matters, key modules/entry points, the
+conventions to follow, and the exact build/test commands. If a project map is
+already provided below, trust it — verify only what your goal touches — and
+return it updated, not rewritten from scratch.
+
 End your final message with a strict JSON block (no fences):
-{"status": "done", "tickets": [{"id": "001", "title": "...",
- "files_hint": ["src/x.py"], "depends_on": [], "priority": 1,
+{"status": "done", "brief": "<the project map>", "tickets": [{"id": "001",
+ "title": "...", "files_hint": ["src/x.py"], "depends_on": [], "priority": 1,
  "timeout_min": 30, "verify": ["pytest -q"], "body": "## Context\\n..."}]}
 
 If the goal is too vague to decompose safely, return
 {"status": "blocked", "summary": "<the precise question you need answered>"}.
 """
+
+
+#: A durable, human-editable project map, written by the planner and reused by
+#: both future planners and every coding agent so the repo isn't re-explored
+#: from scratch each time. It describes ONE repository, so it is stored PER-REPO,
+#: not per-workspace: a workspace that gets repointed at a different repo (as the
+#: dashboard does every time you switch projects) must never serve the previous
+#: repo's map to the new one.
+BRIEF_DIR = "project-maps"
+
+
+def _brief_path(workspace: Path, repo: Path) -> Path:
+    # Key the map by the repo it describes. Two projects sharing one workspace
+    # then can't cross-contaminate, and a brand-new repo simply has no map yet.
+    # A readable slug keeps the file human-findable; the path hash keeps it unique
+    # across same-named repos in different locations.
+    key = repo.resolve()
+    digest = hashlib.sha1(str(key).encode("utf-8")).hexdigest()[:8]
+    return workspace / BRIEF_DIR / f"{_slug(key.name)}-{digest}.md"
+
+
+def read_brief(workspace: Path, repo: Path) -> str:
+    path = _brief_path(workspace, repo)
+    try:
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        return ""
+
+
+def write_brief(workspace: Path, repo: Path, brief: str) -> None:
+    if brief and brief.strip():
+        path = _brief_path(workspace, repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(brief.strip() + "\n", encoding="utf-8")
 
 
 class PlanError(Exception):
@@ -59,36 +118,57 @@ def _slug(title: str) -> str:
 
 
 def _next_free_number(backlog: Path) -> int:
+    # Live tickets: the number is the file's leading digits.
     numbers = [
         int(m.group(1))
         for p in backlog.glob("*.md")
         if (m := re.match(r"(\d+)", p.stem))
     ]
+    # Already-merged tickets in done/ count too, so numbering never resets and a
+    # new plan can't reuse a past id (which would collide on the cumulative board).
+    # Their id lives in the front matter (the filename is prefixed by the run id).
+    numbers += [int(i) for i in archived_ids(backlog) if i.isdigit()]
     return max(numbers, default=0) + 1
 
 
-async def run_planner(cfg: Config, repo: Path, goal: str, log_path: Path) -> dict:
-    exe = shutil.which(cfg.agent.command[0])
-    if exe is None:
-        raise PlanError(f"agent command '{cfg.agent.command[0]}' not found on PATH")
-    cmd = [
-        exe,
-        *cfg.agent.command[1:],
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--max-turns",
-        "40",
-        "--allowedTools",
-        ",".join(PLANNER_TOOLS),
-    ]
-    if cfg.agent.model:
-        cmd += ["--model", cfg.agent.model]
+async def run_planner(
+    cfg: Config, repo: Path, goal: str, log_path: Path, brief: str = ""
+) -> dict:
+    # Planning can run on a cheaper tier than the coding agents.
+    cmd = build_cli(
+        cfg.agent.command,
+        max_turns=40,
+        allowed_tools=PLANNER_TOOLS,
+        model=cfg.plan.model or cfg.agent.model,
+        missing=PlanError,
+    )
     prompt = f"{PLANNER_CONTRACT}\n\n---\n\n# Operator goal\n\n{goal}\n"
+    if brief.strip():
+        # A prior project map: the planner reads this instead of re-exploring the
+        # whole repo, cutting tokens on every plan after the first.
+        prompt += (
+            "\n---\n\n# Project map (from an earlier plan — trust and update it)\n\n"
+            f"{brief}\n"
+        )
+
+    # Surface the agent's live activity (which files it reads, what it searches)
+    # on stdout as it explores, so `factory plan` — and the dashboard that tails
+    # it — show a growing feed instead of a silent 1-3 min wait. Deduped so a
+    # burst of identical steps doesn't spam the feed.
+    last_step: list[str | None] = [None]
+
+    def report(record: dict) -> None:
+        step = describe_step(record)
+        if step and step != last_step[0]:
+            last_step[0] = step
+            print(f"· {step}", flush=True)
 
     try:
-        out = await stream_headless(cmd, prompt, repo, log_path, timeout_s=15 * 60)
+        out = await stream_headless(
+            cmd, prompt, repo, log_path, timeout_s=15 * 60,
+            on_activity=report,
+            env=spawn_env(cfg.execution_mode),
+        )
     except TimeoutError as exc:
         raise PlanError("planner exceeded its 15 min budget") from exc
 
@@ -106,6 +186,26 @@ async def run_planner(cfg: Config, repo: Path, goal: str, log_path: Path) -> dic
     return contract
 
 
+def _as_list(value: object) -> list[str]:
+    """Normalise a planner list-field: a bare string becomes a one-element list,
+    NOT a list of its characters (list("src/x.py") == ['s','r','c',…], which
+    would poison collision detection). None/missing -> empty."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    return [str(value)]
+
+
+def _plan_int(value: object, default: int, field: str) -> int:
+    try:
+        return int(value if value is not None else default)
+    except (TypeError, ValueError):
+        raise PlanError(f"planner returned a non-numeric {field}: {value!r}") from None
+
+
 def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
     """Materialise planner output as ticket files. IDs are renumbered onto the
     backlog's free range so a plan can extend an existing backlog safely."""
@@ -117,18 +217,21 @@ def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
     written: list[Path] = []
     for i, t in enumerate(tickets):
         new_id = f"{base + i:03d}"
-        deps = [id_map.get(str(d), str(d)) for d in t.get("depends_on", [])]
+        deps = [id_map.get(d, d) for d in _as_list(t.get("depends_on"))]
         title = str(t.get("title", f"Ticket {new_id}"))
         front = {
             "id": new_id,
             "title": title,
             "repo": repo.resolve().as_posix(),
-            "files_hint": list(t.get("files_hint", [])),
+            "files_hint": _as_list(t.get("files_hint")),
             "depends_on": deps,
-            "priority": int(t.get("priority", 5)),
+            "priority": _plan_int(t.get("priority"), 5, "priority"),
             "max_retries": 2,
-            "budget": {"timeout_min": int(t.get("timeout_min", 30)), "max_turns": 50},
-            "verify": list(t.get("verify", [])),
+            "budget": {
+                "timeout_min": _plan_int(t.get("timeout_min"), 30, "timeout_min"),
+                "max_turns": 50,
+            },
+            "verify": _as_list(t.get("verify")),
         }
         lines = ["---"]
         lines.append(f'id: "{front["id"]}"')
@@ -142,6 +245,8 @@ def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
             f"budget: {{ timeout_min: {front['budget']['timeout_min']}, max_turns: 50 }}"
         )
         lines.append(f"verify: {json.dumps(front['verify'])}")
+        if t.get("model"):
+            lines.append(f"model: {json.dumps(str(t['model']))}")
         lines.append("---")
         lines.append("")
         lines.append(str(t.get("body", "")).strip())

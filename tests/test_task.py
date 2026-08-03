@@ -46,6 +46,102 @@ body
     assert task.depends_on == ("001",)
 
 
+def test_per_ticket_model_parses_and_overrides_agent(tmp_path, repo):
+    from factory.agent import build_command
+    from factory.config import AgentConfig
+
+    # No model on the ticket -> the run-wide model wins.
+    plain = parse_ticket(write_ticket(tmp_path / "b1", "001", repo), "main")
+    assert plain.model is None
+    cmd = build_command(AgentConfig(command=("python",), model="sonnet"), plain)
+    assert "--model" in cmd and cmd[cmd.index("--model") + 1] == "sonnet"
+
+    # A model on the ticket overrides the run-wide default.
+    pinned = parse_ticket(write_ticket(tmp_path / "b2", "002", repo, model="haiku"), "main")
+    assert pinned.model == "haiku"
+    cmd2 = build_command(AgentConfig(command=("python",), model="sonnet"), pinned)
+    assert cmd2[cmd2.index("--model") + 1] == "haiku"
+
+
+def test_non_numeric_ticket_fields_raise_ticket_error(tmp_path, repo):
+    # A non-numeric priority/timeout must fail with the actionable TicketError,
+    # not a raw ValueError that escapes the CLI handler as a traceback.
+    bad_prio = write_ticket(tmp_path / "p1", "001", repo, priority="high")
+    with pytest.raises(TicketError, match="priority must be a whole number"):
+        parse_ticket(bad_prio, "main")
+    bad_budget = tmp_path / "p2" / "002.md"
+    (tmp_path / "p2").mkdir()
+    bad_budget.write_text(
+        f'---\nid: "002"\ntitle: t\nrepo: {repo.as_posix()}\n'
+        "budget: { timeout_min: soon }\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TicketError, match="timeout_min must be a whole number"):
+        parse_ticket(bad_budget, "main")
+
+
+def test_per_ticket_effort_parses_and_overrides_agent(tmp_path, repo):
+    from factory.agent import build_command
+    from factory.config import AgentConfig
+
+    # No effort on the ticket -> the run-wide effort wins.
+    plain = parse_ticket(write_ticket(tmp_path / "e1", "001", repo), "main")
+    assert plain.effort is None
+    cmd = build_command(AgentConfig(command=("python",), effort="high"), plain)
+    assert cmd[cmd.index("--effort") + 1] == "high"
+
+    # An effort on the ticket overrides the run-wide default.
+    pinned = parse_ticket(write_ticket(tmp_path / "e2", "002", repo, effort="low"), "main")
+    assert pinned.effort == "low"
+    cmd2 = build_command(AgentConfig(command=("python",), effort="high"), pinned)
+    assert cmd2[cmd2.index("--effort") + 1] == "low"
+
+
+def test_per_ticket_skip_flags_parse(tmp_path, repo):
+    # Absent -> both checks stay on (honour the run-wide settings).
+    plain = parse_ticket(write_ticket(tmp_path / "s1", "001", repo), "main")
+    assert plain.skip_verify is False
+    assert plain.skip_review is False
+
+    # Opt-out per ticket for a trivial, low-risk change.
+    skipped = parse_ticket(
+        write_ticket(tmp_path / "s2", "002", repo, skip_verify="true", skip_review="true"),
+        "main",
+    )
+    assert skipped.skip_verify is True
+    assert skipped.skip_review is True
+
+
+def test_assignee_and_hold_parse(tmp_path, repo):
+    # Absent -> "ai", not held (the factory runs it).
+    plain = parse_ticket(write_ticket(tmp_path / "a1", "001", repo), "main")
+    assert plain.assignee == "ai"
+    assert plain.hold is False
+    # assignee: human -> a developer owns it; the AI leaves it alone.
+    manual = parse_ticket(write_ticket(tmp_path / "a2", "002", repo, assignee="human"), "main")
+    assert manual.assignee == "human"
+    # hold: true -> an AI ticket the operator paused.
+    held = parse_ticket(write_ticket(tmp_path / "a3", "003", repo, hold="true"), "main")
+    assert held.assignee == "ai" and held.hold is True
+
+
+def test_resumed_retry_passes_the_resume_flag(tmp_path, repo):
+    from factory.agent import build_command
+    from factory.config import AgentConfig
+
+    task = parse_ticket(write_ticket(tmp_path / "r1", "001", repo), "main")
+    assert "--resume" not in build_command(AgentConfig(command=("python",)), task)
+    task.resume_session = "sess-42"
+    cmd = build_command(AgentConfig(command=("python",)), task)
+    assert cmd[cmd.index("--resume") + 1] == "sess-42"
+
+
+def test_per_ticket_effort_rejects_unknown_level(tmp_path, repo):
+    path = write_ticket(tmp_path / "e3", "003", repo, effort="turbo")
+    with pytest.raises(TicketError, match="effort must be one of"):
+        parse_ticket(path, "main")
+
+
 @pytest.mark.parametrize(
     ("content", "fragment"),
     [

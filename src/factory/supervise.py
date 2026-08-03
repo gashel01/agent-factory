@@ -10,11 +10,108 @@ conversation, not a stateless Q&A.
 
 from __future__ import annotations
 
-import shutil
+from collections.abc import Callable
 from pathlib import Path
 
-from .agent import extract_trailing_json, is_rate_limit_result, stream_headless
+from .agent import (
+    build_cli,
+    extract_trailing_json,
+    is_rate_limit_result,
+    spawn_env,
+    stream_headless,
+)
 from .config import Config
+from .events import EventLog
+
+#: Terminal task states worth surfacing at the top of a snapshot.
+_ATTENTION_STATES = ("BLOCKED", "FAILED", "AWAITING_APPROVAL")
+
+
+def _newest_run(runs_dir: Path) -> Path | None:
+    if not runs_dir.exists():
+        return None
+    runs = sorted(p for p in runs_dir.glob("*") if (p / "events.jsonl").exists())
+    return runs[-1] if runs else None
+
+
+def run_digest(runs_dir: Path, max_recent: int = 10) -> str:
+    """A compact, current snapshot of the newest run, folded from events.jsonl.
+
+    Handed to the supervisor on EVERY message so it can answer straight away
+    instead of spending turns re-tailing logs. Empty string when no run exists
+    yet (the supervisor then just talks about the backlog / general questions).
+    """
+    run_dir = _newest_run(runs_dir)
+    if run_dir is None:
+        return ""
+
+    states: dict[str, str] = {}
+    summaries: dict[str, str] = {}
+    recent: list[str] = []
+    spend = 0.0
+    started = ended = slots = stopped = None
+    plan_limit: dict | None = None
+
+    for e in EventLog.replay(run_dir / "events.jsonl"):
+        ev, ts = e.get("event"), str(e.get("ts", ""))[11:16]  # HH:MM (UTC)
+        if ev == "run_start":
+            started, slots = ts, e.get("slots")
+        elif ev == "run_end":
+            ended, stopped = ts, e.get("stopped")
+        elif ev == "state":
+            states[str(e.get("task"))] = str(e.get("to"))
+            recent.append(f"{ts} {e.get('task')} → {e.get('to')}")
+        elif ev == "failure":
+            summaries[str(e.get("task"))] = str(e.get("reason", ""))[:160]
+        elif ev == "agent_result":
+            spend = e.get("spent_usd", spend) or spend
+            if e.get("summary"):
+                summaries[str(e.get("task"))] = str(e.get("summary"))[:160]
+        elif ev in ("stopped", "paused_ratelimit"):
+            recent.append(f"{ts} {ev} {str(e.get('reason', ''))[:80]}".rstrip())
+        elif ev == "plan_limit":
+            plan_limit = e
+
+    if not states and not started:
+        return ""
+
+    counts: dict[str, int] = {}
+    for st in states.values():
+        counts[st] = counts.get(st, 0) + 1
+    counts_line = ", ".join(f"{n} {st}" for st, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+
+    status = "ENDED" if ended else "RUNNING"
+    head = f"Run {run_dir.name} · {status}"
+    if started:
+        head += f" · started {started}"
+    if slots:
+        head += f" · {slots} slots"
+    head += f" · spend ~${spend:.2f}"
+    if stopped:
+        head += f" · stopped: {stopped}"
+
+    lines = [
+        "# Live run snapshot (already read for you from events.jsonl)",
+        head,
+        f"States: {counts_line}" if counts_line else "States: (none yet)",
+    ]
+
+    attention = [t for t, st in states.items() if st in _ATTENTION_STATES]
+    if attention:
+        lines.append("Needs attention:")
+        for t in sorted(attention):
+            note = summaries.get(t, "")
+            lines.append(f"  - {t} {states[t]}" + (f" — {note}" if note else ""))
+
+    if recent:
+        lines.append("Recent:")
+        lines.extend(f"  {r}" for r in recent[-max_recent:])
+
+    if plan_limit and plan_limit.get("status"):
+        resets = plan_limit.get("resets_at") or "?"
+        lines.append(f"Plan limit: {plan_limit.get('status')} (resets {resets})")
+
+    return "\n".join(lines)
 
 SUPERVISOR_CONTRACT = """\
 # Supervisor contract — Agent Factory
@@ -32,8 +129,18 @@ dashboard. Your working directory is the factory WORKSPACE:
   {"op": "kill"|"retry", "task": "<id>"}. The dispatcher applies it within
   a second. Never rewrite this file, only append.
 
+On EVERY message you are given a `# Live run snapshot` block (task states, spend,
+recent transitions, what needs attention), already folded from events.jsonl for
+you. Treat it as ground truth and answer from it directly — do NOT re-open
+events.jsonl just to learn the current state. Open the logs only to fetch a
+specific detail the snapshot doesn't carry (e.g. WHY a task failed, an agent's
+recent reasoning), and only the END of the relevant file.
+
 Rules:
-- Ground every claim in a file you actually read. Never invent task states.
+- Ground every claim in the snapshot or a file you actually read. Never invent
+  task states.
+- When you must read further, read the END of events.jsonl / an agent's stdout
+  log first (latest lines answer most questions). Never re-read a whole log.
 - Answer the operator's question first, briefly and concretely.
 - Act only when asked (or when the operator clearly wants an outcome that
   requires it): kill a runaway task, retry a failure, pause, edit or create
@@ -47,8 +154,42 @@ Rules:
 
 End your final message with a strict JSON block (no fences):
 {"status": "done", "reply": "<your answer to the operator, plain language>",
- "actions": ["<one short line per action taken, empty if none>"]}
+ "actions": ["<one short line per action taken, empty if none>"],
+ "suggestions": [{"op": "retry|kill|pause|resume|stop", "task": "<id if the op needs one>",
+                  "label": "<=3-word button text>"}]}
+
+"suggestions" are one-click next steps you RECOMMEND but did NOT perform — the
+operator clicks to apply them. Only propose ops that genuinely fit the situation
+(e.g. retry a task that failed on a flake, kill a runaway one); leave it empty
+when nothing is worth proposing. "task" is required for retry/kill, omitted for
+pause/resume/stop.
 """
+
+#: Control ops the operator can trigger from a one-click suggestion.
+_SUGGESTION_OPS = frozenset({"retry", "kill", "pause", "resume", "stop"})
+
+
+def _clean_suggestions(raw: object) -> list[dict]:
+    """Keep only well-formed, executable suggestions (a real op; a task id when
+    the op needs one). Anything odd is dropped rather than trusted."""
+    out: list[dict] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("op", "")).strip()
+        if op not in _SUGGESTION_OPS:
+            continue
+        task = str(item.get("task", "")).strip()
+        if op in ("retry", "kill") and not task:
+            continue
+        label = str(item.get("label", "")).strip()[:24] or op.capitalize()
+        entry = {"op": op, "label": label}
+        if task:
+            entry["task"] = task
+        out.append(entry)
+    return out
 
 
 class SuperviseError(Exception):
@@ -59,39 +200,47 @@ def _session_file(workdir: Path) -> Path:
     return workdir / ".supervisor-session"
 
 
-async def ask(cfg: Config, workdir: Path, message: str, log_path: Path) -> dict:
-    """One supervisor exchange; resumes the previous session when one exists."""
-    exe = shutil.which(cfg.agent.command[0])
-    if exe is None:
-        raise SuperviseError(f"agent command '{cfg.agent.command[0]}' not found on PATH")
+async def ask(
+    cfg: Config,
+    workdir: Path,
+    message: str,
+    log_path: Path,
+    runs_dir: Path | None = None,
+    on_activity: Callable[[dict], None] | None = None,
+) -> dict:
+    """One supervisor exchange; resumes the previous session when one exists.
 
-    cmd = [
-        exe,
-        *cfg.agent.command[1:],
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--max-turns",
-        "30",
-        "--allowedTools",
-        ",".join(cfg.supervisor.allowed_tools),
-    ]
-    if model := (cfg.supervisor.model or cfg.agent.model):
-        cmd += ["--model", model]
+    A `# Live run snapshot` (folded from events.jsonl) is prepended to every
+    message so the supervisor answers without re-tailing logs. ``on_activity``
+    fires per assistant turn so a caller can stream progress to the operator.
+    """
+    cmd = build_cli(
+        cfg.agent.command,
+        max_turns=30,
+        allowed_tools=cfg.supervisor.allowed_tools,
+        model=cfg.supervisor.model or cfg.agent.model,
+        missing=SuperviseError,
+    )
+
+    runs_dir = runs_dir if runs_dir is not None else (workdir / "runs")
+    snapshot = run_digest(runs_dir)
+    preamble = f"{snapshot}\n\n---\n\n" if snapshot else ""
 
     session_file = _session_file(workdir)
     resumed = session_file.exists()
     if resumed:
         # Resume keeps the whole conversation: the contract is already in context.
+        # The snapshot is still re-sent — the run state has moved since last turn.
         cmd += ["--resume", session_file.read_text(encoding="utf-8").strip()]
-        prompt = f"{message}\n"
+        prompt = f"{preamble}# Operator\n\n{message}\n"
     else:
-        prompt = f"{SUPERVISOR_CONTRACT}\n\n---\n\n# Operator\n\n{message}\n"
+        prompt = f"{SUPERVISOR_CONTRACT}\n\n---\n\n{preamble}# Operator\n\n{message}\n"
 
     try:
         out = await stream_headless(
-            cmd, prompt, workdir, log_path, timeout_s=cfg.supervisor.timeout_min * 60
+            cmd, prompt, workdir, log_path, timeout_s=cfg.supervisor.timeout_min * 60,
+            on_activity=on_activity,
+            env=spawn_env(cfg.execution_mode),
         )
     except TimeoutError as exc:
         raise SuperviseError(
@@ -103,7 +252,7 @@ async def ask(cfg: Config, workdir: Path, message: str, log_path: Path) -> dict:
     if (out.returncode != 0 or out.result is None) and resumed:
         # The stored session may have expired: retry once, fresh.
         session_file.unlink(missing_ok=True)
-        return await ask(cfg, workdir, message, log_path)
+        return await ask(cfg, workdir, message, log_path, runs_dir, on_activity)
     if out.returncode != 0 or out.result is None:
         raise SuperviseError(out.stderr_tail or f"supervisor exited {out.returncode}")
 
@@ -113,10 +262,11 @@ async def ask(cfg: Config, workdir: Path, message: str, log_path: Path) -> dict:
     contract = extract_trailing_json(str(out.result.get("result", "")))
     if contract is None or "reply" not in contract:
         # Fall back to the raw final text rather than losing the answer.
-        return {"reply": str(out.result.get("result", ""))[:4000], "actions": []}
+        return {"reply": str(out.result.get("result", ""))[:4000], "actions": [], "suggestions": []}
     return {
         "reply": str(contract.get("reply", "")),
         "actions": [str(a) for a in contract.get("actions", [])],
+        "suggestions": _clean_suggestions(contract.get("suggestions")),
     }
 
 

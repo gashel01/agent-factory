@@ -1,9 +1,72 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 
-from factory.agent import extract_trailing_json, is_rate_limit_result
+from factory.agent import (
+    describe_step,
+    extract_trailing_json,
+    is_rate_limit_result,
+    stream_headless,
+)
 from factory.events import EventLog
+
+
+def _assistant(*blocks):
+    return {"type": "assistant", "message": {"content": list(blocks)}}
+
+
+def test_describe_step_prefers_tool_use():
+    read = _assistant(
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "C:/repo/src/auth.py"}}
+    )
+    assert describe_step(read) == "reading auth.py"
+    grep = _assistant({"type": "tool_use", "name": "Grep", "input": {"pattern": "login"}})
+    assert describe_step(grep) == 'searching for "login"'
+    glob = _assistant({"type": "tool_use", "name": "Glob", "input": {"pattern": "**/*.ts"}})
+    assert describe_step(glob) == "finding files matching **/*.ts"
+
+
+def test_describe_step_falls_back_to_narration_and_none():
+    # A leading blank text block is skipped in favour of the tool call.
+    mixed = _assistant(
+        {"type": "text", "text": "  "},
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "x/y/config.yaml"}},
+    )
+    assert describe_step(mixed) == "reading config.yaml"
+    # No tool this turn: first line of narration, trimmed.
+    narr = _assistant({"type": "text", "text": "Now I understand the flow.\nNext: tests."})
+    assert describe_step(narr) == "Now I understand the flow."
+    # Nothing worth showing.
+    assert describe_step(_assistant()) is None
+
+
+def test_stream_headless_reports_live_activity(tmp_path):
+    """The on_activity callback fires for each assistant record as it streams,
+    so the planner can surface a live feed instead of a silent wait."""
+    fake = tmp_path / "fake_agent.py"
+    fake.write_text(
+        "import sys, json\n"
+        "sys.stdin.read()\n"
+        "for rec in [\n"
+        "  {'type':'assistant','message':{'content':[{'type':'tool_use',"
+        "'name':'Read','input':{'file_path':'a/b/main.py'}}]}},\n"
+        "  {'type':'assistant','message':{'content':[{'type':'tool_use',"
+        "'name':'Grep','input':{'pattern':'token'}}]}},\n"
+        "  {'type':'result','result':'{\\\"status\\\":\\\"done\\\"}'},\n"
+        "]:\n"
+        "  print(json.dumps(rec), flush=True)\n",
+        encoding="utf-8",
+    )
+    steps: list[str] = []
+    outcome = asyncio.run(stream_headless(
+        [sys.executable, str(fake)], "prompt", tmp_path, tmp_path / "log.jsonl",
+        timeout_s=30,
+        on_activity=lambda rec: (lambda s: steps.append(s) if s else None)(describe_step(rec)),
+    ))
+    assert outcome.returncode == 0
+    assert steps == ["reading main.py", 'searching for "token"']
 
 
 def test_event_log_roundtrip(tmp_path):

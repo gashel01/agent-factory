@@ -9,11 +9,16 @@ single tiny agent call instead of a wasted run.
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agent import extract_trailing_json, is_rate_limit_result, stream_headless
+from .agent import (
+    build_cli,
+    extract_trailing_json,
+    is_rate_limit_result,
+    spawn_env,
+    stream_headless,
+)
 from .config import Config
 
 DOCTOR_CONTRACT = """\
@@ -52,30 +57,22 @@ class DoctorReport:
 
 
 async def run_doctor(cfg: Config, workdir: Path, log_path: Path) -> DoctorReport:
-    exe = shutil.which(cfg.agent.command[0])
-    if exe is None:
-        raise DoctorError(f"agent command '{cfg.agent.command[0]}' not found on PATH")
-
     probes = ["git --version", *cfg.setup.commands]
     prompt = DOCTOR_CONTRACT.format(probes="\n".join(f"- {c}" for c in probes))
 
-    cmd = [
-        exe,
-        *cfg.agent.command[1:],
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--max-turns",
-        "15",
-        "--allowedTools",
-        ",".join(cfg.agent.allowed_tools),  # the EXACT permissions runs will get
-    ]
-    if cfg.agent.model:
-        cmd += ["--model", cfg.agent.model]
+    cmd = build_cli(
+        cfg.agent.command,
+        max_turns=15,
+        allowed_tools=cfg.agent.allowed_tools,  # the EXACT permissions runs will get
+        model=cfg.agent.model,
+        missing=DoctorError,
+    )
 
     try:
-        out = await stream_headless(cmd, prompt, workdir, log_path, timeout_s=5 * 60)
+        out = await stream_headless(
+            cmd, prompt, workdir, log_path, timeout_s=5 * 60,
+            env=spawn_env(cfg.execution_mode),
+        )
     except TimeoutError as exc:
         raise DoctorError("capability check exceeded 5 minutes") from exc
 

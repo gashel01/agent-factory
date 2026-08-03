@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from .config import EFFORT_LEVELS
+
 
 class TicketError(Exception):
     """Raised for malformed tickets; the message names the file and the fix."""
@@ -19,6 +21,7 @@ class TaskState(StrEnum):
     RUNNING = "RUNNING"
     VERIFYING = "VERIFYING"
     REVIEWING = "REVIEWING"
+    AWAITING_APPROVAL = "AWAITING_APPROVAL"
     MERGE_QUEUED = "MERGE_QUEUED"
     MERGING = "MERGING"
     DONE = "DONE"
@@ -32,6 +35,7 @@ IN_FLIGHT = frozenset(
         TaskState.RUNNING,
         TaskState.VERIFYING,
         TaskState.REVIEWING,
+        TaskState.AWAITING_APPROVAL,
         TaskState.MERGE_QUEUED,
         TaskState.MERGING,
     }
@@ -58,8 +62,35 @@ class Task:
     max_retries: int = 2
     budget: Budget = field(default_factory=Budget)
     verify_commands: tuple[str, ...] = ()
+    # Per-ticket escape hatches for trivial, low-risk changes (a title tweak, a
+    # copy edit): skip the deterministic verify step and/or the AI code reviewer to
+    # save time and tokens. Opt-in per ticket; default False = honour the run-wide
+    # settings. The operator takes responsibility for eyeballing the change.
+    skip_verify: bool = False
+    skip_review: bool = False
+    # Who owns this ticket. "ai" (default) = the factory runs it. "human" = a
+    # developer does it by hand; the AI never picks it up, the dashboard just
+    # tracks it on the shared board. Flip it back to "ai" to hand it to the agents.
+    assignee: str = "ai"
+    # On hold: an AI ticket the operator paused. It stays in the backlog but a run
+    # skips it (a per-ticket pause for work that hasn't started). Lift it to run it.
+    hold: bool = False
+    # Optional per-ticket model override (e.g. "haiku" for a trivial change,
+    # "opus" for a hard one). None = use the run-wide agent model.
+    model: str | None = None
+    # Optional per-ticket reasoning-effort override; None = the run-wide effort.
+    effort: str | None = None
     attempts: int = 0
     failure_notes: list[str] = field(default_factory=list)
+    # Session id of the previous attempt, set by the dispatcher when a retry can
+    # RESUME it (worktree parked, work still on disk). A resumed agent keeps its
+    # context — no re-reading the contract/brief, no re-exploring the repo —
+    # instead of restarting cold. None = fresh attempt.
+    resume_session: str | None = None
+    # The most recent agent session id (set on every successful agent run), so a
+    # LATER-stage failure — post-rebase merge conflict, review rejection — can
+    # resume that session instead of restarting the agent from scratch.
+    last_session: str | None = None
 
     def collides_with(self, other: Task) -> bool:
         """Two tasks collide when they may touch the same files.
@@ -128,11 +159,28 @@ def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int 
     if unknown:
         raise TicketError(f"{path.name}: unknown budget keys: {sorted(unknown)}")
 
+    effort = str(meta["effort"]) if meta.get("effort") else None
+    if effort is not None and effort not in EFFORT_LEVELS:
+        raise TicketError(
+            f"{path.name}: effort must be one of {', '.join(EFFORT_LEVELS)}, got {effort!r}"
+        )
+
     def _str_tuple(key: str) -> tuple[str, ...]:
         value = meta.get(key) or []
         if isinstance(value, str):
             value = [value]
         return tuple(str(v) for v in value)
+
+    def _int(value: object, default: int, field: str) -> int:
+        # A non-numeric YAML value (priority: high, timeout_min: "30m") must fail
+        # with the actionable "file: bad field" message, not a raw ValueError
+        # that escapes the CLI's error handler as a traceback.
+        try:
+            return int(value if value is not None else default)
+        except (TypeError, ValueError):
+            raise TicketError(
+                f"{path.name}: {field} must be a whole number, got {value!r}"
+            ) from None
 
     return Task(
         id=str(meta["id"]),
@@ -143,13 +191,19 @@ def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int 
         path=path,
         files_hint=_str_tuple("files_hint"),
         depends_on=tuple(str(d) for d in (meta.get("depends_on") or [])),
-        priority=int(meta.get("priority", 5)),
-        max_retries=int(meta.get("max_retries", default_max_retries)),
+        priority=_int(meta.get("priority"), 5, "priority"),
+        max_retries=_int(meta.get("max_retries"), default_max_retries, "max_retries"),
         budget=Budget(
-            timeout_min=int(budget_raw.get("timeout_min", 30)),
-            max_turns=int(budget_raw.get("max_turns", 50)),
+            timeout_min=_int(budget_raw.get("timeout_min"), 30, "budget.timeout_min"),
+            max_turns=_int(budget_raw.get("max_turns"), 50, "budget.max_turns"),
         ),
         verify_commands=_str_tuple("verify"),
+        skip_verify=bool(meta.get("skip_verify", False)),
+        skip_review=bool(meta.get("skip_review", False)),
+        assignee=("human" if str(meta.get("assignee", "")).strip().lower() == "human" else "ai"),
+        hold=bool(meta.get("hold", False)),
+        model=(str(meta["model"]) if meta.get("model") else None),
+        effort=effort,
     )
 
 

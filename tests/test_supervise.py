@@ -5,8 +5,27 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from factory.supervise import ask, format_answer, reset
+from factory.supervise import _clean_suggestions, ask, format_answer, reset
 from test_e2e import make_config
+
+
+def test_clean_suggestions_keeps_only_executable_proposals():
+    raw = [
+        {"op": "retry", "task": "004", "label": "Retry 004"},   # ok
+        {"op": "kill", "label": "Kill it"},                      # dropped: kill needs a task
+        {"op": "pause", "label": "Pause the run"},               # ok (no task needed)
+        {"op": "delete", "task": "004", "label": "nuke"},        # dropped: op not allowed
+        {"op": "stop"},                                          # ok, label defaults
+        "not-a-dict",                                            # dropped
+    ]
+    out = _clean_suggestions(raw)
+    assert out == [
+        {"op": "retry", "label": "Retry 004", "task": "004"},
+        {"op": "pause", "label": "Pause the run"},
+        {"op": "stop", "label": "Stop"},
+    ]
+    assert _clean_suggestions(None) == []
+    assert _clean_suggestions("nope") == []
 
 
 def ask_sync(workdir: Path, message: str) -> dict:

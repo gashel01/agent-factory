@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from .config import ConfigError, load_config
 from .dispatcher import Dispatcher
 from .doctor import DoctorError, format_report, run_doctor
 from .events import EventLog
-from .plan import PlanError, run_planner, write_drafts
+from .plan import PlanError, read_brief, run_planner, write_brief, write_drafts
 from .supervise import SuperviseError, ask, format_answer, reset
 from .task import TicketError, load_backlog, parse_ticket
 from .worktree import GitError, prune
@@ -47,6 +48,19 @@ def _replay_states(run_dir: Path) -> tuple[dict[str, str], dict]:
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = load_config(args.config).with_overrides(max_slots=args.slots)
     tasks = load_backlog(args.backlog, cfg.base_branch, cfg.default_max_retries)
+
+    # A run only launches AI tickets that aren't on hold. Manual tickets belong to
+    # a human developer; held tickets are paused by the operator. Both stay in the
+    # backlog. Treat a dependency on a skipped ticket as satisfied (the dev/operator
+    # handles it) so a run never dead-locks waiting on work it won't do.
+    skipped_ids = {t.id for t in tasks if t.assignee == "human" or t.hold}
+    tasks = [t for t in tasks if t.assignee == "ai" and not t.hold]
+    for t in tasks:
+        if skipped_ids & set(t.depends_on):
+            t.depends_on = tuple(d for d in t.depends_on if d not in skipped_ids)
+    if not tasks:
+        print("no AI tickets to run (all are assigned to a human or on hold).")
+        return 0
 
     if args.dry_run:
         print(f"{len(tasks)} ticket(s) parsed, slots={cfg.max_slots}")
@@ -124,8 +138,15 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print(f"error: {repo} is not a git repository", file=sys.stderr)
         return 2
     log_path = args.runs / "planner" / f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.jsonl"
+    workspace = Path.cwd()
+    brief = read_brief(workspace, repo)
+    if brief:
+        print("reusing the saved project map (skips a full re-scan)")
     print(f"planning against {repo} … (one read-only agent, ~1-3 min)")
-    contract = asyncio.run(run_planner(cfg, repo, args.goal, log_path))
+    contract = asyncio.run(run_planner(cfg, repo, args.goal, log_path, brief))
+    # Persist the (refreshed) project map, keyed to THIS repo, so the next plan
+    # and every coding agent reuse it — and a different repo never inherits it.
+    write_brief(workspace, repo, str(contract.get("brief", "")))
     written = write_drafts(contract["tickets"], args.backlog, repo)
     print(f"\n{len(written)} draft ticket(s) written to {args.backlog}:")
     for path in written:
@@ -136,6 +157,28 @@ def cmd_plan(args: argparse.Namespace) -> int:
     # ASCII only: Windows consoles may still run a cp1252 codepage.
     print("\nReview/edit them, then:  factory run --dry-run  ->  factory run")
     return 0
+
+
+def _activity_snippet(record: dict) -> str:
+    """One short human line describing an assistant turn (its text, or the tool
+    it is using), for live progress. Empty when there's nothing worth showing."""
+    msg = record.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            text = " ".join(str(item.get("text", "")).split())
+            if text:
+                return text[:140]
+        if item.get("type") == "tool_use":
+            name = str(item.get("name", "")).replace("mcp__", "")
+            inp = item.get("input") if isinstance(item.get("input"), dict) else {}
+            hint = str(inp.get("file_path") or inp.get("pattern") or inp.get("path") or "")
+            return f"{name} {hint}".strip()[:140]
+    return ""
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
@@ -150,8 +193,20 @@ def cmd_ask(args: argparse.Namespace) -> int:
         print("error: a message is required (or use --reset)", file=sys.stderr)
         return 2
     log_path = args.runs / "supervisor" / f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.jsonl"
-    answer = asyncio.run(ask(cfg, workdir, args.message, log_path))
-    print(format_answer(answer))
+
+    on_activity = None
+    if args.stream:
+        # Progress goes to STDERR as JSON lines; STDOUT stays the clean final answer
+        # (the dashboard JSON-parses stdout whole, so it must carry only the reply).
+        def on_activity(record: dict) -> None:  # noqa: F811 — deliberate rebind
+            snippet = _activity_snippet(record)
+            if snippet:
+                print(json.dumps({"kind": "progress", "text": snippet}), file=sys.stderr, flush=True)
+
+    answer = asyncio.run(ask(cfg, workdir, args.message, log_path, args.runs, on_activity))
+    # --json feeds the dashboard companion (structured suggestions become one-click
+    # buttons); the default prints prose for a human at the terminal.
+    print(json.dumps(answer) if args.json else format_answer(answer))
     return 0
 
 
@@ -163,6 +218,25 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     text = format_report(report)
     print(text)
     return 1 if "DENIED" in text else 0
+
+
+def cmd_sandbox_preflight(args: argparse.Namespace) -> int:
+    # Machine-readable readiness for the dashboard's /api/docker poll.
+    from . import sandbox
+    print(json.dumps(sandbox.preflight()))
+    return 0
+
+
+def cmd_sandbox_build(args: argparse.Namespace) -> int:
+    # Build the isolation images; streams docker output so the dashboard job panel
+    # shows live progress. Non-zero on failure so the UI can surface it.
+    from . import sandbox
+    try:
+        sandbox.build()
+    except sandbox.SandboxError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
@@ -210,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
                        help="your question or instruction to the supervisor")
     p_ask.add_argument("--reset", action="store_true",
                        help="forget the previous supervisor conversation")
+    p_ask.add_argument("--json", action="store_true",
+                       help="print the raw answer (reply, actions, suggestions) as JSON")
+    p_ask.add_argument("--stream", action="store_true",
+                       help="emit per-turn progress as JSON lines on stderr (for the dashboard)")
     p_ask.set_defaults(func=cmd_ask)
 
     p_doctor = sub.add_parser("doctor", parents=[common],
@@ -224,6 +302,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_clean = sub.add_parser("clean", parents=[common], help="prune orphaned worktrees")
     p_clean.set_defaults(func=cmd_clean)
+
+    p_sbx_pre = sub.add_parser("sandbox-preflight",
+                               help="print Docker sandbox readiness as JSON (dashboard poll)")
+    p_sbx_pre.set_defaults(func=cmd_sandbox_preflight)
+
+    p_sbx_build = sub.add_parser("sandbox-build",
+                                 help="build the Docker sandbox isolation images")
+    p_sbx_build.set_defaults(func=cmd_sandbox_build)
 
     args = parser.parse_args(argv)
     try:
