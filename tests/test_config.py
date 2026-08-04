@@ -45,12 +45,14 @@ def test_build_command_includes_effort_flag(tmp_path, repo):
     write_ticket(backlog, "001", repo)
     task = load_backlog(backlog, "main")[0]
 
-    with_effort = build_command(AgentConfig(effort="xhigh"), task)
+    # command=("python",) so PATH resolution succeeds on CI, where the real
+    # `claude` CLI isn't installed; the argv flags under test don't depend on it.
+    with_effort = build_command(AgentConfig(command=("python",), effort="xhigh"), task)
     assert "--effort" in with_effort
     assert with_effort[with_effort.index("--effort") + 1] == "xhigh"
 
     # No effort configured → the flag is absent (the CLI keeps its own default).
-    assert "--effort" not in build_command(AgentConfig(), task)
+    assert "--effort" not in build_command(AgentConfig(command=("python",)), task)
 
 
 def test_build_command_denies_destructive_git(tmp_path, repo):
@@ -60,7 +62,7 @@ def test_build_command_denies_destructive_git(tmp_path, repo):
     write_ticket(backlog, "001", repo)
     task = load_backlog(backlog, "main")[0]
 
-    cmd = build_command(AgentConfig(), task)
+    cmd = build_command(AgentConfig(command=("python",)), task)
     assert "--disallowedTools" in cmd
     denied = cmd[cmd.index("--disallowedTools") + 1]
     assert "Bash(git reset --hard:*)" in denied

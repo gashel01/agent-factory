@@ -316,7 +316,7 @@ def test_plan_limit_is_surfaced(tmp_path, repo):
 def test_webhook_notifications_fire(tmp_path, repo):
     # A blocked ticket must ping the webhook immediately (needs-you), and the run
     # must ping again with a summary when it ends. Both delivered server-side.
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     from factory.config import NotifyConfig
 
@@ -332,7 +332,10 @@ def test_webhook_notifications_fire(tmp_path, repo):
         def log_message(self, *args) -> None:
             pass
 
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+    # Threaded so two webhook POSTs firing back-to-back at end-of-run never
+    # starve each other's accept — a single-threaded server drops the second
+    # under Windows socket timing, making this test flaky on CI.
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address
@@ -340,8 +343,19 @@ def test_webhook_notifications_fire(tmp_path, repo):
     backlog = tmp_path / "backlog"
     write_ticket(backlog, "001", repo, body="STUB:BLOCKED\n")
     cfg = make_config(notify=NotifyConfig(webhook_url=f"http://{host}:{port}/hook"))
+
+    def delivered() -> bool:
+        return (
+            any("blocked and needs you" in m for m in received)
+            and any(m.startswith("[Agent Factory] Run") and "1 blocked" in m for m in received)
+        )
+
     try:
         run_dispatcher(cfg, backlog, tmp_path / "run")
+        # POSTs are best-effort; give the last one a beat to land before teardown.
+        deadline = time.monotonic() + 5
+        while not delivered() and time.monotonic() < deadline:
+            time.sleep(0.05)
     finally:
         server.shutdown()
         server.server_close()
