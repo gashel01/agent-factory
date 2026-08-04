@@ -218,7 +218,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         def on_activity(record: dict) -> None:  # noqa: F811 — deliberate rebind
             snippet = _activity_snippet(record)
             if snippet:
-                print(json.dumps({"kind": "progress", "text": snippet}), file=sys.stderr, flush=True)
+                line = json.dumps({"kind": "progress", "text": snippet})
+                print(line, file=sys.stderr, flush=True)
 
     answer = asyncio.run(ask(cfg, workdir, args.message, log_path, args.runs, on_activity))
     # --json feeds the dashboard companion (structured suggestions become one-click

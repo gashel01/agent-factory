@@ -282,7 +282,9 @@ def _git_args(worktree_path: Path) -> list[str]:
     return args
 
 
-def run_command(cmd: str, worktree_path: Path, *, allow_network: bool, timeout_s: int) -> tuple[int, str]:
+def run_command(
+    cmd: str, worktree_path: Path, *, allow_network: bool, timeout_s: int,
+) -> tuple[int, str]:
     """Run ONE shell command inside the hardened box against the worktree, and
     return (returncode, combined output). Raises subprocess.TimeoutExpired on
     timeout so callers handle it uniformly with the host path.
@@ -315,7 +317,7 @@ def _strip_host_only_flags(args: list[str]) -> list[str]:
     """Drop flags whose values are host paths meaningless inside the container."""
     out: list[str] = []
     skip_next = False
-    for i, a in enumerate(args):
+    for a in args:
         if skip_next:
             skip_next = False
             continue
