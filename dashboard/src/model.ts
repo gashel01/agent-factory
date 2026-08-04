@@ -400,14 +400,25 @@ export type StoryItem =
 
 const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
 
+/** Drop the run-worktree prefix (…\runs\<ts>\wt\<n>\) so a file path reads as the
+ *  useful relative path (src/game/platforms.ts), not the unreadable absolute noise. */
+function shortPath(p: string): string {
+  return p.replace(/^.*[\\/]wt[\\/]\d+[\\/]/i, "").replace(/\\/g, "/") || p;
+}
+
 function toolDetail(input: Record<string, unknown>): string {
   const pick = (k: string): string | undefined =>
     typeof input[k] === "string" ? (input[k] as string) : undefined;
-  return (
-    pick("file_path") ?? pick("command") ?? pick("pattern") ??
-    pick("url") ?? pick("query") ?? pick("path") ??
-    pick("description") ?? pick("prompt") ?? ""
-  );
+  const fp = pick("file_path") ?? pick("path");
+  if (fp) return shortPath(fp);
+  const cmd = pick("command");
+  if (cmd) {
+    // Agents run `cd "<worktree>" && <real command>`; show the real command, not
+    // the boilerplate cd into an absolute path.
+    const afterCd = cmd.replace(/^cd\s+"[^"]*"\s*&&\s*/i, "").trim();
+    return afterCd || shortPath(cmd);
+  }
+  return pick("pattern") ?? pick("url") ?? pick("query") ?? pick("description") ?? pick("prompt") ?? "";
 }
 
 function clip(text: string, n = 200): string {
@@ -446,7 +457,7 @@ export function narrate(raw: string): StoryItem[] {
               mission: clip((input["description"] as string) ?? (input["prompt"] as string) ?? "", 240),
             });
           } else {
-            story.push({ kind: "act", text: `${item.name}  ${clip(toolDetail(input), 90)}` });
+            story.push({ kind: "act", text: `${item.name}  ${clip(toolDetail(input), 120)}` });
           }
         }
       }

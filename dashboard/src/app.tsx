@@ -1,8 +1,9 @@
 /** Agent Factory dashboard — React app. Mounts into #app. */
 
 import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { JSX, ReactNode } from "react";
+import type { CSSProperties, JSX, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import type {
   BlockedContext, FactoryEvent, TaskState,
   CapsuleAction, CapsuleConsent, CapsulePanel, CapsuleView,
@@ -20,12 +21,12 @@ import { qrSvg } from "./qr.js";
 import type { Observation } from "./companion.js";
 import {
   ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine,
-  Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
+  BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
   GitBranch, GitMerge, InfinityIcon, Key, Laptop, Lightbulb, Lock, MessageCircle,
   MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
-  Smartphone, Sparkles, Square, Timer, Trash2, TriangleAlert, Upload, X,
+  ShieldCheck, Smartphone, Sparkles, Square, Timer, Trash2, TriangleAlert, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
 
@@ -357,7 +358,7 @@ function useStateAlerts(model: Model, notifyEnabled: boolean): void {
         const a = ALERT_STATES[t.state];
         if (a) {
           toast(`${id} ${a.msg}`, a.error);
-          if (notifyEnabled && document.hidden) sendNotification("Agent Factory", `${t.title}: ${a.msg}`);
+          if (notifyEnabled && document.hidden) sendNotification("Warden", `${t.title}: ${a.msg}`);
         }
       }
       prev.current.set(id, t.state);
@@ -366,7 +367,7 @@ function useStateAlerts(model: Model, notifyEnabled: boolean): void {
       endedSeen.current = true;
       const merged = [...model.tasks.values()].filter((t) => t.state === "DONE").length;
       toast(`Run finished — ${merged} merged.`);
-      if (notifyEnabled && document.hidden) sendNotification("Agent Factory", `Run finished — ${merged} merged.`);
+      if (notifyEnabled && document.hidden) sendNotification("Warden", `Run finished — ${merged} merged.`);
     }
   });
 }
@@ -500,6 +501,195 @@ function Modal(
         <div className="panel-body">{children}</div>
       </div>
     </div>
+  );
+}
+
+interface SelectOption { value: string; label: ReactNode }
+
+/** A custom, theme-aware dropdown rendered through a portal, so it escapes the
+ *  header's overflow/stacking context and never inherits the OS's native <select>
+ *  chrome (the white box that clashed with dark mode). Keyboard-accessible:
+ *  arrows to move, Enter/Space to pick, Escape to close; closes on outside click,
+ *  repositions on scroll/resize, and flips above the trigger when low on room. */
+function Select(
+  { value, options, onChange, className = "", ariaLabel, minWidth = 180 }:
+  { value: string; options: SelectOption[]; onChange: (v: string) => void;
+    className?: string; ariaLabel?: string; minWidth?: number },
+): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; up: boolean; maxHeight: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const selIndex = Math.max(0, options.findIndex((o) => o.value === value));
+  const [active, setActive] = useState(selIndex);
+  const current = options.find((o) => o.value === value);
+
+  const place = useCallback((): void => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const menu = menuRef.current;
+    const width = Math.max(r.width, minWidth);
+    // Measure the real menu once it's in the DOM; fall back to an estimate on the
+    // first pass (before it renders) so we still get a sane initial position.
+    const menuW = menu ? Math.max(menu.offsetWidth, width) : width;
+    const naturalH = menu ? menu.scrollHeight : Math.min(options.length * 36 + 10, 320);
+    const roomBelow = vh - r.bottom - margin;
+    const roomAbove = r.top - margin;
+    // Flip above the trigger only when below is too tight AND above has more room.
+    const up = roomBelow < Math.min(naturalH, 260) && roomAbove > roomBelow;
+    const maxHeight = Math.max(120, Math.min(naturalH, up ? roomAbove : roomBelow));
+    // Clamp horizontally so a trigger near the right (or a wide menu) never spills
+    // off-screen; never push past the left margin either.
+    const left = Math.max(margin, Math.min(r.left, vw - menuW - margin));
+    setPos({ top: up ? r.top : r.bottom, left, width, up, maxHeight });
+  }, [options.length, minWidth]);
+
+  // Position after the menu is actually in the DOM (so it can be measured), before
+  // paint — no flicker. Re-runs whenever the menu opens.
+  useLayoutEffect(() => { if (open) place(); }, [open, place]);
+
+  const menuStyle: CSSProperties = pos
+    ? {
+        position: "fixed", left: pos.left, minWidth: pos.width, maxHeight: pos.maxHeight,
+        ...(pos.up ? { bottom: window.innerHeight - pos.top + 6 } : { top: pos.top + 6 }),
+      }
+    // First render (not yet measured): off-screen + hidden so it can be sized
+    // without a visible flash; the layout effect immediately replaces this.
+    : { position: "fixed", top: 0, left: -9999, visibility: "hidden", minWidth };
+  useEffect(() => { if (open) setActive(selIndex); }, [open, selIndex]);
+  useEffect(() => {
+    if (!open) return;
+    const reposition = (): void => place();
+    const onDown = (e: PointerEvent): void => {
+      if (triggerRef.current?.contains(e.target as Node)) return;
+      if (menuRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("pointerdown", onDown, true);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("pointerdown", onDown, true);
+    };
+  }, [open, place]);
+  useEffect(() => {
+    if (!open || !menuRef.current) return;
+    menuRef.current.querySelector<HTMLElement>(`[data-i="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [open, active]);
+
+  const choose = (v: string): void => { onChange(v); setOpen(false); triggerRef.current?.focus(); };
+
+  return (
+    <>
+      <button
+        ref={triggerRef} type="button" className={`xselect-trigger ${className}`.trim()}
+        aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (!open) {
+            if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(true); }
+            return;
+          }
+          // While open we own these keys — stop them reaching an enclosing dialog's
+          // Escape/hotkey listeners (else Escape would close the whole drawer too).
+          if (["ArrowDown", "ArrowUp", "Home", "End", "Enter", " ", "Escape"].includes(e.key)) e.stopPropagation();
+          if (e.key === "ArrowDown") { e.preventDefault(); setActive((i) => Math.min(options.length - 1, i + 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setActive((i) => Math.max(0, i - 1)); }
+          else if (e.key === "Home") { e.preventDefault(); setActive(0); }
+          else if (e.key === "End") { e.preventDefault(); setActive(options.length - 1); }
+          else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); const o = options[active]; if (o) choose(o.value); }
+          else if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
+          else if (e.key === "Tab") { setOpen(false); }
+        }}
+      >
+        <span className="xselect-value">{current?.label ?? value}</span>
+        <span className="xselect-caret"><ChevronDown size={15} /></span>
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef} className={`xselect-menu${pos?.up ? " up" : ""}`} role="listbox"
+          style={menuStyle}
+        >
+          {options.map((o, i) => (
+            <div
+              key={o.value} data-i={i} role="option" aria-selected={o.value === value}
+              className={`xselect-opt${o.value === value ? " sel" : ""}${i === active ? " active" : ""}`}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => choose(o.value)}
+            >
+              <span className="xselect-opt-label">{o.label}</span>
+              {o.value === value && <span className="xselect-check"><Check size={14} /></span>}
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+interface OverflowItem { label: string; hint?: string; onClick: () => void; on?: boolean }
+
+/** A compact "•••" action menu (portal-rendered, right-aligned, theme-aware) for
+ *  demoting secondary header controls out of the top bar without losing them —
+ *  they move here, one tap away, rather than away. Closes on outside click,
+ *  Escape, or scroll/resize. */
+function OverflowMenu({ items, ariaLabel = "More" }: { items: OverflowItem[]; ariaLabel?: string }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const place = useCallback((): void => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+  }, []);
+  useLayoutEffect(() => { if (open) place(); }, [open, place]);
+  useEffect(() => {
+    if (!open) return;
+    const rp = (): void => place();
+    const onDown = (e: PointerEvent): void => {
+      if (triggerRef.current?.contains(e.target as Node) || menuRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent): void => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("scroll", rp, true);
+    window.addEventListener("resize", rp);
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("scroll", rp, true);
+      window.removeEventListener("resize", rp);
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, place]);
+  return (
+    <>
+      <button ref={triggerRef} className={`hbtn icon-btn${open ? " on" : ""}`} aria-haspopup="menu"
+        aria-expanded={open} aria-label={ariaLabel} onClick={() => setOpen((o) => !o)}>
+        <MoreHorizontal size={16} />
+      </button>
+      {open && pos && createPortal(
+        <div ref={menuRef} className="xselect-menu overflow-menu" role="menu"
+          style={{ position: "fixed", top: pos.top, right: pos.right, minWidth: 200 }}>
+          {items.map((it, i) => (
+            <button key={i} role="menuitem" className={`xselect-opt as-action${it.on ? " sel" : ""}`}
+              onClick={() => { setOpen(false); it.onClick(); }}>
+              <span className="xselect-opt-label">{it.label}</span>
+              {it.hint && <span className="oi-hint">{it.hint}</span>}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 
@@ -644,42 +834,6 @@ function UsageCard(
   );
 }
 
-/** The shipped tickets, chip-listed in the completed-run hero. "+N more" opens the
- *  full list in a modal (the tickets themselves — not cost). */
-function ShippedChips({ merged, onMore }: { merged: TaskModel[]; onMore: () => void }): JSX.Element | null {
-  if (merged.length === 0) return null;
-  return (
-    <ul className="synth-chips">
-      {merged.slice(0, 5).map((t) => <li key={t.id} title={t.title}>{t.title}</li>)}
-      {merged.length > 5 && (
-        <li className="more"><button onClick={onMore}>+{merged.length - 5} more <ArrowRight size={12} /></button></li>
-      )}
-    </ul>
-  );
-}
-
-/** Every shipped ticket with its cost/tokens — opened from the hero's "+N more". */
-function ShippedModal({ merged, onOpenLog, onClose }: {
-  merged: TaskModel[]; onOpenLog: (t: TaskModel) => void; onClose: () => void;
-}): JSX.Element {
-  return (
-    <Modal title={`Shipped — ${merged.length} ticket${merged.length === 1 ? "" : "s"}`} onClose={onClose} wide>
-      <div className="shipped-list">
-        {merged.map((t) => (
-          <button key={t.id} className="shipped-row" onClick={() => { onClose(); onOpenLog(t); }}>
-            <span className="shipped-id tnum">{t.id}</span>
-            <span className="shipped-title">{t.title}</span>
-            <span className="shipped-meta tnum">
-              {t.costUsd > 0 && <span className="cost">{fmtUsd(t.costUsd)}</span>}
-              {t.tokens > 0 && <span className="tok">{fmtTokens(t.tokens)}</span>}
-            </span>
-          </button>
-        ))}
-      </div>
-    </Modal>
-  );
-}
-
 /* --------------------------- command palette (Cmd-K) --------------------------- */
 
 interface Command { id: string; label: string; hint?: string; group: string; run: () => void }
@@ -810,7 +964,6 @@ type ModalState =
   | { type: "depgraph" }
   | { type: "cmdk" }
   | { type: "docs" }
-  | { type: "shipped" }
   | { type: "aireview"; file: string; title: string }
   | { type: "log"; taskId: string; title: string };
 
@@ -1561,7 +1714,7 @@ function App(): JSX.Element {
     if (!latest || latest.id === lastNotified.current) return;
     lastNotified.current = latest.id;
     if (latest.level === "attention" && notify.on && document.hidden) {
-      sendNotification("Agent Factory", latest.text);
+      sendNotification("Warden", latest.text);
     }
   }, [companion.obs, notify.on]);
   const anyRunning = [...model.tasks.values()].some((t) => t.runningSince !== null);
@@ -1792,17 +1945,15 @@ function App(): JSX.Element {
           <div className="brand">
             <button className="brand-logo" title="All projects" onClick={() => setScreen("projects")}><i /></button>
             <div className="brand-txt">
-              <span className="brand-name">Agent Factory</span>
-              <span className="brand-sub">Local execution</span>
+              <span className="brand-name">Warden</span>
             </div>
           </div>
-          <button className="hbtn" title="All projects" onClick={() => setScreen("projects")}>‹ Projects</button>
           {workspaces.length > 0 && (
             <div className="proj-select">
               <span className="sq" />
-              <select value={ws} onChange={(e) => { setWs(e.target.value); setWsState(e.target.value); }}>
-                {workspaces.map((w) => <option key={w.name} value={w.name}>{w.name}</option>)}
-              </select>
+              <Select className="proj-picker" ariaLabel="Switch project" minWidth={200}
+                value={ws} onChange={(v) => { setWs(v); setWsState(v); }}
+                options={workspaces.map((w) => ({ value: w.name, label: w.name }))} />
             </div>
           )}
           <div className="spacer" />
@@ -1810,17 +1961,14 @@ function App(): JSX.Element {
             title={model.mode === "api" ? "API mode — real dollars billed. Click to change." : "Subscription mode — draws from your plan, no real charge. Click to change."}>
             {model.mode === "api" ? <><Key size={13} /> API</> : <><InfinityIcon size={14} /> Subscription</>}
           </button>
-          <button className="hbtn cmdk-trigger" onClick={() => setModal({ type: "cmdk" })} title="Command palette">
-            <span className="cmdk-keys"><Command size={13} />K</span>
-          </button>
-          <button className={`hbtn icon-btn${notify.on ? " on" : ""}`} onClick={notify.toggle}
-            title={notify.on ? "Notifications on — click to mute" : "Notify me when a task needs me or a run ends"}>
-            {notify.on ? <Bell size={16} /> : <BellOff size={16} />}
-          </button>
-          <AppearanceButton onOpen={() => setModal({ type: "appearance" })} />
-          <button className="hbtn" onClick={() => setModal({ type: "settings" })}>Settings</button>
-          <button className="hbtn" title="Global lessons across every project" onClick={() => setScreen("memory")}>Memory</button>
-          <button className="hbtn" onClick={() => setRailOpen(true)}>Supervisor</button>
+          <OverflowMenu ariaLabel="More actions" items={[
+            { label: "Command palette", hint: "⌘K", onClick: () => setModal({ type: "cmdk" }) },
+            { label: "Notifications", hint: notify.on ? "On" : "Off", on: notify.on, onClick: notify.toggle },
+            { label: "Appearance", onClick: () => setModal({ type: "appearance" }) },
+            { label: "Settings", onClick: () => setModal({ type: "settings" }) },
+            { label: "Memory", onClick: () => setScreen("memory") },
+            { label: "Supervisor", onClick: () => setRailOpen(true) },
+          ]} />
           <button className="hbtn accent" onClick={() => setModal({ type: "newwork" })}><span className="plus">+</span> New work</button>
         </div>
 
@@ -1841,29 +1989,33 @@ function App(): JSX.Element {
                 </span>
               ))}
             </div>
-            {model.endedTs && <ShippedChips merged={tasks.filter((t) => t.state === "DONE")}
-              onMore={() => setModal({ type: "shipped" })} />}
+            {/* Shipped-ticket chips removed from the header: the merged tickets
+                already live in the Kanban's "Merged" column, so they added no info. */}
           </div>
+
+          {/* Run controls sit right after the status — the natural next action —
+              instead of floating alone at the far right. */}
+          {(live || willRun > 0) && (
+            <div className="transport">
+              <div className="transport-row">
+                {live ? (
+                  <>
+                    {(model.manualPause || model.ratePause)
+                      ? <Button kind="hbtn" autoPending onClick={() => sendControl("resume")}><Play size={14} /> Resume</Button>
+                      : <Button kind="hbtn" autoPending onClick={() => sendControl("pause")}><Pause size={14} /> Pause</Button>}
+                    <ConfirmButton label={<><Square size={13} /> Stop all</>} confirm="Sure? Click again" plain className="hbtn" onConfirm={() => void sendControl("stop")} />
+                  </>
+                ) : (
+                  <button className="hbtn accent" onClick={() => setModal({ type: "runguard" })}>
+                    <Play size={14} /> {model.run ? "Run again" : "Start run"} ({willRun})
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           <UsageCard mode={model.mode} tokens={tokens} spent={spent} budgetUsd={model.budgetUsd}
             budgetPct={budgetPct} budgetColor={budgetColor} onAnalytics={() => setModal({ type: "analytics" })} />
-
-          <div className="transport">
-            <div className="transport-row">
-              {live ? (
-                <>
-                  {(model.manualPause || model.ratePause)
-                    ? <Button kind="hbtn" autoPending onClick={() => sendControl("resume")}><Play size={14} /> Resume</Button>
-                    : <Button kind="hbtn" autoPending onClick={() => sendControl("pause")}><Pause size={14} /> Pause</Button>}
-                  <ConfirmButton label={<><Square size={13} /> Stop all</>} confirm="Sure? Click again" plain className="hbtn" onConfirm={() => void sendControl("stop")} />
-                </>
-              ) : willRun > 0 ? (
-                <button className="hbtn accent" onClick={() => setModal({ type: "runguard" })}>
-                  <Play size={14} /> {model.run ? "Run again" : "Start run"} ({willRun})
-                </button>
-              ) : null}
-            </div>
-          </div>
         </div>
       </header>
 
@@ -1883,15 +2035,14 @@ function App(): JSX.Element {
           </>
         )}
         <div className="board-tools">
-          <button className="board-tool" onClick={() => setModal({ type: "preview" })}>View result</button>
-          <button className="board-tool" title="Run, build, verify and install this project — whatever its stack" onClick={() => setModal({ type: "cockpit" })}>Cockpit</button>
-          <button className="board-tool" onClick={() => setModal({ type: "repo" })}>Repo</button>
+          <button className="board-tool" title="Run, build, verify and install this project — whatever its stack" onClick={() => setModal({ type: "cockpit" })}><Play size={13} /> Cockpit</button>
+          <button className="board-tool" title="Browse files, branches and history" onClick={() => setModal({ type: "repo" })}><GitBranch size={13} /> Repo</button>
           {hasDeps && (
-            <button className="board-tool" title="Ticket dependency graph" onClick={() => setModal({ type: "depgraph" })}>Deps</button>
+            <button className="board-tool" title="Ticket dependency graph" onClick={() => setModal({ type: "depgraph" })}><GitMerge size={13} /> Deps</button>
           )}
-          <button className="board-tool" title="This project's docs your agents can read" onClick={() => setModal({ type: "docs" })}>Knowledge</button>
+          <button className="board-tool" title="This project's docs your agents can read" onClick={() => setModal({ type: "docs" })}><BookOpen size={13} /> Knowledge</button>
           {removed.length > 0 && (
-            <button className="board-tool" title="Tickets you removed from the board — restore them here" onClick={() => setModal({ type: "removed" })}>Removed ({removed.length})</button>
+            <button className="board-tool" title="Tickets you removed from the board — restore them here" onClick={() => setModal({ type: "removed" })}><Trash2 size={13} /> Removed ({removed.length})</button>
           )}
           {(tasks.length > 0 || pending.length > 0 || manual.length > 0) && (
             <div className="nav-pills">
@@ -1951,9 +2102,6 @@ function App(): JSX.Element {
         <ReviewModal task={model.tasks.get(modal.taskId)!} onClose={() => setModal(null)} />
       )}
       {modal?.type === "analytics" && <AnalyticsModal onClose={() => setModal(null)} />}
-      {modal?.type === "shipped" && (
-        <ShippedModal merged={tasks.filter((t) => t.state === "DONE")} onOpenLog={openLog} onClose={() => setModal(null)} />
-      )}
       {modal?.type === "docs" && <DocsModal onClose={() => setModal(null)} />}
       {modal?.type === "aireview" && <AiReviewModal file={modal.file} title={modal.title} onClose={() => setModal(null)}
         onSendToAi={(review) => handToAiWithFeedback(modal.file, review)} />}
@@ -2380,9 +2528,8 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
             </div>
           </Row>
           <Row label="Coding model" hint="The model every coding agent uses. A ticket can still pin its own.">
-            <select className="picker" value={s.model} onChange={(e) => set({ model: e.target.value })}>
-              {modelChoices.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
+            <Select value={s.model} onChange={(v) => set({ model: v })} ariaLabel="Coding model"
+              options={modelChoices.map(([value, label]) => ({ value, label }))} />
           </Row>
           <Row label="Parallel agents" hint="How many agents work at once. 2 is a calm default on a subscription plan.">
             <input type="number" min="1" className="input num" value={s.slots} onChange={(e) => set({ slots: Math.max(1, Number(e.target.value) || 2) })} />
@@ -2399,14 +2546,12 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
 
         <Fold title="Models & thinking" summary={foldSummary.models}>
           <Row label="Planning model" hint="The ticket-maker explores the repo once and saves a reusable map. A cheaper tier here cuts planning cost. Default matches the coding model.">
-            <select className="picker" value={s.planModel} onChange={(e) => set({ planModel: e.target.value })}>
-              {planChoices.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
+            <Select value={s.planModel} onChange={(v) => set({ planModel: v })} ariaLabel="Planning model"
+              options={planChoices.map(([value, label]) => ({ value, label }))} />
           </Row>
           <Row label="Reasoning effort" hint="How hard each agent thinks. Higher digs deeper but is slower and costs more. Default lets the agent decide.">
-            <select className="picker" value={s.effort} onChange={(e) => set({ effort: e.target.value })}>
-              {effortChoices.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
+            <Select value={s.effort} onChange={(v) => set({ effort: v })} ariaLabel="Reasoning effort"
+              options={effortChoices.map(([value, label]) => ({ value, label }))} />
           </Row>
           <Row label="Code reviewer" hint="A second AI double-checks every change before merge: scope, gamed tests, obvious bugs.">
             <input type="checkbox" className="switch" checked={s.reviewer} onChange={(e) => set({ reviewer: e.target.checked })} />
@@ -3199,14 +3344,13 @@ function RepoModal({ onClose }: { onClose: () => void }): JSX.Element {
   return (
     <Modal title={`Repo — ${repo.split(/[\\/]/).pop()}`} onClose={onClose} wide>
       <div className="repo-toolbar">
-        <select className="picker" value={branches.current}
-          onChange={async (e) => {
-            try { await postJSON("/api/repo/switch", { path: repo, branch: e.target.value }); toast(`Now on ${e.target.value}.`);
+        <Select value={branches.current} ariaLabel="Branch" minWidth={160}
+          options={branches.branches.map((b) => ({ value: b, label: b }))}
+          onChange={async (v) => {
+            try { await postJSON("/api/repo/switch", { path: repo, branch: v }); toast(`Now on ${v}.`);
               const r = await repoGet<{ branches: string[]; current: string }>("branches"); setBranches(r); }
             catch (err) { toast(String(err), true); }
-          }}>
-          {branches.branches.map((b) => <option key={b} value={b}>{b}</option>)}
-        </select>
+          }} />
         <div className="repo-tabs">
           <button className={`btn link${tab === "files" ? " on" : ""}`} onClick={() => setTab("files")}>Files</button>
           <button className={`btn link${tab === "history" ? " on" : ""}`} onClick={() => setTab("history")}>History</button>
@@ -3409,12 +3553,10 @@ function TicketTune(
   if (effort && !effortChoices.some(([v]) => v === effort)) effortChoices.push([effort, effort]);
   return (
     <div className="ticket-tune" title="Model, effort and checks pinned for THIS ticket — they override the run-wide defaults from Settings.">
-      <select className="picker mini" value={model} onChange={(e) => void save("model", e.target.value)}>
-        {modelChoices.map(([v, l]) => <option key={v} value={v}>{v ? l.split(" — ")[0] : "Model: default"}</option>)}
-      </select>
-      <select className="picker mini" value={effort} onChange={(e) => void save("effort", e.target.value)}>
-        {effortChoices.map(([v, l]) => <option key={v} value={v}>{v ? l : "Effort: default"}</option>)}
-      </select>
+      <Select className="mini" value={model} onChange={(v) => void save("model", v)} ariaLabel="Ticket model" minWidth={150}
+        options={modelChoices.map(([value, label]) => ({ value, label: value ? label.split(" — ")[0] : "Model: default" }))} />
+      <Select className="mini" value={effort} onChange={(v) => void save("effort", v)} ariaLabel="Ticket effort" minWidth={140}
+        options={effortChoices.map(([value, label]) => ({ value, label: value ? label : "Effort: default" }))} />
       <label className="tune-flag" title="Skip the automated test/verify step for this ticket — for a change small enough that you'll just check it yourself.">
         <input type="checkbox" checked={skipVerify} onChange={(e) => void saveFlag("skip_verify", e.target.checked)} /> Skip tests
       </label>
@@ -3686,13 +3828,17 @@ function stepIcon(step: string): LucideIcon {
   return Lightbulb;
 }
 
+interface PlanQuestion { q: string; why: string; suggestions: string[] }
+
 /**
  * Live feedback while the planning agent explores the repo. Instead of a raw log
- * dump, it shows an elapsed timer and the agent's recent moves (files read,
- * searches) as a feed — so a 1-3 min wait feels alive and legible. The lines
- * come from `factory plan` stdout, each prefixed "· " by the CLI.
+ * dump, it shows an elapsed timer, a running tally (files read, searches) and a
+ * scrolling feed of the agent's moves — so a wait that can run several minutes
+ * feels alive and legible. Lines come from `factory plan` stdout, each prefixed
+ * "· " by the CLI. `mode` colours the phrasing: exploring-to-draft vs
+ * exploring-to-ask (plan mode's clarify-first pass).
  */
-function PlanProgress({ output, startMs }: { output: string; startMs: number }): JSX.Element {
+function PlanProgress({ output, startMs, mode }: { output: string; startMs: number; mode: "tickets" | "questions" }): JSX.Element {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -3701,29 +3847,51 @@ function PlanProgress({ output, startMs }: { output: string; startMs: number }):
   const steps = output
     .split("\n").map((l) => l.trim())
     .filter((l) => l.startsWith("· ")).map((l) => l.slice(2));
-  const recent = steps.slice(-5);
+  const reads = steps.filter((s) => s.startsWith("reading ")).length;
+  const searches = steps.filter((s) => s.startsWith("searching") || s.startsWith("finding files")).length;
+  // Show a long tail (not just the last few) as a scrolling timeline, so the user
+  // sees the depth of the exploration, not a flickering 5-line window.
+  const recent = steps.slice(-40);
+  const feedRef = useRef<HTMLUListElement>(null);
+  useEffect(() => { const el = feedRef.current; if (el) el.scrollTop = el.scrollHeight; }, [steps.length]);
   const secs = startMs ? Math.max(0, Math.floor((now - startMs) / 1000)) : 0;
   const mmss = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  const phase = steps.length === 0
+    ? "Waking the planning agent"
+    : mode === "questions" ? "Working out what to ask you" : "Exploring your repo to draft tickets";
   return (
     <div className="plan-progress">
       <div className="plan-progress-head">
         <span className="plan-spinner" />
-        <span className="plan-phase">{recent.length ? "Exploring your repo" : "Waking the planning agent"}…</span>
-        <span className="plan-timer">{mmss}</span>
+        <span className="plan-phase">{phase}…</span>
+        <span className="plan-timer" title="elapsed">{mmss}</span>
       </div>
-      {recent.length > 0 ? (
-        <ul className="plan-steps">
-          {recent.map((s, i) => {
-            const StepIcon = stepIcon(s);
-            return (
-              <li key={`${i}-${s}`} className={i === recent.length - 1 ? "on" : ""}>
-                <span className="plan-step-ic"><StepIcon size={13} /></span>{s}
-              </li>
-            );
-          })}
-        </ul>
+      {steps.length > 0 ? (
+        <>
+          <ul className="plan-steps" ref={feedRef}>
+            {recent.map((s, i) => {
+              const StepIcon = stepIcon(s);
+              return (
+                <li key={`${i}-${s}`} className={i === recent.length - 1 ? "on" : ""}>
+                  <span className="plan-step-ic"><StepIcon size={13} /></span>{s}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="plan-counts">
+            <span><b>{reads}</b> file{reads === 1 ? "" : "s"} read</span>
+            <span><b>{searches}</b> search{searches === 1 ? "" : "es"}</span>
+            <span className="plan-counts-hint">
+              {mode === "questions" ? "then it'll ask you a few questions" : "usually 1–3 min; longer on a big repo"}
+            </span>
+          </div>
+        </>
       ) : (
-        <div className="plan-hint-line">Reading your code to draft parallel-safe tickets — usually 1–3 minutes.</div>
+        <div className="plan-hint-line">
+          {mode === "questions"
+            ? "Reading your code so its questions land where they matter — a moment…"
+            : "Reading your code to draft parallel-safe tickets — usually 1–3 minutes."}
+        </div>
       )}
     </div>
   );
@@ -3746,9 +3914,8 @@ function RepoTools({ repo }: { repo: string }): JSX.Element {
   return (
     <div className="repo-tools">
       <button className="btn ghost" disabled={!repo.trim()} onClick={() => void action("/api/repo/init", false)}><FolderPlus size={14} /> Start project here</button>
-      <select className="picker" value={vis} onChange={(e) => setVis(e.target.value)}>
-        <option value="private">private</option><option value="public">public</option>
-      </select>
+      <Select value={vis} onChange={setVis} ariaLabel="Repository visibility" minWidth={130}
+        options={[{ value: "private", label: "private" }, { value: "public", label: "public" }]} />
       <button className="btn ghost" disabled={!repo.trim()} onClick={() => void action("/api/repo/publish", true)}><Upload size={14} /> Publish to GitHub</button>
       <ConfirmButton label="Set visibility" confirm="Sure? Click again" className="ghost" onConfirm={() => void action("/api/repo/visibility", true)} />
     </div>
@@ -3785,6 +3952,11 @@ function NewWorkModal(
   const [planning, setPlanning] = useState(false);
   const [planOut, setPlanOut] = useState("");
   const [planStart, setPlanStart] = useState(0);
+  // Plan mode: ask clarifying questions before drafting, for more control.
+  const [askMode, setAskMode] = useState(false);
+  const [planMode, setPlanMode] = useState<"tickets" | "questions">("tickets");
+  const [questions, setQuestions] = useState<PlanQuestion[] | null>(null);
+  const [answers, setAnswers] = useState<Record<number, string>>({});
   const pollPlan = useManagedInterval();
 
   const refreshBacklog = async (): Promise<void> => {
@@ -3865,23 +4037,67 @@ function NewWorkModal(
     } catch (err) { toast(String(err), true); }
   };
 
-  // "From a goal": kick off the AI planner and follow its progress.
-  const startPlan = async (): Promise<void> => {
+  // Follow a planning pass (ask or draft) already running server-side. Split from
+  // the kickoff so it can also RE-ATTACH to a plan that is still running when the
+  // modal is reopened — the job lives on the server, not this tab.
+  const followPlan = (isAsk: boolean): void => {
+    setPlanning(true); setPlanMode(isAsk ? "questions" : "tickets");
+    if (!isAsk) setQuestions(null);
+    pollPlan((stop) => {
+      void (async () => {
+        const st = await fetchJSON<{ plan: { state: string; output: string; questions?: PlanQuestion[] } }>("/api/status");
+        setPlanOut(st.plan.output.slice(-6000));
+        if (st.plan.state === "running") return;
+        stop(); setPlanning(false);
+        if (st.plan.state === "done") {
+          if (isAsk) {
+            if (st.plan.questions?.length) { setQuestions(st.plan.questions); setAnswers({}); }
+            else toast("No questions came back — you can draft directly.", true);
+          } else {
+            setQuestions(null);
+            toast("Tickets drafted — review them below.");
+            void refreshBacklog();
+          }
+        } else {
+          toast(isAsk ? "Couldn't get questions — see the output." : "Planning failed — see the output.", true);
+        }
+      })();
+    }, 1500);
+  };
+
+  // If a plan is already running when this modal opens (e.g. it was closed and
+  // reopened, or opened on another device), re-attach to its live feed.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const st = await fetchJSON<{ plan: { state: string; mode?: "tickets" | "questions" } }>("/api/status");
+        if (st.plan.state === "running") { setPlanStart(Date.now()); followPlan(st.plan.mode === "questions"); }
+      } catch { /* no live plan — nothing to attach to */ }
+    })();
+  }, []);
+
+  // Kick off a planning pass: `ask` runs the clarify-first pass; `clarifications`
+  // (the operator's answers) are folded into the draft pass.
+  const kickPlan = async (ask: boolean, clarifications?: string): Promise<void> => {
     if (!goal.trim()) { toast("Say what you want done first.", true); return; }
     if (!(await ensureIsolatedWs())) return;
     setRepoPath(repo);
-    try { await postJSON("/api/plan", { goal, repo }); } catch (err) { toast(String(err), true); return; }
-    setPlanning(true); setPlanOut(""); setPlanStart(Date.now());
-    pollPlan((stop) => {
-      void (async () => {
-        const st = await fetchJSON<{ plan: { state: string; output: string } }>("/api/status");
-        setPlanOut(st.plan.output.slice(-4000));
-        if (st.plan.state === "running") return;
-        stop(); setPlanning(false);
-        if (st.plan.state === "done") { toast("Tickets drafted — review them below."); void refreshBacklog(); }
-        else toast("Planning failed — see the output.", true);
-      })();
-    }, 1500);
+    try { await postJSON("/api/plan", { goal, repo, ask, clarifications }); }
+    catch (err) { toast(String(err), true); return; }
+    setPlanOut(""); setPlanStart(Date.now());
+    followPlan(ask);
+  };
+
+  // "From a goal": either draft straight away, or (plan mode) ask questions first.
+  const startPlan = (): Promise<void> => kickPlan(askMode);
+
+  // Plan mode, phase two: the operator answered — draft with their answers folded in.
+  const draftWithAnswers = (): Promise<void> => {
+    const clar = (questions ?? [])
+      .map((q, i) => { const a = (answers[i] ?? "").trim(); return a ? `- ${q.q}\n  -> ${a}` : null; })
+      .filter(Boolean).join("\n");
+    if (!clar) { toast("Answer at least one question, or skip to draft directly.", true); return Promise.resolve(); }
+    return kickPlan(false, clar);
   };
 
   const startRun = async (): Promise<void> => {
@@ -3947,12 +4163,54 @@ function NewWorkModal(
           <label className="work-label">What do you want done?</label>
           <textarea className="input work-goal" placeholder="One or two sentences. The planner explores the repo and drafts the tickets."
             value={goal} onChange={(e) => setGoal(e.target.value)} />
-          <div className="work-draft-row">
-            <button className="btn primary" disabled={planning} onClick={() => void startPlan()}>
-              {planning ? "Planning… (exploring your repo)" : <><Sparkles size={14} /> Draft tickets with AI</>}
-            </button>
-          </div>
-          {planning && <PlanProgress output={planOut} startMs={planStart} />}
+          <label className={`plan-mode-toggle${askMode ? " on" : ""}`} title="The planner explores your repo, then asks a few high-leverage questions so the plan matches what you actually want.">
+            <input type="checkbox" className="switch" checked={askMode} disabled={planning || !!questions}
+              onChange={(e) => setAskMode(e.target.checked)} />
+            <CircleHelp size={14} />
+            <span>Ask me questions first <span className="plan-mode-hint">— more control over what gets built</span></span>
+          </label>
+          {!questions && (
+            <div className="work-draft-row">
+              <button className="btn primary" disabled={planning} onClick={() => void startPlan()}>
+                {planning
+                  ? (planMode === "questions" ? "Thinking of questions…" : "Planning… (exploring your repo)")
+                  : askMode
+                    ? <><CircleHelp size={14} /> Plan with questions</>
+                    : <><Sparkles size={14} /> Draft tickets with AI</>}
+              </button>
+            </div>
+          )}
+          {planning && <PlanProgress output={planOut} startMs={planStart} mode={planMode} />}
+          {questions && !planning && (
+            <div className="plan-questions-form">
+              <div className="pqf-head"><CircleHelp size={15} /> A few questions to aim the plan</div>
+              <p className="pqf-sub">Pick a suggestion or write your own. Blank answers use the planner's default.</p>
+              {questions.map((q, i) => (
+                <div key={i} className="pqf-item">
+                  <div className="pqf-q"><span className="pqf-n">{i + 1}</span>{q.q}</div>
+                  {q.why && <div className="pqf-why">{q.why}</div>}
+                  {q.suggestions.length > 0 && (
+                    <div className="pqf-chips">
+                      {q.suggestions.map((s, j) => (
+                        <button key={j} type="button"
+                          className={`pqf-chip${(answers[i] ?? "") === s ? " on" : ""}`}
+                          onClick={() => setAnswers((a) => ({ ...a, [i]: s }))}>{s}</button>
+                      ))}
+                    </div>
+                  )}
+                  <input className="input pqf-answer" placeholder="Your answer (or pick one above)…"
+                    value={answers[i] ?? ""} onChange={(e) => setAnswers((a) => ({ ...a, [i]: e.target.value }))} />
+                </div>
+              ))}
+              <div className="pqf-actions">
+                <button className="btn ghost" onClick={() => void kickPlan(false)}>Skip — just draft</button>
+                <div className="spacer" />
+                <Button kind="btn" variant="primary" autoPending onClick={draftWithAnswers}>
+                  <Sparkles size={14} /> Draft tickets
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -4065,7 +4323,7 @@ interface Appearance {
 }
 
 const ACCENTS: Array<[string, string]> = [
-  ["indigo", "#6366f1"], ["teal", "#0d9488"], ["orange", "#ea580c"], ["violet", "#7c3aed"],
+  ["brass", "#cf9f3e"], ["indigo", "#6366f1"], ["teal", "#0d9488"], ["orange", "#ea580c"], ["violet", "#7c3aed"],
 ];
 
 function readPref(key: string, fallback: string): string {
@@ -4079,7 +4337,7 @@ function useTheme(): Appearance {
     const s = readPref("factory.theme", "system");
     return s === "dark" || s === "light" || s === "system" ? s : "system";
   });
-  const [accent, setAccentState] = useState(() => readPref("factory.accent", "indigo"));
+  const [accent, setAccentState] = useState(() => readPref("factory.accent", "brass"));
   const [density, setDensityState] = useState(() => readPref("factory.density", "comfortable"));
   const [compactHeader, setCompactHeaderState] = useState(() => readPref("factory.headerCompact", "0") === "1");
   const [sysDark, setSysDark] = useState<boolean>(
@@ -4186,7 +4444,7 @@ function AppBar(
         <div className="brand">
           <div className="brand-logo"><i /></div>
           <div className="brand-txt">
-            <span className="brand-name">Agent Factory</span>
+            <span className="brand-name">Warden</span>
             <span className="brand-sub">Local execution</span>
           </div>
         </div>
@@ -4254,9 +4512,9 @@ function ProjectCard({ p, onOpen, onEdit }: { p: PortfolioProject; onOpen: () =>
   ].filter((x) => x.count > 0).map((x) => ({ pct: (x.count / tot) * 100, color: x.color }));
   const bpct = p.budget ? Math.min(100, (p.spend / p.budget) * 100) : 0;
   const bcls = bpct >= 90 ? "over" : bpct >= 70 ? "warn" : "";
-  const metric = (n: number, label: string, fam: string) => (
+  const metric = (n: number, label: string) => (
     <div className="pm">
-      <span className="pm-n" style={{ color: n > 0 ? `var(--st-${fam}-fg)` : "var(--faint)" }}>{n}</span>
+      <span className="pm-n" style={{ color: n > 0 ? "var(--ink)" : "var(--faint)" }}>{n}</span>
       <span className="pm-l">{label}</span>
     </div>
   );
@@ -4273,10 +4531,10 @@ function ProjectCard({ p, onOpen, onEdit }: { p: PortfolioProject; onOpen: () =>
       <div className="proj-repo mono">{p.workdir.split(/[\\/]/).pop()}</div>
       {segs.length > 0 ? <SegBar segs={segs} /> : <div className="seg-bar empty" />}
       <div className="proj-metrics">
-        {metric(c.working, "working", "working")}
-        {metric(c.needs, "attention", "failed")}
-        {metric(c.queued, "up next", "upnext")}
-        {metric(c.merged, "merged", "merged")}
+        {metric(c.working, "working")}
+        {metric(c.needs, "attention")}
+        {metric(c.queued, "up next")}
+        {metric(c.merged, "merged")}
       </div>
       {p.budget !== null && p.budget > 0 && (
         <div className="proj-budget">
@@ -4353,39 +4611,57 @@ function Onboarding({ onOpen, onCreated }: { onOpen: (name: string) => void; onC
     } catch (err) { toast(String(err), true); setBusy(false); }
   };
 
+  const reassure = project === "python" ? "Runs uv sync, then lands you in the cockpit."
+    : project === "node" ? "Runs npm install, then lands you in the cockpit."
+      : "Lands you straight in the cockpit.";
+
   return (
     <div className="onboard">
+      <div className="onboard-mark" aria-hidden="true"><ShieldCheck size={30} strokeWidth={2} /></div>
+      <div className="onboard-word">Warden</div>
+      <h1 className="onboard-title">Let's set up your first project.</h1>
+      <p className="onboard-thesis">A project is a work folder Warden drives agents against — in parallel, each behind one deterministic gate. No terminal needed.</p>
+
       <div className="onboard-card">
-        <h1>Welcome — let's set up your first project.</h1>
-        <p className="hint">A project is a work folder the factory drives agents against. No terminal needed.</p>
-
-        <label className="work-label">Project name</label>
-        <input className="input" placeholder="my-project" value={name} onChange={(e) => setName(e.target.value)} />
-        {name.trim() && !nameOk && <p className="onboard-warn">Use only letters, numbers, dashes or underscores.</p>}
-
-        <label className="work-label">Repository / work folder</label>
-        <input className="input" placeholder="C:\\path\\to\\your\\repo" value={folder} onChange={(e) => setFolder(e.target.value)} />
-        <div className="seg onboard-seg">
-          <button className={!fresh ? "on" : ""} onClick={() => setFresh(false)}>Use an existing repo</button>
-          <button className={fresh ? "on" : ""} onClick={() => setFresh(true)}>Start fresh here</button>
-        </div>
-        {fresh && <p className="hint">The folder is created and <code>git init</code>'d with a first commit.</p>}
-
-        <label className="work-label">Stack</label>
-        <div className="seg onboard-seg">
-          {(["node", "python", "other"] as const).map((p) => (
-            <button key={p} className={project === p ? "on" : ""} onClick={() => setProject(p)}>
-              {p === "node" ? "Node / JS" : p === "python" ? "Python" : "Other"}
-            </button>
-          ))}
+        <div className="onboard-group">
+          <label className="work-label">Project name</label>
+          <input className="input" placeholder="my-project" value={name} onChange={(e) => setName(e.target.value)} />
+          {name.trim() && !nameOk && <p className="onboard-warn">Use only letters, numbers, dashes or underscores.</p>}
         </div>
 
-        <label className="work-label">Budget (USD, optional)</label>
-        <input className="input num" type="number" min="0" placeholder="no cap" value={budget} onChange={(e) => setBudget(e.target.value)} />
+        <div className="onboard-group">
+          <label className="work-label">Repository / work folder</label>
+          <input className="input" placeholder="C:\path\to\your\repo" value={folder} onChange={(e) => setFolder(e.target.value)} />
+          <div className="seg onboard-seg">
+            <button className={!fresh ? "on" : ""} onClick={() => setFresh(false)}>Use an existing repo</button>
+            <button className={fresh ? "on" : ""} onClick={() => setFresh(true)}>Start fresh here</button>
+          </div>
+          {fresh && <p className="onboard-hint">The folder is created and <code>git init</code>'d with a first commit.</p>}
+        </div>
 
-        <button className="btn primary onboard-go" disabled={!ready} onClick={() => void create()}>
-          {busy ? "Setting up…" : <>Create project <ArrowRight size={14} /></>}
-        </button>
+        <div className="onboard-group onboard-row">
+          <div className="onboard-col">
+            <label className="work-label">Stack</label>
+            <div className="seg onboard-seg">
+              {(["node", "python", "other"] as const).map((p) => (
+                <button key={p} className={project === p ? "on" : ""} onClick={() => setProject(p)}>
+                  {p === "node" ? "Node" : p === "python" ? "Python" : "Other"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="onboard-col">
+            <label className="work-label">Budget · USD, optional</label>
+            <input className="input num" type="number" min="0" placeholder="no cap" value={budget} onChange={(e) => setBudget(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="onboard-foot">
+          <button className="btn primary onboard-go" disabled={!ready} onClick={() => void create()}>
+            {busy ? "Setting up…" : <>Create project <ArrowRight size={14} /></>}
+          </button>
+          {!busy && <span className="onboard-reassure">{reassure}</span>}
+        </div>
       </div>
     </div>
   );
@@ -4529,13 +4805,15 @@ function ProjectsScreen(
     <>
       <AppBar active="projects" newLabel="New project" theme={theme} onProjects={() => {}} onMemory={onMemory} onNew={() => setShowNew(true)} onAppearance={() => setShowAppearance(true)} />
       <div className="page">
-        <PageHead title="Your projects" synthFam={need > 0 ? "blocked" : "merged"} synth={synth}
-          stats={<>
-            <StatTile value={list.length} label="Projects" />
-            <StatTile value={working} label="Agents working" color="var(--st-working-fg)" />
-            <StatTile value={need} label="Need you" color={need > 0 ? "var(--st-failed-fg)" : undefined} />
-            <StatTile value={fmtUsd(spend)} label="Spent" />
-          </>} />
+        {list.length > 0 && (
+          <PageHead title="Your projects" synthFam={need > 0 ? "blocked" : "merged"} synth={synth}
+            stats={<>
+              <StatTile value={list.length} label="Projects" />
+              <StatTile value={working} label="Agents working" color="var(--st-working-fg)" />
+              <StatTile value={need} label="Need you" color={need > 0 ? "var(--st-failed-fg)" : undefined} />
+              <StatTile value={fmtUsd(spend)} label="Spent" />
+            </>} />
+        )}
 
         {list.length > 0 && <PhoneCard theme={theme} />}
 
@@ -4550,7 +4828,7 @@ function ProjectsScreen(
           </div>
         )}
       </div>
-      {showNew && <NewWorkModal variant="project" onClose={() => setShowNew(false)} onWorkspaceAdded={() => { /* the portfolio poll picks it up */ }} />}
+      {showNew && <NewWorkModal variant="project" initialTab="goal" onClose={() => setShowNew(false)} onWorkspaceAdded={() => { /* the portfolio poll picks it up */ }} />}
       {editing && (
         <ProjectEditor p={editing} canDelete={list.length > 1}
           onClose={() => setEditing(null)}
@@ -4850,17 +5128,13 @@ function FactEditor(
         <div className="field-row">
           <div className="field">
             <label className="work-label">Scope</label>
-            <select className="picker wide" value={scope} onChange={(e) => setScope(e.target.value as "project" | "global")}>
-              <option value="project">This project only</option>
-              <option value="global">All projects (global)</option>
-            </select>
+            <Select className="wide" value={scope} onChange={(v) => setScope(v as "project" | "global")} ariaLabel="Scope"
+              options={[{ value: "project", label: "This project only" }, { value: "global", label: "All projects (global)" }]} />
           </div>
           <div className="field">
             <label className="work-label">Origin ticket</label>
-            <select className="picker wide" value={ticketId} onChange={(e) => setTicketId(e.target.value)}>
-              <option value="">— None (manual) —</option>
-              {tasks.map((t) => <option key={t.id} value={t.id}>{t.id} · {t.title}</option>)}
-            </select>
+            <Select className="wide" value={ticketId} onChange={setTicketId} ariaLabel="Origin ticket"
+              options={[{ value: "", label: "— None (manual) —" }, ...tasks.map((t) => ({ value: t.id, label: `${t.id} · ${t.title}` }))]} />
           </div>
         </div>
       </div>

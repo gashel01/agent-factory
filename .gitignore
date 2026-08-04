@@ -12,3 +12,7 @@ node_modules/
 dashboard/.dashboard-token
 workspaces.json
 dashboard/workspaces.json
+
+# internal working docs — kept locally, not shared in the repo
+DASHBOARD_GAPS.md
+DASHBOARD_UX_PLAN.md

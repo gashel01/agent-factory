@@ -74,6 +74,29 @@ If the goal is too vague to decompose safely, return
 """
 
 
+PLANNER_QUESTIONS_CONTRACT = """\
+# Clarify-first contract — Agent Factory
+
+You are a PLANNING agent working inside the target repository (read-only). Before
+decomposing the operator's goal into tickets, you will ask them a few
+high-leverage clarifying questions so the plan matches what they actually want.
+
+Explore the code enough to ask GOOD questions — ones whose answer would change
+the decomposition: scope boundaries, which of several approaches to take, what to
+deliberately leave out, or an ambiguous target you cannot resolve from the code.
+Do NOT ask anything you can determine yourself by reading the repo, and do not
+ask about coding conventions the code already shows.
+
+Return 2 to 5 questions, most important first (never more than 5). For each, give
+2 to 4 concrete suggested answers the operator can pick from — the FIRST being the
+sensible default you would assume if they said nothing.
+
+End your final message with a strict JSON block (no fences):
+{"status": "questions", "questions": [{"q": "<question>", "why": "<why it changes
+ the plan, one line>", "suggestions": ["<default>", "<alternative>", "..."]}]}
+"""
+
+
 #: A durable, human-editable project map, written by the planner and reused by
 #: both future planners and every coding agent so the repo isn't re-explored
 #: from scratch each time. It describes ONE repository, so it is stored PER-REPO,
@@ -131,9 +154,22 @@ def _next_free_number(backlog: Path) -> int:
     return max(numbers, default=0) + 1
 
 
-async def run_planner(
-    cfg: Config, repo: Path, goal: str, log_path: Path, brief: str = ""
-) -> dict:
+def _with_brief(prompt: str, goal: str, brief: str) -> str:
+    prompt = f"{prompt}\n\n---\n\n# Operator goal\n\n{goal}\n"
+    if brief.strip():
+        # A prior project map: the planner reads this instead of re-exploring the
+        # whole repo, cutting tokens on every plan after the first.
+        prompt += (
+            "\n---\n\n# Project map (from an earlier plan — trust and update it)\n\n"
+            f"{brief}\n"
+        )
+    return prompt
+
+
+async def _stream_contract(cfg: Config, repo: Path, prompt: str, log_path: Path) -> dict:
+    """Run ONE read-only planning agent to completion and return its trailing JSON
+    contract. Shared by the ticket planner and the clarify-first questioner so
+    process handling, live progress and rate-limit/timeout handling exist once."""
     # Planning can run on a cheaper tier than the coding agents.
     cmd = build_cli(
         cfg.agent.command,
@@ -142,14 +178,6 @@ async def run_planner(
         model=cfg.plan.model or cfg.agent.model,
         missing=PlanError,
     )
-    prompt = f"{PLANNER_CONTRACT}\n\n---\n\n# Operator goal\n\n{goal}\n"
-    if brief.strip():
-        # A prior project map: the planner reads this instead of re-exploring the
-        # whole repo, cutting tokens on every plan after the first.
-        prompt += (
-            "\n---\n\n# Project map (from an earlier plan — trust and update it)\n\n"
-            f"{brief}\n"
-        )
 
     # Surface the agent's live activity (which files it reads, what it searches)
     # on stdout as it explores, so `factory plan` — and the dashboard that tails
@@ -178,12 +206,48 @@ async def run_planner(
         raise PlanError(f"planner exited {out.returncode} without a result — see {log_path}")
     contract = extract_trailing_json(str(out.result.get("result", "")))
     if contract is None:
-        raise PlanError(f"planner returned no JSON plan — see {log_path}")
+        raise PlanError(f"planner returned no JSON — see {log_path}")
+    return contract
+
+
+async def run_planner(
+    cfg: Config, repo: Path, goal: str, log_path: Path, brief: str = ""
+) -> dict:
+    prompt = _with_brief(PLANNER_CONTRACT, goal, brief)
+    contract = await _stream_contract(cfg, repo, prompt, log_path)
     if contract.get("status") == "blocked":
         raise PlanError(f"the planner needs an answer first: {contract.get('summary', '?')}")
     if not isinstance(contract.get("tickets"), list) or not contract["tickets"]:
         raise PlanError("planner returned an empty plan")
     return contract
+
+
+async def run_questions(
+    cfg: Config, repo: Path, goal: str, log_path: Path, brief: str = ""
+) -> list[dict]:
+    """Clarify-first pass: the planner explores the repo (read-only) and returns a
+    short list of high-leverage clarifying questions instead of tickets. The
+    operator answers, and their answers are folded into a normal planning pass."""
+    prompt = _with_brief(PLANNER_QUESTIONS_CONTRACT, goal, brief)
+    contract = await _stream_contract(cfg, repo, prompt, log_path)
+    raw = contract.get("questions")
+    if not isinstance(raw, list) or not raw:
+        raise PlanError("the planner returned no questions — try again or skip plan mode")
+    questions: list[dict] = []
+    for item in raw[:5]:
+        if not isinstance(item, dict):
+            continue
+        q = str(item.get("q", "")).strip()
+        if not q:
+            continue
+        questions.append({
+            "q": q,
+            "why": str(item.get("why", "")).strip(),
+            "suggestions": [str(s).strip() for s in _as_list(item.get("suggestions")) if str(s).strip()],
+        })
+    if not questions:
+        raise PlanError("the planner returned no usable questions")
+    return questions
 
 
 def _as_list(value: object) -> list[str]:

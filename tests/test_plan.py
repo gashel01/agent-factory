@@ -9,7 +9,14 @@ from pathlib import Path
 import pytest
 
 from conftest import write_ticket
-from factory.plan import PlanError, read_brief, run_planner, write_brief, write_drafts
+from factory.plan import (
+    PlanError,
+    read_brief,
+    run_planner,
+    run_questions,
+    write_brief,
+    write_drafts,
+)
 from factory.task import load_backlog
 from test_e2e import make_config
 
@@ -118,6 +125,17 @@ def test_planner_emits_a_brief_and_reuses_a_prior_one(tmp_path, repo):
         run_planner(cfg, repo, "add more utilities", tmp_path / "p2.jsonl", first["brief"])
     )
     assert "[reused]" in reused["brief"]
+
+
+def test_plan_mode_returns_normalised_questions(tmp_path, repo):
+    # Clarify-first pass: the planner returns questions (not tickets), each with a
+    # question, a why, and concrete suggestions — normalised and capped at 5.
+    cfg = make_config()
+    questions = asyncio.run(run_questions(cfg, repo, "add text utilities", tmp_path / "q.jsonl"))
+    assert 1 <= len(questions) <= 5
+    first = questions[0]
+    assert set(first) == {"q", "why", "suggestions"}
+    assert first["q"] and isinstance(first["suggestions"], list) and first["suggestions"]
 
 
 def test_planner_error_is_actionable(tmp_path, repo, monkeypatch):
