@@ -20,7 +20,7 @@ import {
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
   Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Hand, Infinity as InfinityIcon,
   Key, Laptop, Lightbulb, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
-  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, Smartphone, Sparkles, Square, Target,
+  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
   Timer, Trash2, TrendingDown, TriangleAlert, Upload, X,
 } from "lucide-react";
 
@@ -31,7 +31,7 @@ export {
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
   Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Hand, InfinityIcon,
   Key, Laptop, Lightbulb, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
-  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, Smartphone, Sparkles, Square, Target,
+  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
   Timer, Trash2, TrendingDown, TriangleAlert, Upload, X,
 };
 export type { LucideIcon };

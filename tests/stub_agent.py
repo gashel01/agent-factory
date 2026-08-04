@@ -71,6 +71,17 @@ def main() -> int:
         print(json.dumps({"type": "result", "num_turns": 2, "result": json.dumps(verdict)}))
         return 0
 
+    if "Clarify-first contract" in prompt:
+        questions = [
+            {"q": "Which text operations do you need?", "why": "scopes the tickets",
+             "suggestions": ["slugify + truncate", "just slugify", "a full text module"]},
+            {"q": "Should it be pure-Python (no deps)?", "why": "changes the harness",
+             "suggestions": ["yes, stdlib only", "third-party ok"]},
+        ]
+        payload = {"status": "questions", "questions": questions}
+        print(json.dumps({"type": "result", "num_turns": 3, "result": json.dumps(payload)}))
+        return 0
+
     if "Planning contract" in prompt:
         tickets = [
             {

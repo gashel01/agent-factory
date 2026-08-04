@@ -653,11 +653,44 @@ function composeStandup(ws: Workspace, factory: string[], run: string, n: number
 
 /* ------------------------------ workspaces ------------------------------ */
 
+/** One clarifying question the planner asks in plan mode (an `--ask` pass). */
+interface PlanQuestion {
+  q: string;
+  why: string;
+  suggestions: string[];
+}
+
 interface Job {
   state: "idle" | "running" | "done" | "error";
   output: string;
   /** Latest one-line progress note (supervisor `ask --stream`); "" when idle. */
   progress?: string;
+  /** Plan job only: which pass this was, and — after an `--ask` pass — the
+   *  clarifying questions the planner returned for the operator to answer. */
+  mode?: "tickets" | "questions";
+  questions?: PlanQuestion[];
+}
+
+/** Pull the machine-readable questions line the `factory plan --ask` pass prints
+ *  (`@plan-questions {json}`) out of its stdout. Last marker wins. */
+function parsePlanQuestions(stdout: string): PlanQuestion[] | null {
+  const marker = "@plan-questions ";
+  const line = stdout.split("\n").reverse().find((l) => l.trim().startsWith(marker));
+  if (!line) return null;
+  try {
+    const obj = JSON.parse(line.trim().slice(marker.length)) as { questions?: unknown };
+    if (!Array.isArray(obj.questions)) return null;
+    return obj.questions
+      .filter((q): q is Record<string, unknown> => !!q && typeof q === "object")
+      .map((q) => ({
+        q: String(q.q ?? ""),
+        why: String(q.why ?? ""),
+        suggestions: Array.isArray(q.suggestions) ? q.suggestions.map((s) => String(s)) : [],
+      }))
+      .filter((q) => q.q);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2958,7 +2991,8 @@ function main(): void {
 
     if (url.pathname === "/api/plan" && req.method === "POST") {
       try {
-        const { goal, repo } = JSON.parse(await readBody(req)) as { goal?: string; repo?: string };
+        const { goal, repo, ask, clarifications } = JSON.parse(await readBody(req)) as
+          { goal?: string; repo?: string; ask?: boolean; clarifications?: string };
         if (!goal?.trim()) throw new Error("goal is required");
         if (!repo?.trim()) throw new Error("repo path is required");
         if (ws.jobs.plan.state === "running" || ws.jobs.run.state === "running") {
@@ -2968,7 +3002,31 @@ function main(): void {
         // switches and the phone — the repo belongs to the project, not the tab.
         ws.repo = resolve(repo.trim());
         registry.save();
-        spawnJob(ws, "plan", opts.factory, ["plan", goal.trim(), "--repo", repo.trim()]);
+        // Fold the operator's answers into the goal so the ticket pass plans with
+        // them in hand — the planner is stateless between the ask and draft passes.
+        const goalText = clarifications?.trim()
+          ? `${goal.trim()}\n\n## Operator's answers to clarifying questions\n${clarifications.trim()}`
+          : goal.trim();
+        const args = ["plan", goalText, "--repo", repo.trim()];
+        if (ask) args.push("--ask");
+        // In the ask pass, parse the questions the planner emitted and hang them
+        // off the plan job for the cockpit to render (the pass writes no drafts).
+        const onDone = ask
+          ? (ok: boolean, _out: string, stdout: string): void => {
+              if (!ok) return;
+              const qs = parsePlanQuestions(stdout);
+              if (qs && qs.length) ws.jobs.plan.questions = qs;
+              else {
+                ws.jobs.plan.state = "error";
+                ws.jobs.plan.output += "\n(the planner returned no clarifying questions — try again or skip plan mode)";
+              }
+            }
+          : undefined;
+        spawnJob(ws, "plan", opts.factory, args, undefined, onDone);
+        // spawnJob replaced the job object; tag the fresh one so /api/status tells
+        // the client which pass is running and to clear any stale questions.
+        ws.jobs.plan.mode = ask ? "questions" : "tickets";
+        ws.jobs.plan.questions = undefined;
         json(res, 200, { ok: true });
       } catch (err) {
         json(res, 400, { ok: false, error: String(err) });

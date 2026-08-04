@@ -14,7 +14,14 @@ from .config import ConfigError, load_config
 from .dispatcher import Dispatcher
 from .doctor import DoctorError, format_report, run_doctor
 from .events import EventLog
-from .plan import PlanError, read_brief, run_planner, write_brief, write_drafts
+from .plan import (
+    PlanError,
+    read_brief,
+    run_planner,
+    run_questions,
+    write_brief,
+    write_drafts,
+)
 from .supervise import SuperviseError, ask, format_answer, reset
 from .task import TicketError, load_backlog, parse_ticket
 from .worktree import GitError, prune
@@ -142,6 +149,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
     brief = read_brief(workspace, repo)
     if brief:
         print("reusing the saved project map (skips a full re-scan)")
+
+    if getattr(args, "ask", False):
+        # Clarify-first: explore the repo, then emit questions as a machine-readable
+        # marker line for the dashboard. No drafts are written in this pass.
+        print(f"exploring {repo} to work out what to ask … (read-only, ~1-3 min)")
+        questions = asyncio.run(run_questions(cfg, repo, args.goal, log_path, brief))
+        print("@plan-questions " + json.dumps({"questions": questions}))
+        print(f"\n{len(questions)} clarifying question(s) — answer them, then draft.")
+        return 0
+
     print(f"planning against {repo} … (one read-only agent, ~1-3 min)")
     contract = asyncio.run(run_planner(cfg, repo, args.goal, log_path, brief))
     # Persist the (refreshed) project map, keyed to THIS repo, so the next plan
@@ -274,6 +291,8 @@ def main(argv: list[str] | None = None) -> int:
     p_plan = sub.add_parser("plan", parents=[common],
                             help="co-create tickets: an agent explores the repo and drafts them")
     p_plan.add_argument("goal", help="what you want done, in one or two sentences")
+    p_plan.add_argument("--ask", action="store_true",
+                        help="first ask clarifying questions (emit them as JSON), don't draft yet")
     p_plan.add_argument("--repo", type=Path, default=Path("."),
                         help="target repository (default: current directory)")
     p_plan.set_defaults(func=cmd_plan)
