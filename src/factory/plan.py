@@ -240,10 +240,11 @@ async def run_questions(
         q = str(item.get("q", "")).strip()
         if not q:
             continue
+        suggestions = [str(s).strip() for s in _as_list(item.get("suggestions")) if str(s).strip()]
         questions.append({
             "q": q,
             "why": str(item.get("why", "")).strip(),
-            "suggestions": [str(s).strip() for s in _as_list(item.get("suggestions")) if str(s).strip()],
+            "suggestions": suggestions,
         })
     if not questions:
         raise PlanError("the planner returned no usable questions")

@@ -679,7 +679,9 @@ class Dispatcher:
                     run_verify, task, wt.path, self.cfg.verify,
                     _sbx_verify_runner if sandboxed else None,
                 )
-                self.log.emit("verify", task=task.id, ok=verdict.ok, failures=list(verdict.failures))
+                self.log.emit(
+                    "verify", task=task.id, ok=verdict.ok, failures=list(verdict.failures),
+                )
                 if not verdict.ok:
                     await self._retryable_failure(
                         task, wt, result.session_id,

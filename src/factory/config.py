@@ -307,7 +307,10 @@ def load_config(path: Path | None) -> Config:
             ),
             # Absent or null → cheap default (see SupervisorConfig.model). An
             # explicit "" means "same as the coding agents"; an id pins that model.
-            model=((supervisor.get("model") if supervisor.get("model") is not None else "haiku") or None),
+            model=(
+                (supervisor.get("model") if supervisor.get("model") is not None else "haiku")
+                or None
+            ),
             timeout_min=_cfg_int(supervisor.get("timeout_min"), 10, "supervisor.timeout_min"),
         ),
         ratelimit=RateLimitConfig(
