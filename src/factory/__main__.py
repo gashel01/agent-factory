@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from . import __version__
+from .checkpoint import make_checkpoint
 from .config import ConfigError, load_config
 from .dispatcher import Dispatcher
 from .doctor import DoctorError, format_report, run_doctor
@@ -266,6 +268,34 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_checkpoint(args: argparse.Namespace) -> int:
+    """PostToolUse hook body: commit the current worktree as an undo checkpoint.
+
+    Claude Code invokes this after each file-edit tool with the hook payload on
+    stdin (``{"tool_name", "tool_input", …}``). We derive a short label from the
+    tool and its target file, then commit the cwd. Always exits 0 and swallows
+    every error — a checkpoint must never break the agent's turn.
+    """
+    label = ""
+    try:
+        raw = sys.stdin.read()
+        if raw.strip():
+            payload = json.loads(raw)
+            tool = str(payload.get("tool_name", "")).strip()
+            tool_input = payload.get("tool_input")
+            target = ""
+            if isinstance(tool_input, dict):
+                target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+            name = Path(target).name if target else ""
+            label = " ".join(part for part in (tool, name) if part).strip()
+    except Exception:  # noqa: BLE001 — a malformed payload just means a blank label
+        label = ""
+    # Never surface a bookkeeping failure to the agent's turn.
+    with contextlib.suppress(Exception):
+        make_checkpoint(Path.cwd(), label)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Windows consoles may default to cp1252; our output is consumed by the
     # dashboard server (and humans) as UTF-8.
@@ -322,6 +352,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_clean = sub.add_parser("clean", parents=[common], help="prune orphaned worktrees")
     p_clean.set_defaults(func=cmd_clean)
+
+    # Not for humans: the PostToolUse hook Warden injects when agent.checkpoints is on.
+    p_checkpoint = sub.add_parser("checkpoint",
+                                  help="internal: commit the worktree as an undo checkpoint (hook)")
+    p_checkpoint.set_defaults(func=cmd_checkpoint)
 
     p_sbx_pre = sub.add_parser("sandbox-preflight",
                                help="print Docker sandbox readiness as JSON (dashboard poll)")
