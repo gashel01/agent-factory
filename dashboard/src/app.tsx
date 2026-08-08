@@ -1050,7 +1050,7 @@ type Screen = "projects" | "cockpit" | "memory";
 type ModalState =
   | null
   | { type: "settings" }
-  | { type: "newwork"; tab?: "one" | "goal" }
+  | { type: "newwork"; tab?: "one" | "goal"; goal?: string }
   | { type: "editticket"; ticket: BoardTicket }
   | { type: "repo" }
   | { type: "preview" }
@@ -2176,7 +2176,7 @@ function App(): JSX.Element {
       )}
 
       {modal?.type === "settings" && <SettingsModal onClose={() => setModal(null)} />}
-      {modal?.type === "newwork" && <NewWorkModal onClose={() => setModal(null)} onWorkspaceAdded={loadWorkspaces} onBacklogChange={backlog.refresh} takenIds={tasks.map((t) => t.id)} initialTab={modal.tab ?? "one"} />}
+      {modal?.type === "newwork" && <NewWorkModal onClose={() => setModal(null)} onWorkspaceAdded={loadWorkspaces} onBacklogChange={backlog.refresh} takenIds={tasks.map((t) => t.id)} initialTab={modal.tab ?? "one"} initialGoal={modal.goal} />}
       {modal?.type === "editticket" && (
         <EditTicketModal ticket={modal.ticket} onClose={() => setModal(null)}
           onSave={(content) => patchTicket(modal.ticket, content, `Ticket ${modal.ticket.id} updated.`)} />
@@ -2240,7 +2240,8 @@ function App(): JSX.Element {
         ? <CompanionRail obs={companion.obs} feed={model.feed} onClose={() => setRailOpen(false)} now={now}
             currentRun={model.run} live={live}
             needsYou={tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED" || t.state === "AWAITING_APPROVAL")}
-            onAnswer={openAnswer} onReview={openDiff} />
+            onAnswer={openAnswer} onReview={openDiff}
+            onPlan={(goal) => { setRailOpen(false); setModal({ type: "newwork", tab: "goal", goal }); }} />
         : <SupervisorDock onExpand={() => setRailOpen(true)} />}
     </div>
   );
@@ -3886,8 +3887,8 @@ function NeedsYou(
 /** One run's chapter in the timeline: a headed, collapsible group of event nodes,
  *  read top-to-bottom in chronological order (oldest first, newest last). */
 function RunChapter(
-  { events, defaultOpen, now, currentRun }:
-  { events: Observation[]; defaultOpen: boolean; now: number; currentRun: string | null },
+  { events, defaultOpen, now, currentRun, onPlan }:
+  { events: Observation[]; defaultOpen: boolean; now: number; currentRun: string | null; onPlan: (goal: string) => void },
 ): JSX.Element {
   const [open, setOpen] = useState(defaultOpen);
   const first = events[0]!; // events are oldest-first: the first marks the run's start
@@ -3914,7 +3915,8 @@ function RunChapter(
                 {!!o.suggestions?.length && o.run === currentRun && (
                   <div className="tl-brief-acts">
                     {o.suggestions.map((s, i) => (
-                      <button key={i} className="asst-act" onClick={() => void sendControl(s.op, s.task)}>{s.label}</button>
+                      <button key={i} className="asst-act"
+                        onClick={() => s.op === "plan" ? onPlan(s.goal ?? "") : void sendControl(s.op, s.task)}>{s.label}</button>
                     ))}
                   </div>
                 )}
@@ -3935,10 +3937,11 @@ function RunChapter(
 }
 
 function CompanionRail(
-  { obs, feed, onClose, now, currentRun, live, needsYou, onAnswer, onReview }:
+  { obs, feed, onClose, now, currentRun, live, needsYou, onAnswer, onReview, onPlan }:
   {
     obs: Observation[]; feed: FactoryEvent[]; onClose: () => void; now: number; currentRun: string | null; live: boolean;
     needsYou: TaskModel[]; onAnswer: (t: TaskModel) => void; onReview: (t: TaskModel) => void;
+    onPlan: (goal: string) => void;
   },
 ): JSX.Element {
   const [showAll, setShowAll] = useState(false);
@@ -4031,7 +4034,7 @@ function CompanionRail(
           <div className="tl">
             {chapters.map((ch, i) => (
               <RunChapter key={ch.run} events={ch.events} defaultOpen={i === chapters.length - 1}
-                now={now} currentRun={currentRun} />
+                now={now} currentRun={currentRun} onPlan={onPlan} />
             ))}
           </div>
         ) : !thinking ? (
@@ -4168,12 +4171,12 @@ function RepoTools({ repo }: { repo: string }): JSX.Element {
  *  property, not part of writing a ticket); the `project` variant is the one
  *  exception, prepending first-run setup where the repo must be set inline. */
 function NewWorkModal(
-  { onClose, onWorkspaceAdded, onBacklogChange, takenIds = [], initialTab = "one", variant = "work" }:
+  { onClose, onWorkspaceAdded, onBacklogChange, takenIds = [], initialTab = "one", initialGoal, variant = "work" }:
   { onClose: () => void; onWorkspaceAdded: () => void; onBacklogChange?: () => void;
-    takenIds?: string[]; initialTab?: "one" | "goal"; variant?: "work" | "project" },
+    takenIds?: string[]; initialTab?: "one" | "goal"; initialGoal?: string; variant?: "work" | "project" },
 ): JSX.Element {
   const isProject = variant === "project";
-  const [tab, setTab] = useState<"one" | "goal">(initialTab);
+  const [tab, setTab] = useState<"one" | "goal">(initialGoal ? "goal" : initialTab);
   const [repo, setRepo] = useState(repoPath());
   // For a NEW project: the dedicated, isolated workspace we create for it (once).
   // Until it exists, no drafting may touch the currently-active workspace.
@@ -4187,7 +4190,7 @@ function NewWorkModal(
   const [notes, setNotes] = useState("");
   const [completing, setCompleting] = useState(false);
   // "From a goal" tab.
-  const [goal, setGoal] = useState("");
+  const [goal, setGoal] = useState(initialGoal ?? "");
   const [planning, setPlanning] = useState(false);
   const [planOut, setPlanOut] = useState("");
   const [planStart, setPlanStart] = useState(0);
@@ -4329,6 +4332,13 @@ function NewWorkModal(
 
   // "From a goal": either draft straight away, or (plan mode) ask questions first.
   const startPlan = (): Promise<void> => kickPlan(askMode);
+
+  // Opened from the supervisor with a ready goal: draft immediately (the operator
+  // already agreed to it in chat), landing straight on the drafted-tickets review.
+  useEffect(() => {
+    if (initialGoal && initialGoal.trim() && !isProject) void kickPlan(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Plan mode, phase two: the operator answered — draft with their answers folded in.
   const draftWithAnswers = (): Promise<void> => {

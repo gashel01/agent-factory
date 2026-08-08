@@ -152,17 +152,31 @@ Rules:
 - You cannot talk to running agents directly; your levers are the control
   channel and the backlog. Say so if asked for something beyond them.
 
+Discussing new work: the operator may talk through a FEATURE or change they want
+built, rather than steering the current run. Engage — ask what's needed, weigh
+options against what you can see of the repo — and once the intent is clear,
+propose a "plan" suggestion (below): its "goal" is YOUR crisp, self-contained
+articulation of what they want, enough for the ticket planner to explore the repo
+and draft tickets from it WITHOUT your back-and-forth. Do NOT write the tickets
+yourself when you propose a plan — the planner drafts them. (If the operator
+instead says to just create the tickets now, write them into backlog/ directly,
+as the rules above allow.) Propose at most one "plan", only when the ask is clear.
+
 End your final message with a strict JSON block (no fences):
 {"status": "done", "reply": "<your answer to the operator, plain language>",
  "actions": ["<one short line per action taken, empty if none>"],
  "suggestions": [{"op": "retry|kill|pause|resume|stop", "task": "<id if the op needs one>",
+                  "label": "<=3-word button text>"},
+                 {"op": "plan",
+                  "goal": "<crisp, self-contained description of the work to build>",
                   "label": "<=3-word button text>"}]}
 
 "suggestions" are one-click next steps you RECOMMEND but did NOT perform — the
-operator clicks to apply them. Only propose ops that genuinely fit the situation
-(e.g. retry a task that failed on a flake, kill a runaway one); leave it empty
-when nothing is worth proposing. "task" is required for retry/kill, omitted for
-pause/resume/stop.
+operator clicks to apply them. Only propose what genuinely fits: a control op
+(retry a task that failed on a flake, kill a runaway one), or a "plan" to draft
+tickets for work just discussed. Leave it empty when nothing is worth proposing.
+"task" is required for retry/kill, omitted for pause/resume/stop; "goal" is
+required for plan.
 """
 
 #: Control ops the operator can trigger from a one-click suggestion.
@@ -170,8 +184,9 @@ _SUGGESTION_OPS = frozenset({"retry", "kill", "pause", "resume", "stop"})
 
 
 def _clean_suggestions(raw: object) -> list[dict]:
-    """Keep only well-formed, executable suggestions (a real op; a task id when
-    the op needs one). Anything odd is dropped rather than trusted."""
+    """Keep only well-formed suggestions: a control op (with a task id when the op
+    needs one), or a "plan" carrying a goal for the ticket planner. Anything odd is
+    dropped rather than trusted."""
     out: list[dict] = []
     if not isinstance(raw, list):
         return out
@@ -179,13 +194,21 @@ def _clean_suggestions(raw: object) -> list[dict]:
         if not isinstance(item, dict):
             continue
         op = str(item.get("op", "")).strip()
+        label = str(item.get("label", "")).strip()[:24]
+        if op == "plan":
+            # A hand-off to the planner: the goal is the supervisor's articulation
+            # of what to build. Useless without it, so drop a goal-less plan.
+            goal = str(item.get("goal", "")).strip()
+            if not goal:
+                continue
+            out.append({"op": "plan", "goal": goal[:2000], "label": label or "Draft tickets"})
+            continue
         if op not in _SUGGESTION_OPS:
             continue
         task = str(item.get("task", "")).strip()
         if op in ("retry", "kill") and not task:
             continue
-        label = str(item.get("label", "")).strip()[:24] or op.capitalize()
-        entry = {"op": op, "label": label}
+        entry = {"op": op, "label": label or op.capitalize()}
         if task:
             entry["task"] = task
         out.append(entry)
