@@ -4319,12 +4319,15 @@ function NewWorkModal(
   }, []);
 
   // Kick off a planning pass: `ask` runs the clarify-first pass; `clarifications`
-  // (the operator's answers) are folded into the draft pass.
-  const kickPlan = async (ask: boolean, clarifications?: string): Promise<void> => {
+  // (the operator's answers) are folded into the draft pass. `repoOverride` lets a
+  // caller pin the repo explicitly, so an immediate draft can't race the async
+  // repo-seed and plan against a stale (previously-open) workspace's repo.
+  const kickPlan = async (ask: boolean, clarifications?: string, repoOverride?: string): Promise<void> => {
     if (!goal.trim()) { toast("Say what you want done first.", true); return; }
     if (!(await ensureIsolatedWs())) return;
-    setRepoPath(repo);
-    try { await postJSON("/api/plan", { goal, repo, ask, clarifications }); }
+    const useRepo = (repoOverride ?? repo).trim();
+    setRepoPath(useRepo);
+    try { await postJSON("/api/plan", { goal, repo: useRepo, ask, clarifications }); }
     catch (err) { toast(String(err), true); return; }
     setPlanOut(""); setPlanStart(Date.now());
     followPlan(ask);
@@ -4335,8 +4338,20 @@ function NewWorkModal(
 
   // Opened from the supervisor with a ready goal: draft immediately (the operator
   // already agreed to it in chat), landing straight on the drafted-tickets review.
+  // Resolve THIS workspace's repo first — repoPath() (localStorage) may still point
+  // at a previously-open workspace, and the goal came from the active one's
+  // supervisor — then pin it so the draft can't plan against the wrong repo.
   useEffect(() => {
-    if (initialGoal && initialGoal.trim() && !isProject) void kickPlan(false);
+    if (!initialGoal || !initialGoal.trim() || isProject) return;
+    void (async () => {
+      let useRepo = repoPath();
+      try {
+        const { workspaces } = await fetchJSON<{ workspaces: WorkspaceInfo[] }>("/api/workspaces");
+        const active = workspaces.find((w) => w.name === getWs()) ?? workspaces[0];
+        if (active?.repo) { useRepo = active.repo; setRepo(active.repo); setRepoPath(active.repo); }
+      } catch { /* fall back to repoPath() */ }
+      await kickPlan(false, undefined, useRepo);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
