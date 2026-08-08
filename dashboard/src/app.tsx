@@ -443,14 +443,14 @@ function StatusPill({ state, live }: { state: TaskState; live?: boolean }): JSX.
 
 /** A right slide-in drawer, for settings & supervisor (mockup: calm side panels). */
 function Drawer(
-  { title, live, onClose, foot, children }:
-  { title: ReactNode; live?: boolean; onClose: () => void; foot?: ReactNode; children: ReactNode },
+  { title, live, wide, onClose, foot, children }:
+  { title: ReactNode; live?: boolean; wide?: boolean; onClose: () => void; foot?: ReactNode; children: ReactNode },
 ): JSX.Element {
   useEsc(onClose);
   const trap = useFocusTrap<HTMLElement>();
   return (
     <div className="drawer-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <aside className="drawer" ref={trap} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : "Panel"}>
+      <aside className={`drawer${wide ? " wide" : ""}`} ref={trap} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : "Panel"}>
         <div className="panel-head">
           <div className="panel-title-row">
             <h3>{title}</h3>
@@ -800,82 +800,138 @@ function PlanHero(
  *  One hero meter for the window that actually binds, the rest as a quiet grid —
  *  three identical bars made every constraint look equally urgent.
  *  Collapsible: the hero alone survives, since that is the one that can stop a run. */
+/** Compact usage dial for the header: a ring showing the binding window's percent,
+ *  colour-coded by severity. Hovering (or focusing) opens a portal popover with the
+ *  full breakdown — the same detail the old card showed inline — and moving into the
+ *  popover keeps it open, so the operator can read it or click through to full stats. */
 function UsageCard(
   { mode, tokens, spent, budgetUsd, budgetPct, budgetColor, onAnalytics }:
   { mode: "subscription" | "api"; tokens: number; spent: number; budgetUsd: number | null;
     budgetPct: number; budgetColor: string; onAnalytics: () => void },
 ): JSX.Element {
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem("factory.usageCollapsed") === "1"; } catch { return false; }
-  });
-  const toggle = (): void => setCollapsed((c) => {
-    const n = !c;
-    try { localStorage.setItem("factory.usageCollapsed", n ? "1" : "0"); } catch { /* */ }
-    return n;
-  });
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   const limits = usePlanLimits(mode !== "api");
   // Highest percentage first: the window closest to stopping the fleet leads.
   const ranked = [...limits].sort((a, b) => b.percent - a.percent);
   const hero = mode === "api" ? undefined : ranked[0];
   const rest = mode === "api" ? [] : ranked.slice(1);
-  return (
-    <div className={`usage-card${collapsed ? " collapsed" : ""}`} role="button" tabIndex={0}
-      onClick={onAnalytics} title="Cost & activity over time"
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onAnalytics(); } }}>
-      <div className="u-top">
-        <span className="u-cap">{mode === "api" ? "Run budget" : "Plan usage"}</span>
-        <span className="u-mode">{mode === "api" ? "API · billed" : "Subscription"}</span>
-        <button className="u-collapse" onClick={(e) => { e.stopPropagation(); toggle(); }} aria-expanded={!collapsed}
-          aria-label={collapsed ? "Expand usage" : "Collapse usage"} title={collapsed ? "Expand" : "Collapse"}>
-          {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-        </button>
-      </div>
 
-      {hero
-        ? <PlanHero label={limitLabel(hero)} pct={hero.percent} sev={hero.severity}
-          right={fmtReset(hero.resets_at)} note={`${fmtUsd(spent)} · ${fmtTokens(tokens)} tokens this session, API-equivalent`} />
-        : mode === "api"
-          ? (
-            <div className="u-hero">
-              <div className="u-hero-top">
-                <span className="u-hero-lab">Spent this session</span>
-                {budgetUsd !== null && <span className="u-hero-right tnum">of {fmtUsd(budgetUsd)}</span>}
-              </div>
-              <div className="u-hero-fig"><b className="tnum">{fmtUsd(spent)}</b><span>{fmtTokens(tokens)} tokens</span></div>
-              <div className="pl-bar">
-                <div className="pl-fill" style={{ width: `${Math.max(1.5, budgetPct)}%`, background: budgetColor }} />
-              </div>
-              <span className="u-hero-note">{budgetUsd === null ? "No cap set · real dollars" : "Real dollars · amber at 70%, red at 90%"}</span>
-            </div>
-          )
-          : (
-            <div className="u-hero">
-              <div className="u-hero-fig"><b className="tnum">{fmtUsd(spent)}</b><span>{fmtTokens(tokens)} tokens</span></div>
-              <span className="u-hero-note">API-equivalent · not charged. Plan windows unavailable — sign in to the Claude CLI.</span>
+  // The dial: percent + colour of the binding constraint (budget in API mode).
+  const hasValue = mode === "api" || !!hero;
+  const pct = Math.max(0, Math.min(100, mode === "api" ? budgetPct : (hero?.percent ?? 0)));
+  const sev = hero?.severity;
+  const color = mode === "api" ? budgetColor
+    : sev === "warning" || sev === "high" ? "#d3a018"
+      : sev === "critical" || sev === "reject" ? "var(--st-failed-fg, #d3543f)"
+        : "var(--accent)";
+  const R = 13, CIRC = 2 * Math.PI * R;
+
+  const place = useCallback((): void => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ top: r.bottom + 8, right: Math.max(8, window.innerWidth - r.right) });
+  }, []);
+  useLayoutEffect(() => { if (open) place(); }, [open, place]);
+  useEffect(() => {
+    if (!open) return;
+    const rp = (): void => place();
+    const onKey = (e: KeyboardEvent): void => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("scroll", rp, true);
+    window.addEventListener("resize", rp);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("scroll", rp, true);
+      window.removeEventListener("resize", rp);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, place]);
+  // A short close delay bridges the gap between the dial and the popover, so moving
+  // the cursor across it doesn't dismiss it.
+  const show = (): void => { if (closeTimer.current) clearTimeout(closeTimer.current); setOpen(true); };
+  const hide = (): void => { closeTimer.current = setTimeout(() => setOpen(false), 160); };
+
+  const caption = mode === "api" ? "Run budget" : "Plan usage";
+  const heroNote = `${fmtUsd(spent)} · ${fmtTokens(tokens)} tokens this session, API-equivalent`;
+
+  return (
+    <>
+      <button ref={triggerRef} className={`usage-gauge${open ? " on" : ""}`}
+        aria-label={`${caption}${hasValue ? ` — ${Math.round(pct)}% used` : ""}. Open cost & activity.`}
+        onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide} onClick={onAnalytics}>
+        <span className="ug-ring-wrap">
+          <svg className="ug-ring" viewBox="0 0 34 34" width="34" height="34" aria-hidden="true">
+            <circle className="ug-track" cx="17" cy="17" r={R} />
+            {hasValue && (
+              <circle className="ug-arc" cx="17" cy="17" r={R}
+                style={{ stroke: color, strokeDasharray: CIRC, strokeDashoffset: CIRC * (1 - pct / 100) }} />
+            )}
+          </svg>
+          <span className="ug-pct" style={{ color: hasValue ? color : "var(--faint)" }}>
+            {hasValue ? Math.round(pct) : "·"}
+          </span>
+        </span>
+      </button>
+
+      {open && pos && createPortal(
+        <div ref={popRef} className="usage-pop" style={{ position: "fixed", top: pos.top, right: pos.right }}
+          onMouseEnter={show} onMouseLeave={hide}>
+          <div className="u-top">
+            <span className="u-cap">{caption}</span>
+            <span className="u-mode">{mode === "api" ? "API · billed" : "Subscription"}</span>
+          </div>
+
+          {hero
+            ? <PlanHero label={limitLabel(hero)} pct={hero.percent} sev={hero.severity}
+              right={fmtReset(hero.resets_at)} note={heroNote} />
+            : mode === "api"
+              ? (
+                <div className="u-hero">
+                  <div className="u-hero-top">
+                    <span className="u-hero-lab">Spent this session</span>
+                    {budgetUsd !== null && <span className="u-hero-right tnum">of {fmtUsd(budgetUsd)}</span>}
+                  </div>
+                  <div className="u-hero-fig"><b className="tnum">{fmtUsd(spent)}</b><span>{fmtTokens(tokens)} tokens</span></div>
+                  <div className="pl-bar">
+                    <div className="pl-fill" style={{ width: `${Math.max(1.5, budgetPct)}%`, background: budgetColor }} />
+                  </div>
+                  <span className="u-hero-note">{budgetUsd === null ? "No cap set · real dollars" : "Real dollars · amber at 70%, red at 90%"}</span>
+                </div>
+              )
+              : (
+                <div className="u-hero">
+                  <div className="u-hero-fig"><b className="tnum">{fmtUsd(spent)}</b><span>{fmtTokens(tokens)} tokens</span></div>
+                  <span className="u-hero-note">API-equivalent · not charged. Plan windows unavailable — sign in to the Claude CLI.</span>
+                </div>
+              )}
+
+          {rest.length > 0 && (
+            <div className="u-grid">
+              {rest.map((l) => (
+                <div key={l.kind} className={`u-cell sev-${l.severity}`}>
+                  <span className="u-cell-lab">{limitLabel(l)}</span>
+                  <span className="u-cell-val">
+                    <b className="tnum">{Math.round(l.percent)}%</b>
+                    <span>{fmtReset(l.resets_at)}</span>
+                  </span>
+                </div>
+              ))}
             </div>
           )}
 
-      {!collapsed && rest.length > 0 && (
-        <div className="u-grid">
-          {rest.map((l) => (
-            <div key={l.kind} className={`u-cell sev-${l.severity}`}>
-              <span className="u-cell-lab">{limitLabel(l)}</span>
-              <span className="u-cell-val">
-                <b className="tnum">{Math.round(l.percent)}%</b>
-                <span>{fmtReset(l.resets_at)}</span>
-              </span>
-            </div>
-          ))}
-        </div>
+          <button className="u-hint" onClick={() => { setOpen(false); onAnalytics(); }}>
+            Cost &amp; activity across runs
+            <ArrowRight size={13} />
+          </button>
+        </div>,
+        document.body,
       )}
-
-      {!collapsed && (
-        <span className="u-hint">
-          Cost &amp; activity across runs
-          <ArrowRight size={13} />
-        </span>
-      )}
-    </div>
+    </>
   );
 }
 
@@ -2547,26 +2603,34 @@ function Row({ label, hint, children }: { label: string; hint: string; children:
   );
 }
 
-// A folded "advanced" card: title + a live one-line summary of its current values,
-// so nothing is hidden — you scan your config, expand only what you want to change.
-function Fold({ title, summary, children }: { title: string; summary: string; children: ReactNode }): JSX.Element {
+/** One settings section: an anchor target with a title, jumped to from the left
+ *  nav. Always open — the nav replaces the old expand-to-find accordions. */
+function Section({ id, title, children }: { id: string; title: string; children: ReactNode }): JSX.Element {
   return (
-    <details className="settings-fold">
-      <summary className="settings-fold-head">
-        <span className="settings-fold-title">{title}</span>
-        <span className="settings-fold-summary">{summary}</span>
-        <ChevronDown size={16} className="settings-fold-chev" />
-      </summary>
-      <div className="settings-fold-body">{children}</div>
-    </details>
+    <section id={id} className="settings-section">
+      <h4 className="settings-section-title">{title}</h4>
+      {children}
+    </section>
   );
 }
+
+/** Left-nav anchors for the settings drawer, in scroll order. General (the
+ *  essentials) leads, so the panel still opens on "run without touching a thing". */
+const SETTINGS_SECTIONS: Array<{ id: string; label: string }> = [
+  { id: "set-general", label: "General" },
+  { id: "set-models", label: "Models & thinking" },
+  { id: "set-project", label: "Project & repo" },
+  { id: "set-safety", label: "Execution & safety" },
+  { id: "set-notify", label: "Notifications" },
+];
 
 function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
   const [s, setS] = useState<Settings | null>(null);
   const [testing, setTesting] = useState(false);
   const [testOut, setTestOut] = useState<string | null>(null);
   const [repo, setRepo] = useState("");
+  const [activeSec, setActiveSec] = useState(SETTINGS_SECTIONS[0]!.id);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const pollDoctor = useManagedInterval();
   const set = (patch: Partial<Settings>) => setS((cur) => cur ? { ...cur, ...patch } : cur);
 
@@ -2578,6 +2642,29 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
       setRepo(active?.repo ?? "");
     }).catch(() => { /* leave blank */ });
   }, []);
+
+  // Scroll-spy: highlight the section currently under the top of the scroll area,
+  // so the left nav always reflects where you are. Runs once the sections exist.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !s) return;
+    const secs = SETTINGS_SECTIONS
+      .map((x) => document.getElementById(x.id))
+      .filter((el): el is HTMLElement => el !== null);
+    const obs = new IntersectionObserver((entries) => {
+      const top = entries
+        .filter((e) => e.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+      if (top) setActiveSec(top.target.id);
+    }, { root, rootMargin: "0px 0px -70% 0px", threshold: 0 });
+    secs.forEach((el) => obs.observe(el));
+    return () => obs.disconnect();
+  }, [s]);
+
+  const jump = (id: string): void => {
+    document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    setActiveSec(id);
+  };
 
   const saveRepoPath = async (): Promise<void> => {
     try { await postJSON("/api/repo/path", { path: repo.trim() }); }
@@ -2606,15 +2693,8 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
     }, 2000);
   };
 
-  if (!s) return <Drawer title="Settings" onClose={onClose}><div className="panel-body"><Skeleton lines={8} /></div></Drawer>;
+  if (!s) return <Drawer title="Settings" wide onClose={onClose}><div className="panel-body"><Skeleton lines={8} /></div></Drawer>;
 
-  const repoName = repo.trim() ? (repo.trim().split(/[\\/]/).filter(Boolean).pop() ?? repo.trim()) : "not set";
-  const foldSummary = {
-    models: `plan: ${s.planModel || "same"} · effort: ${s.effort || "auto"} · reviewer: ${s.reviewer ? "on" : "off"} · web: ${s.internet ? "on" : "off"}`,
-    project: `${repoName} · ${s.setupCommands || "no setup step"}`,
-    safety: `${s.executionMode === "api" ? "API (real $)" : "Subscription"} · ${s.isolation === "sandbox" ? "Sandbox" : "Direct"} · ${s.prNative ? "opens a PR" : "merges locally"} · ${s.maxRetries} retr${s.maxRetries === 1 ? "y" : "ies"}`,
-    notify: s.webhookUrl ? "on" : "off",
-  };
   const effortChoices = [...EFFORT_CHOICES];
   if (s.effort && !effortChoices.some(([v]) => v === s.effort)) effortChoices.push([s.effort, `${s.effort} (expensive)`]);
   const planChoices: Array<[string, string]> = [["", "Same as coders"], ["haiku", "Haiku (cheapest)"], ["sonnet", "Sonnet"]];
@@ -2623,7 +2703,7 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
   if (s.model && !modelChoices.some(([v]) => v === s.model)) modelChoices.push([s.model, s.model]);
 
   return (
-    <Drawer title="Settings" onClose={onClose} foot={
+    <Drawer title="Settings" wide onClose={onClose} foot={
       <>
         <button className="btn ghost" disabled={testing} onClick={() => void doTest()}><FlaskConical size={14} /> Test these settings</button>
         <button className="btn primary" onClick={async () => {
@@ -2632,11 +2712,17 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
         }}>Save</button>
       </>
     }>
-      <div className="panel-body settings-form">
+      <div className="panel-body settings-form" ref={scrollRef}>
         <p className="settings-intro">Sensible defaults are already set — you can run without changing a thing. Tweak these only if you want to.</p>
-
-        {/* Essentials — the few things you might reasonably want to set, always visible. */}
-        <div className="settings-essentials">
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label="Jump to a settings section">
+            {SETTINGS_SECTIONS.map((sec) => (
+              <button key={sec.id} type="button" className={`settings-nav-item${activeSec === sec.id ? " on" : ""}`}
+                onClick={() => jump(sec.id)}>{sec.label}</button>
+            ))}
+          </nav>
+          <div className="settings-panes">
+            <Section id="set-general" title="General">
           <Row label="Project type" hint="Picks the matching build tools and the default dependency install.">
             <div className="chip-choice">
               {(["node", "python", "other"] as const).map((v) => (
@@ -2660,11 +2746,9 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
           <Row label="Run budget (USD)" hint="Stop launching new agents once estimated spend crosses this. Empty = no cap.">
             <input type="number" min="0" step="0.5" className="input num" placeholder="none" value={s.budgetUsd} onChange={(e) => set({ budgetUsd: e.target.value.trim() })} />
           </Row>
-        </div>
+            </Section>
 
-        <div className="settings-advanced-label">Advanced — the defaults below are safe</div>
-
-        <Fold title="Models & thinking" summary={foldSummary.models}>
+            <Section id="set-models" title="Models & thinking">
           <Row label="Planning model" hint="The ticket-maker explores the repo once and saves a reusable map. A cheaper tier here cuts planning cost. Default matches the coding model.">
             <Select value={s.planModel} onChange={(v) => set({ planModel: v })} ariaLabel="Planning model"
               options={planChoices.map(([value, label]) => ({ value, label }))} />
@@ -2679,9 +2763,9 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
           <Row label="Internet access" hint="Agents may search and read the web. Needed for research; adds exposure to web content.">
             <input type="checkbox" className="switch" checked={s.internet} onChange={(e) => set({ internet: e.target.checked })} />
           </Row>
-        </Fold>
+            </Section>
 
-        <Fold title="Project & repository" summary={foldSummary.project}>
+            <Section id="set-project" title="Project & repository">
           <Row label="Repository path" hint="The git repo your agents work in. New tickets default to it and the planner explores it. Set once per project.">
             <input className="input" placeholder="C:\\path\\to\\your\\repo" value={repo}
               onChange={(e) => setRepo(e.target.value)} onBlur={() => void saveRepoPath()} />
@@ -2695,9 +2779,9 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
           <Row label="Integration check" hint="After every ticket merges, run this suite once to prove the merged changes still hold together. Empty = off. Comma-separated.">
             <input className="input" value={s.integrationCommands} placeholder="npm run build, npm test" onChange={(e) => set({ integrationCommands: e.target.value })} />
           </Row>
-        </Fold>
+            </Section>
 
-        <Fold title="Execution & safety" summary={foldSummary.safety}>
+            <Section id="set-safety" title="Execution & safety">
           <Row label="Execution mode" hint="Subscription draws from your Claude plan (no real charge; the cost shown is an estimate). API uses the key in your environment and bills real dollars. The key is never stored — only whether to pass it to the agent.">
             <div className="seg">
               <button className={s.executionMode !== "api" ? "on" : ""} onClick={() => set({ executionMode: "subscription" })}><InfinityIcon size={14} /> Subscription</button>
@@ -2713,15 +2797,17 @@ function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
           <Row label="Retries per task" hint="How many times a failing ticket is re-attempted. Each retry is a full agent run — keep low for costly tasks.">
             <input type="number" min="0" className="input num" value={s.maxRetries} onChange={(e) => set({ maxRetries: Math.max(0, Number(e.target.value) || 0) })} />
           </Row>
-        </Fold>
+            </Section>
 
-        <Fold title="Notifications" summary={foldSummary.notify}>
+            <Section id="set-notify" title="Notifications">
           <Row label="Notify me" hint="Get pinged when a run finishes or a ticket needs you. Paste a Slack, Discord, or any incoming-webhook URL. Empty = off. Fires server-side, so it works with the browser closed.">
             <input className="input" type="url" value={s.webhookUrl} placeholder="https://hooks.slack.com/services/…" onChange={(e) => set({ webhookUrl: e.target.value })} />
           </Row>
-        </Fold>
+            </Section>
 
-        {testOut !== null && <pre className="doctor-result">{testOut}</pre>}
+            {testOut !== null && <pre className="doctor-result">{testOut}</pre>}
+          </div>
+        </div>
       </div>
     </Drawer>
   );
