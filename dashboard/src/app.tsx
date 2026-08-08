@@ -12,7 +12,7 @@ import {
   api, fetchJSON, getText, getWs, initToken, initWs, postJSON, repoGet, repoPath, scopedJSON, setRepoPath, setWs,
 } from "./api.js";
 import {
-  ACTIVITY, EFFORT_CHOICES, HistoryTicket, MODEL_CHOICES, Model, Settings, StoryItem, TaskModel,
+  ACTIVITY, Checkpoint, EFFORT_CHOICES, HistoryTicket, MODEL_CHOICES, Model, Settings, StoryItem, TaskModel,
   ago, fmtDuration, fmtTokens, fmtUsd, freshModel, generateConfig, inFlight, narrate,
   parseDiff, parseSettings, reduce, seedHistory,
 } from "./model.js";
@@ -24,9 +24,9 @@ import {
   BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
-  GitBranch, GitMerge, InfinityIcon, Key, Laptop, Lightbulb, Lock, MessageCircle,
+  GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
   MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
-  ShieldCheck, Smartphone, Sparkles, Square, Timer, Trash2, TriangleAlert, Upload, X,
+  ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
 
@@ -752,37 +752,54 @@ function useHidden(ws: string): { ids: Set<string>; hide: (id: string) => Promis
   return { ids, hide: (id) => post("/api/tickets/hide", id), unhide: (id) => post("/api/tickets/unhide", id) };
 }
 
-/** The full plan-usage bars (session + weekly + per-model), rendered from fetched limits. */
-function PlanLimits({ limits }: { limits: UsageLimit[] }): JSX.Element | null {
-  if (!limits.length) return null;
-  const label = (l: UsageLimit): string =>
-    l.kind === "session" ? "Current session"
-      : l.kind === "weekly_all" ? "Weekly · all models"
+/** Human label for one plan window. */
+function limitLabel(l: UsageLimit): string {
+  return l.kind === "session" ? "5h session"
+    : l.kind === "weekly_all" ? "Weekly · all models"
       : l.kind === "weekly_scoped" ? `Weekly · ${l.scope?.model?.display_name ?? "top model"}`
-      : l.kind;
-  const resets = (iso: string | null): string => {
-    if (!iso) return "";
-    const s = (Date.parse(iso) - Date.now()) / 1000;
-    return s > 0 ? `resets in ${fmtDuration(s)}` : "";
-  };
+        : l.kind;
+}
+
+/** When a window reopens. Under a day a countdown is what you act on ("in 2h 51m");
+ *  beyond it a countdown is noise, so switch to wall clock ("Mon 16:59"). */
+function fmtReset(iso: string | null): string {
+  const ms = iso ? Date.parse(iso) - Date.now() : NaN;
+  if (!Number.isFinite(ms)) return "";
+  if (ms <= 0) return "resetting";
+  if (ms < 86_400_000) {
+    const mins = Math.round(ms / 60_000);
+    return mins < 60 ? `in ${mins}m` : `in ${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+  }
+  return new Date(iso as string).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+/** The binding constraint, full width: the one number worth reading from across the room. */
+function PlanHero(
+  { label, pct, note, right, sev, bar = true }:
+  { label: string; pct: number; note: string; right?: string; sev?: string; bar?: boolean },
+): JSX.Element {
+  const clamped = Math.max(0, Math.min(100, pct));
   return (
-    <div className="plan-limits">
-      {limits.map((l) => (
-        <div key={l.kind} className={`pl-row sev-${l.severity}`}>
-          <div className="pl-top">
-            <span className="pl-label">{label(l)}</span>
-            <span className="pl-pct tnum">{Math.round(l.percent)}%</span>
-          </div>
-          <div className="pl-bar"><div className="pl-fill" style={{ width: `${Math.min(100, Math.max(2, l.percent))}%` }} /></div>
-          <span className="pl-reset">{resets(l.resets_at)}</span>
-        </div>
-      ))}
+    <div className={`u-hero${sev ? ` sev-${sev}` : ""}`}>
+      <div className="u-hero-top">
+        <span className="u-hero-lab">{label}</span>
+        {right && <span className="u-hero-right">{right}</span>}
+      </div>
+      <div className="u-hero-fig">
+        <b className="tnum">{Math.round(clamped)}%</b>
+        <span>used</span>
+        <span className="u-hero-left tnum">{Math.round(100 - clamped)}% left</span>
+      </div>
+      {bar && <div className="pl-bar"><div className="pl-fill" style={{ width: `${Math.max(1.5, clamped)}%` }} /></div>}
+      {note && <span className="u-hero-note">{note}</span>}
     </div>
   );
 }
 
 /** Session cost/tokens + (on a subscription) the real plan usage limits.
- *  Collapsible — the plan bars are handy but not always wanted taking header room. */
+ *  One hero meter for the window that actually binds, the rest as a quiet grid —
+ *  three identical bars made every constraint look equally urgent.
+ *  Collapsible: the hero alone survives, since that is the one that can stop a run. */
 function UsageCard(
   { mode, tokens, spent, budgetUsd, budgetPct, budgetColor, onAnalytics }:
   { mode: "subscription" | "api"; tokens: number; spent: number; budgetUsd: number | null;
@@ -797,36 +814,64 @@ function UsageCard(
     return n;
   });
   const limits = usePlanLimits(mode !== "api");
+  // Highest percentage first: the window closest to stopping the fleet leads.
+  const ranked = [...limits].sort((a, b) => b.percent - a.percent);
+  const hero = mode === "api" ? undefined : ranked[0];
+  const rest = mode === "api" ? [] : ranked.slice(1);
   return (
     <div className={`usage-card${collapsed ? " collapsed" : ""}`} role="button" tabIndex={0}
       onClick={onAnalytics} title="Cost & activity over time"
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onAnalytics(); } }}>
       <div className="u-top">
-        <span className="u-cap">This session's usage · {mode === "api" ? "API" : "Subscription"}</span>
-        <span className="u-tok">{fmtTokens(tokens)} tokens</span>
+        <span className="u-cap">{mode === "api" ? "Run budget" : "Plan usage"}</span>
+        <span className="u-mode">{mode === "api" ? "API · billed" : "Subscription"}</span>
         <button className="u-collapse" onClick={(e) => { e.stopPropagation(); toggle(); }} aria-expanded={!collapsed}
           aria-label={collapsed ? "Expand usage" : "Collapse usage"} title={collapsed ? "Expand" : "Collapse"}>
           {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
         </button>
       </div>
-      <div className="u-row">
-        <span className="u-fig">{fmtUsd(spent)}</span>
-        <span className="u-bud">
-          {mode === "api"
-            ? <>/ {budgetUsd ? fmtUsd(budgetUsd) : "no cap"} · billed</>
-            : "API-equivalent · not charged"}
-        </span>
-      </div>
-      {mode === "api" && (
-        <div className="budget-bar"><div className="budget-fill" style={{ width: `${budgetPct}%`, background: budgetColor }} /></div>
+
+      {hero
+        ? <PlanHero label={limitLabel(hero)} pct={hero.percent} sev={hero.severity}
+          right={fmtReset(hero.resets_at)} note={`${fmtUsd(spent)} · ${fmtTokens(tokens)} tokens this session, API-equivalent`} />
+        : mode === "api"
+          ? (
+            <div className="u-hero">
+              <div className="u-hero-top">
+                <span className="u-hero-lab">Spent this session</span>
+                {budgetUsd !== null && <span className="u-hero-right tnum">of {fmtUsd(budgetUsd)}</span>}
+              </div>
+              <div className="u-hero-fig"><b className="tnum">{fmtUsd(spent)}</b><span>{fmtTokens(tokens)} tokens</span></div>
+              <div className="pl-bar">
+                <div className="pl-fill" style={{ width: `${Math.max(1.5, budgetPct)}%`, background: budgetColor }} />
+              </div>
+              <span className="u-hero-note">{budgetUsd === null ? "No cap set · real dollars" : "Real dollars · amber at 70%, red at 90%"}</span>
+            </div>
+          )
+          : (
+            <div className="u-hero">
+              <div className="u-hero-fig"><b className="tnum">{fmtUsd(spent)}</b><span>{fmtTokens(tokens)} tokens</span></div>
+              <span className="u-hero-note">API-equivalent · not charged. Plan windows unavailable — sign in to the Claude CLI.</span>
+            </div>
+          )}
+
+      {!collapsed && rest.length > 0 && (
+        <div className="u-grid">
+          {rest.map((l) => (
+            <div key={l.kind} className={`u-cell sev-${l.severity}`}>
+              <span className="u-cell-lab">{limitLabel(l)}</span>
+              <span className="u-cell-val">
+                <b className="tnum">{Math.round(l.percent)}%</b>
+                <span>{fmtReset(l.resets_at)}</span>
+              </span>
+            </div>
+          ))}
+        </div>
       )}
-      {/* Collapsed keeps just the session bar; expanded shows every limit + the trend link. */}
-      {mode !== "api" && (
-        <PlanLimits limits={collapsed ? limits.filter((l) => l.kind === "session") : limits} />
-      )}
+
       {!collapsed && (
         <span className="u-hint">
-          {mode === "api" ? "Real dollars · turns amber at 70% · red at 90% · cost trend" : "Cost & activity across runs"}
+          Cost &amp; activity across runs
           <ArrowRight size={13} />
         </span>
       )}
@@ -910,9 +955,9 @@ function CommandPalette({ commands, onClose }: { commands: Command[]; onClose: (
 
 /* --------------------------------- controls --------------------------------- */
 
-async function sendControl(op: string, taskId?: string, text?: string): Promise<void> {
+async function sendControl(op: string, taskId?: string, text?: string, to?: string): Promise<void> {
   try {
-    await postJSON("/api/control", { op, task: taskId, ...(text ? { text } : {}) });
+    await postJSON("/api/control", { op, task: taskId, ...(text ? { text } : {}), ...(to ? { to } : {}) });
     const messages: Record<string, string> = {
       pause: "Pausing — running agents finish, no new ones start.",
       resume: "Resuming.",
@@ -921,6 +966,7 @@ async function sendControl(op: string, taskId?: string, text?: string): Promise<
       retry: `${taskId} is back in the queue with a fresh budget.`,
       approve: `${taskId} approved — merging now.`,
       changes: `${taskId} sent back to the agent with your note.`,
+      undo: `Rewound ${taskId} to that checkpoint.`,
     };
     toast(messages[op] ?? "Sent.");
   } catch (err) { toast(`Could not send the command: ${String(err)}`, true); }
@@ -1957,6 +2003,7 @@ function App(): JSX.Element {
             </div>
           )}
           <div className="spacer" />
+          <AgentVersionChip />
           <button className={`mode-badge mode-${model.mode}`} onClick={() => setModal({ type: "settings" })}
             title={model.mode === "api" ? "API mode — real dollars billed. Click to change." : "Subscription mode — draws from your plan, no real charge. Click to change."}>
             {model.mode === "api" ? <><Key size={13} /> API</> : <><InfinityIcon size={14} /> Subscription</>}
@@ -2138,7 +2185,7 @@ function App(): JSX.Element {
             currentRun={model.run} live={live}
             needsYou={tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED" || t.state === "AWAITING_APPROVAL")}
             onAnswer={openAnswer} onReview={openDiff} />
-        : <button className="companion-open" onClick={() => setRailOpen(true)} title="Open the supervisor"><MessageCircle size={18} /></button>}
+        : <SupervisorDock onExpand={() => setRailOpen(true)} />}
     </div>
   );
 }
@@ -2167,32 +2214,102 @@ function describe(event: FactoryEvent): string {
 
 /* --------------------------------- Log modal (live) --------------------------------- */
 
-/** Icon + label for each kind of story step, shown as a timeline node. */
-const STORY_NODE: Record<StoryItem["kind"], { Icon: LucideIcon; kind: string }> = {
-  say: { Icon: Lightbulb, kind: "Thinking" },
-  act: { Icon: ChevronRight, kind: "Action" },
-  subresult: { Icon: CornerDownRight, kind: "Sub-agent result" },
-  delegate: { Icon: GitBranch, kind: "Delegated" },
-  final: { Icon: Check, kind: "Result" },
+/** Icon + human verb for a tool call, so an `act` step reads as a plain-language
+ *  line ("Ran command") above the raw detail — not a bare tool name. Unknown
+ *  tools fall back to the tool's own name with a neutral glyph. */
+const ACT_META: Record<string, { Icon: LucideIcon; verb: string }> = {
+  Read: { Icon: FileText, verb: "Read a file" },
+  Write: { Icon: Pencil, verb: "Wrote a file" },
+  Edit: { Icon: Pencil, verb: "Edited a file" },
+  MultiEdit: { Icon: Pencil, verb: "Edited files" },
+  NotebookEdit: { Icon: Pencil, verb: "Edited a notebook" },
+  Bash: { Icon: Terminal, verb: "Ran a command" },
+  Grep: { Icon: Search, verb: "Searched the code" },
+  Glob: { Icon: Search, verb: "Looked for files" },
+  WebFetch: { Icon: Globe, verb: "Fetched a page" },
+  WebSearch: { Icon: Globe, verb: "Searched the web" },
+  TodoWrite: { Icon: ListChecks, verb: "Updated the plan" },
+};
+/** Tools whose detail is a file path the agent changed — used to tally "files touched". */
+const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+function actMeta(tool: string): { Icon: LucideIcon; verb: string } {
+  return ACT_META[tool] ?? { Icon: ChevronRight, verb: tool };
+}
+
+/** Icon for the non-`act` story kinds. */
+const KIND_ICON: Record<"say" | "final" | "subresult" | "delegate", LucideIcon> = {
+  say: Lightbulb,
+  final: Check,
+  subresult: CornerDownRight,
+  delegate: GitBranch,
 };
 
-function StoryView({ story }: { story: StoryItem[] }): JSX.Element {
+/** Steer a parked branch back to a per-step checkpoint (AWAITING_APPROVAL only). */
+interface UndoCtl { checkpoints: Checkpoint[]; onUndo: (sha: string) => void }
+
+/** One narrated step, in the timeline's stacked grammar: a typed glyph, a plain
+ *  human line, and — for tool calls — the raw path/command dimmed beneath it. An
+ *  edit step with a matching checkpoint gets a "rewind to here" affordance. */
+function StoryNode({ s, cp, onUndo }: { s: StoryItem; cp?: Checkpoint; onUndo?: (sha: string) => void }): JSX.Element {
+  if (s.kind === "act") {
+    const m = actMeta(s.tool);
+    return (
+      <div className="tl-node act">
+        <span className="tl-glyph"><m.Icon size={13} /></span>
+        <div className="tl-verb">
+          {m.verb}
+          {cp && onUndo && (
+            <button className="tl-undo" title="Rewind the branch to this step — later changes are discarded"
+              onClick={() => onUndo(cp.sha)}><Undo2 size={11} /> Rewind to here</button>
+          )}
+        </div>
+        {s.detail && <div className="tl-detail mono">{s.detail}</div>}
+      </div>
+    );
+  }
+  const Icon = KIND_ICON[s.kind];
+  const text = s.kind === "delegate"
+    ? `Delegated to ${s.who}${s.mission ? ` — ${s.mission}` : ""}`
+    : s.text;
+  const label = s.kind === "say" ? "Thinking"
+    : s.kind === "final" ? "Result"
+    : s.kind === "subresult" ? "Sub-agent result" : "Delegated";
+  return (
+    <div className={`tl-node ${s.kind}`}>
+      <span className="tl-glyph"><Icon size={13} /></span>
+      <div className="tl-kind">{label}</div>
+      <div className="tl-text">{text}</div>
+    </div>
+  );
+}
+
+/** A compact one-line tally of the run's footprint — tools invoked, distinct
+ *  files the agent changed, and tokens spent — in the density of a status bar. */
+function StoryStats({ story, tokens }: { story: StoryItem[]; tokens: number }): JSX.Element | null {
+  const acts = story.filter((s) => s.kind === "act") as Extract<StoryItem, { kind: "act" }>[];
+  if (!acts.length && tokens <= 0) return null;
+  const files = new Set(acts.filter((a) => EDIT_TOOLS.has(a.tool) && a.detail).map((a) => a.detail));
+  const parts: string[] = [];
+  if (acts.length) parts.push(`${acts.length} ${acts.length === 1 ? "tool" : "tools"}`);
+  if (files.size) parts.push(`${files.size} ${files.size === 1 ? "file" : "files"}`);
+  if (tokens > 0) parts.push(`${fmtTokens(tokens)} tokens`);
+  return <div className="tl-foot mono">{parts.join(" · ")}</div>;
+}
+
+function StoryView({ story, tokens = 0, undo }: { story: StoryItem[]; tokens?: number; undo?: UndoCtl }): JSX.Element {
   if (!story.length) return <p className="story-say">No activity recorded yet.</p>;
+  // Checkpoints are recorded once per file-edit tool, oldest first — so the k-th
+  // edit step maps to the k-th checkpoint. Track that index as we render.
+  let editIdx = -1;
   return (
     <div className="tl">
       {story.map((s, i) => {
-        const n = STORY_NODE[s.kind];
-        const text = s.kind === "delegate"
-          ? `Delegated to ${s.who}${s.mission ? ` — ${s.mission}` : ""}`
-          : s.text;
-        return (
-          <div key={i} className="tl-node">
-            <span className="tl-glyph"><n.Icon size={13} /></span>
-            <div className="tl-kind">{n.kind}</div>
-            <div className="tl-text">{text}</div>
-          </div>
-        );
+        let cp: Checkpoint | undefined;
+        if (s.kind === "act" && EDIT_TOOLS.has(s.tool)) { editIdx++; cp = undo?.checkpoints[editIdx]; }
+        return <StoryNode key={i} s={s} cp={cp} onUndo={undo?.onUndo} />;
       })}
+      <StoryStats story={story} tokens={tokens} />
     </div>
   );
 }
@@ -2264,7 +2381,10 @@ function LogModal(
         <div className="panel-body log-body" ref={bodyRef}>
           {raw === null ? <Skeleton lines={4} />
             : rawMode ? <pre className="log-pre">{raw}</pre>
-            : <StoryView story={story} />}
+            : <StoryView story={story} tokens={t ? (t.liveTokens || t.tokens) : 0}
+                undo={t && t.state === "AWAITING_APPROVAL" && live && t.checkpoints.length > 0
+                  ? { checkpoints: t.checkpoints, onUndo: (sha) => void sendControl("undo", t.id, undefined, sha) }
+                  : undefined} />}
 
           <section className="log-lessons">
             <div className="log-lessons-head">
@@ -2710,7 +2830,8 @@ function PreviewModal({ onClose, onFiles }: { onClose: () => void; onFiles: () =
   const [status, setStatus] = useState("Detecting the project…");
   const [out, setOut] = useState("");
   const [url, setUrl] = useState<string | null>(null);
-  const opened = useRef(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [showLog, setShowLog] = useState(false);
 
   useEffect(() => {
     const repo = repoPath();
@@ -2729,8 +2850,7 @@ function PreviewModal({ onClose, onFiles }: { onClose: () => void; onFiles: () =
         if (!alive) return;
         if (p.output.trim()) setOut(p.output.slice(-1500));
         if (p.state === "ready" && p.url) {
-          setUrl(p.url); setStatus(`Ready — live at ${p.url}`);
-          if (!opened.current) { opened.current = true; window.open(p.url, "_blank"); }
+          setUrl(p.url); setStatus(`Live at ${p.url}`);
           if (timer) clearInterval(timer);
         } else if (p.state === "error") { setStatus("Could not start the preview — see output."); if (timer) clearInterval(timer); }
         else if (p.state === "idle") { setStatus("The preview server stopped."); if (timer) clearInterval(timer); }
@@ -2740,16 +2860,33 @@ function PreviewModal({ onClose, onFiles }: { onClose: () => void; onFiles: () =
   }, []);
 
   return (
-    <Modal title="Live preview" onClose={onClose}>
+    <Modal title="Live preview" onClose={onClose} wide>
       <div className="preview-status">{status}</div>
-      <div className="card-actions">
-        {url && <>
-          <button className="btn primary" onClick={() => window.open(url, "_blank")}><ExternalLink size={14} /> Open the site</button>
-          <ConfirmButton label="Stop the preview server" confirm="Sure? Click again"
-            onConfirm={async () => { try { await postJSON("/api/preview/stop", {}); toast("Preview server stopped."); } catch (err) { toast(String(err), true); } onClose(); }} />
-        </>}
-      </div>
-      {out && <pre className="log-pre preview-out">{out}</pre>}
+      {url ? (
+        <>
+          <div className="preview-bar">
+            <span className="preview-url mono">{url}</span>
+            <div className="preview-bar-acts">
+              <button className="btn ghost sm" onClick={() => setReloadKey((k) => k + 1)} title="Reload the embedded view"><RotateCw size={13} /> Refresh</button>
+              {/* Freeze-frame the running app — visual evidence you can keep or show the supervisor. */}
+              <button className="btn ghost sm" onClick={() => window.open(api("/api/preview/shot"), "_blank")} title="Capture a screenshot of the running app"><Eye size={13} /> Full shot</button>
+              <button className="btn ghost sm" onClick={() => window.open(url, "_blank")}><ExternalLink size={13} /> Open in tab</button>
+              <ConfirmButton label="Stop" confirm="Sure? Click again" plain
+                onConfirm={async () => { try { await postJSON("/api/preview/stop", {}); toast("Preview server stopped."); } catch (err) { toast(String(err), true); } onClose(); }} />
+            </div>
+          </div>
+          {/* Watch the app the agent is building, live and in-cockpit. Some frameworks
+              refuse to be framed; the "Open in tab" fallback always works. */}
+          <iframe key={reloadKey} className="preview-frame" src={url} title="Live preview"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups" />
+        </>
+      ) : (
+        out && <pre className="log-pre preview-out">{out}</pre>
+      )}
+      {url && out && (
+        <button className="btn link" onClick={() => setShowLog((v) => !v)}>{showLog ? "Hide server log" : "Show server log"}</button>
+      )}
+      {url && showLog && out && <pre className="log-pre preview-out">{out}</pre>}
     </Modal>
   );
 }
@@ -3438,8 +3575,24 @@ function Diff({ text, review }: { text: string; review?: ReviewProps }): JSX.Ele
   if (files.length === 0) return <pre className="diff-pre">{text}</pre>;
   const jump = (path: string): void =>
     document.getElementById(`df-${path}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  const totalAdds = files.reduce((s, f) => s + f.adds, 0);
+  const totalDels = files.reduce((s, f) => s + f.dels, 0);
+  const pending = review?.comments.length ?? 0;
   return (
     <div className="diff-view">
+      {/* One-line footprint of the change — file count and total +/−, with the
+          review state when the diff is open for comment. */}
+      <div className="diff-summary">
+        <span className="ds-files">Edited {files.length} {files.length === 1 ? "file" : "files"}</span>
+        <span className="chip-add">+{totalAdds}</span><span className="chip-del">−{totalDels}</span>
+        {review && (
+          <span className="ds-review">
+            {pending > 0
+              ? `${pending} comment${pending > 1 ? "s" : ""} to send back`
+              : "Comment on any line to review"}
+          </span>
+        )}
+      </div>
       {files.length > 1 && (
         <div className="diff-filebar">
           {files.map((f) => (
@@ -4459,6 +4612,59 @@ function AppBar(
         <button className="hbtn accent" onClick={onNew}><span className="plus">+</span> {newLabel}</button>
       </div>
     </header>
+  );
+}
+
+/** Persistent steering composer docked at the board's edge when the supervisor
+ *  rail is closed — the always-on channel to direct the run, surfaced instead of
+ *  hidden behind an icon. Sends to the supervisor and opens the rail so the
+ *  streamed reply (and its one-click suggestions) is immediately in view. */
+function SupervisorDock({ onExpand }: { onExpand: () => void }): JSX.Element {
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = async (): Promise<void> => {
+    const text = msg.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    try {
+      await postJSON("/api/chat", { message: text });
+      setMsg("");
+      onExpand(); // reveal the reply in the rail thread (pushed over SSE)
+    } catch (err) {
+      toast(String(err), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="sup-dock">
+      <button className="sup-dock-open" title="Open the supervisor" aria-label="Open the supervisor" onClick={onExpand}>
+        <MessageCircle size={16} />
+      </button>
+      <input className="sup-dock-input" value={msg} placeholder="Tell the supervisor what to do next…"
+        onChange={(e) => setMsg(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+      <button className="sup-dock-send" disabled={!msg.trim() || busy} onClick={() => void send()} aria-label="Send to the supervisor">
+        <ArrowUp size={16} />
+      </button>
+    </div>
+  );
+}
+
+/** Which coding-agent CLI the cockpit is driving, probed server-side once. Stays
+ *  hidden when the CLI isn't on PATH (nothing to show, no error noise). */
+function AgentVersionChip(): JSX.Element | null {
+  const [v, setV] = useState<string | null>(null);
+  useEffect(() => {
+    fetchJSON<{ agentVersion?: string | null }>("/api/status")
+      .then((s) => setV(s.agentVersion ?? null)).catch(() => setV(null));
+  }, []);
+  if (!v) return null;
+  const label = v.replace(/^v/, "");
+  return (
+    <span className="agent-ver mono" title="The coding-agent CLI this cockpit drives">
+      <Bot size={12} /> Claude Code v{label}
+    </span>
   );
 }
 

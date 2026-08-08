@@ -18,10 +18,10 @@ import {
   Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
-  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Hand, Infinity as InfinityIcon,
-  Key, Laptop, Lightbulb, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
+  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Globe, Hand, Infinity as InfinityIcon,
+  Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
   Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
-  Timer, Trash2, TrendingDown, TriangleAlert, Upload, X,
+  Terminal, Timer, Trash2, TrendingDown, TriangleAlert, Undo2, Upload, X,
 } from "lucide-react";
 
 export {
@@ -29,10 +29,10 @@ export {
   Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
-  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Hand, InfinityIcon,
-  Key, Laptop, Lightbulb, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
+  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Globe, Hand, InfinityIcon,
+  Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
   Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
-  Timer, Trash2, TrendingDown, TriangleAlert, Upload, X,
+  Terminal, Timer, Trash2, TrendingDown, TriangleAlert, Undo2, Upload, X,
 };
 export type { LucideIcon };
 
