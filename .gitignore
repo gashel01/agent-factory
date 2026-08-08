@@ -18,6 +18,9 @@ dashboard/workspaces.json
 .supervisor-session
 .judge-*.png
 .preview-shot.png
+# self-edit workspace: when Warden targets its own repo, its isolated workspace
+# (backlog, runs, config) lives here — operational state, never committed
+.factory/
 
 # internal working docs — kept locally, not shared in the repo
 DASHBOARD_GAPS.md
