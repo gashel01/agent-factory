@@ -12,6 +12,12 @@ node_modules/
 dashboard/.dashboard-token
 workspaces.json
 dashboard/workspaces.json
+# operational artifacts written into the workspace at runtime — never commit
+# (matters when the factory's own repo is a work target: agents/checkpoints must
+# not stage these)
+.supervisor-session
+.judge-*.png
+.preview-shot.png
 
 # internal working docs — kept locally, not shared in the repo
 DASHBOARD_GAPS.md
