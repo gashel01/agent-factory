@@ -37,7 +37,11 @@ export interface TaskModel {
   effort: string | null;
   prUrl: string | null;
   blockedContext: BlockedContext | null;  // git ground truth when BLOCKED (else null)
+  checkpoints: Checkpoint[];  // per-step undo points when AWAITING_APPROVAL (else empty)
 }
+
+/** One per-step checkpoint the agent's worktree recorded (opt-in agent.checkpoints). */
+export interface Checkpoint { sha: string; short: string; label: string }
 
 export interface Model {
   run: string;
@@ -88,7 +92,7 @@ function task(model: Model, id: string): TaskModel {
       id, title: id, state: "QUEUED", turns: null, wallS: null, note: "",
       retries: 0, runningSince: null, finishedAt: null, costUsd: 0, tokens: 0,
       liveTurns: 0, liveTokens: 0, diff: null,
-      model: null, effort: null, prUrl: null, blockedContext: null,
+      model: null, effort: null, prUrl: null, blockedContext: null, checkpoints: [],
     };
     model.tasks.set(id, entry);
   }
@@ -216,11 +220,16 @@ export function reduce(model: Model, event: FactoryEvent): Model {
     }
     case "awaiting_approval": {
       // Same shape as `merged`: capture the diff range so "Revoir" can open it
-      // even before (and after) the branch is merged/deleted.
-      const e = event as unknown as { task: string; repo?: string; base?: string; commit?: string };
+      // even before (and after) the branch is merged/deleted. Also carries the
+      // per-step checkpoints (empty unless agent.checkpoints is on) for undo.
+      const e = event as unknown as {
+        task: string; repo?: string; base?: string; commit?: string; checkpoints?: Checkpoint[];
+      };
+      const entry = task(model, e.task);
       if (e.repo && e.base && e.commit) {
-        task(model, e.task).diff = { repo: e.repo, from: e.base, to: e.commit };
+        entry.diff = { repo: e.repo, from: e.base, to: e.commit };
       }
+      entry.checkpoints = e.checkpoints ?? [];
       break;
     }
     case "pr_opened": {
@@ -395,7 +404,8 @@ interface StreamRecord {
 }
 
 export type StoryItem =
-  | { kind: "say" | "final" | "act" | "subresult"; text: string }
+  | { kind: "say" | "final" | "subresult"; text: string }
+  | { kind: "act"; tool: string; detail: string }
   | { kind: "delegate"; who: string; mission: string };
 
 const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
@@ -457,7 +467,7 @@ export function narrate(raw: string): StoryItem[] {
               mission: clip((input["description"] as string) ?? (input["prompt"] as string) ?? "", 240),
             });
           } else {
-            story.push({ kind: "act", text: `${item.name}  ${clip(toolDetail(input), 120)}` });
+            story.push({ kind: "act", tool: item.name, detail: clip(toolDetail(input), 120) });
           }
         }
       }

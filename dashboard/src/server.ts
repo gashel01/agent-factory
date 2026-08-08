@@ -1898,6 +1898,34 @@ function screenshotUrl(bin: string, url: string, outPath: string): Promise<boole
   });
 }
 
+/** Best-effort probe of the underlying coding-agent CLI version, so the cockpit
+ *  can surface "which Claude Code am I driving". Probed once and cached for the
+ *  server's life; resolves null if the CLI isn't on PATH (chip stays hidden).
+ *  Uses `shell: true` so a Windows `claude.cmd` shim resolves like the binary. */
+let agentVersionProbe: Promise<string | null> | null = null;
+function agentVersion(): Promise<string | null> {
+  if (agentVersionProbe) return agentVersionProbe;
+  agentVersionProbe = new Promise<string | null>((r) => {
+    let out = "";
+    let c: ChildProcess;
+    try {
+      c = spawn("claude", ["--version"], { shell: true, windowsHide: true });
+    } catch {
+      r(null);
+      return;
+    }
+    const timer = setTimeout(() => { try { c.kill(); } catch { /* gone */ } r(null); }, 5000);
+    c.stdout?.on("data", (d) => { out += String(d); });
+    c.on("error", () => { clearTimeout(timer); r(null); });
+    c.on("exit", () => {
+      clearTimeout(timer);
+      const m = out.match(/\d+\.\d+\.\d+/);
+      r(m ? m[0] : (out.trim() || null));
+    });
+  });
+  return agentVersionProbe;
+}
+
 async function judgeAction(ws: Workspace, capsule: Capsule, action: CapsuleAction, repo: string): Promise<void> {
   const jr: JudgeResult = { state: "running", output: "Gathering evidence…\n" };
   ws.capsule.judgments.set(action.id, jr);
@@ -2574,10 +2602,10 @@ function main(): void {
 
     if (url.pathname === "/api/control" && req.method === "POST") {
       try {
-        const { op, task, text } = JSON.parse(await readBody(req)) as {
-          op?: string; task?: string; text?: string;
+        const { op, task, text, to } = JSON.parse(await readBody(req)) as {
+          op?: string; task?: string; text?: string; to?: string;
         };
-        const ops = ["pause", "resume", "stop", "kill", "retry", "answer", "approve", "changes"];
+        const ops = ["pause", "resume", "stop", "kill", "retry", "answer", "approve", "changes", "undo"];
         if (!op || !ops.includes(op)) throw new Error(`op must be one of ${ops.join(", ")}`);
         if (task !== undefined && !/^[\w.-]+$/.test(task)) throw new Error("bad task id");
         if (!ws.tailer.run) throw new Error("no active run");
@@ -2591,6 +2619,13 @@ function main(): void {
         }
         if (op === "changes") {
           payload.text = (text ?? "").trim().slice(0, 4000);
+        }
+        if (op === "undo") {
+          // A checkpoint SHA to rewind the parked branch to; the dispatcher only
+          // honours one it actually handed out, so this is just a shape guard.
+          const sha = (to ?? "").trim();
+          if (!/^[0-9a-f]{7,40}$/i.test(sha)) throw new Error("undo requires a checkpoint sha");
+          payload.to = sha;
         }
         appendFileSync(
           join(ws.tailer.runsDir, ws.tailer.run, "control.jsonl"),
@@ -2656,6 +2691,7 @@ function main(): void {
         backlogCount: backlog,
         currentRun: ws.tailer.run,
         workspace: ws.name,
+        agentVersion: await agentVersion(),
       });
       return;
     }
@@ -2706,6 +2742,24 @@ function main(): void {
     if (url.pathname === "/api/preview/stop" && req.method === "POST") {
       stopPreview(ws);
       json(res, 200, { ok: true });
+      return;
+    }
+    // Freeze-frame of the running app — headless screenshot of the live preview
+    // URL, streamed as PNG. Visual evidence you can hand to the supervisor or keep
+    // as proof the build renders (the same infra the capsule judge uses).
+    if (url.pathname === "/api/preview/shot" && req.method === "GET") {
+      const target = ws.preview.url;
+      if (!target) { json(res, 400, { ok: false, error: "no live preview to capture" }); return; }
+      const bin = chromeBin();
+      if (!bin) { json(res, 400, { ok: false, error: "no Chrome or Edge found to render the screenshot" }); return; }
+      const out = join(ws.workdir, ".preview-shot.png");
+      if (!(await screenshotUrl(bin, target, out))) {
+        json(res, 500, { ok: false, error: "the screenshot could not be captured" });
+        return;
+      }
+      const buf = readFileSync(out);
+      res.writeHead(200, { "content-type": "image/png", "content-length": buf.length, "cache-control": "no-store" });
+      res.end(buf);
       return;
     }
 

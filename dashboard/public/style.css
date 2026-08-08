@@ -252,15 +252,17 @@ button.brand-logo { cursor: pointer; }
    with the run status, which now leads. */
 .usage-card { display: flex; flex-direction: column; gap: 9px; min-width: 300px; flex: 0 1 380px; margin-left: auto; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--plane); transition: border-color .15s; }
 .usage-card:hover { border-color: var(--border2); }
-.usage-card .u-top { display: flex; align-items: center; gap: 10px; }
-.u-row { display: flex; align-items: baseline; gap: 8px; }
-.u-cap { flex: 1; min-width: 0; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.u-tok { font: 500 11px var(--mono); color: var(--muted); white-space: nowrap; }
-.u-fig { font: 600 16px var(--mono); letter-spacing: -0.01em; }
-.u-bud { font-size: 12px; color: var(--faint); }
+/* Hairlines, not gaps, separate the three zones (title · meters · footer) so the
+   card reads as one object rather than three stacked blocks. */
+.usage-card .u-top { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.u-cap { min-width: 0; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Which meter you are reading — a chip, not a sentence, so the numbers stay first. */
+.u-mode { margin-left: auto; font: 500 10px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 2px 7px; border: 1px solid var(--border2); border-radius: 999px; white-space: nowrap; }
 .u-collapse { background: none; border: 0; color: var(--faint); cursor: pointer; font-size: 12px; line-height: 1; padding: 3px 5px; margin: -3px -5px -3px 0; border-radius: 6px; }
 .u-collapse:hover { color: var(--ink); background: var(--surface); }
-.u-hint { display: block; text-align: left; background: none; border: 0; padding: 0; margin: 0; font-size: 10.5px; color: var(--accent-ink, var(--accent)); cursor: pointer; }
+/* --accent-ink is the text colour used ON the accent (white in light theme); using it
+   here painted the link white on a light card. The link sits on the card, so: --accent. */
+.u-hint { display: flex; align-items: center; gap: 5px; text-align: left; background: none; border: 0; padding: 9px 0 0; margin: 0; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--accent); cursor: pointer; }
 .u-hint:hover { text-decoration: underline; }
 
 .transport { display: flex; align-items: center; gap: 9px; }
@@ -618,6 +620,20 @@ textarea.input { resize: vertical; }
 .tl .tl-node { display: block; padding: 11px 0; }
 .tl .tl-kind { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
 .tl .tl-text { font-size: 13px; line-height: 1.55; color: var(--ink-2); overflow-wrap: anywhere; word-break: break-word; }
+/* A tool call reads as a plain human verb with the raw path/command dimmed
+   beneath it (the Nexa-style two-line grammar); its glyph is muted so reads and
+   edits don't all shout in brass — only semantic kinds (Result) keep the accent. */
+.tl .tl-verb { font: 500 13px/1.4 var(--sans); color: var(--ink); display: flex; align-items: center; gap: 10px; }
+/* Rewind-to-here: quiet until you hover the step, so it doesn't clutter the read. */
+.tl-undo { display: inline-flex; align-items: center; gap: 4px; font: 500 11px/1 var(--sans); color: var(--faint);
+  background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; cursor: pointer;
+  opacity: 0; transition: opacity .14s var(--ease), color .14s var(--ease), border-color .14s var(--ease); }
+.tl-node.act:hover .tl-undo, .tl-undo:focus-visible { opacity: 1; }
+.tl-undo:hover { color: var(--accent); border-color: var(--accent); }
+.tl .tl-detail { margin-top: 3px; font: 11.5px/1.5 var(--mono); color: var(--faint); overflow-wrap: anywhere; word-break: break-word; }
+.tl-node.act .tl-glyph { color: var(--ink-2); }
+/* Run footprint: one dim status-bar line under the last step. */
+.tl .tl-foot { margin-top: 12px; padding: 12px 0 2px; border-top: 1px solid var(--border); font: 500 11px/1 var(--mono); color: var(--faint); letter-spacing: .02em; }
 
 /* ------------------------------- settings ------------------------------- */
 .settings-form { display: flex; flex-direction: column; }
@@ -654,6 +670,11 @@ textarea.input { resize: vertical; }
 /* ------------------------------- preview ------------------------------- */
 .preview-status { font-size: 14px; margin: 2px 0 12px; }
 .preview-out { max-height: 220px; overflow-y: auto; background: var(--plane); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+/* Live embedded preview — the running app, watched in-cockpit. */
+.preview-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.preview-url { flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.preview-bar-acts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.preview-frame { width: 100%; height: min(62vh, 640px); border: 1px solid var(--border); border-radius: 10px; background: #fff; box-shadow: var(--shadow); }
 
 /* ------------------------------- repo ------------------------------- */
 .repo-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
@@ -678,6 +699,10 @@ textarea.input { resize: vertical; }
 
 /* unified diff: collapsible per-file sections + jump bar */
 .diff-view { display: flex; flex-direction: column; gap: 12px; }
+/* Condensed change footprint at the top of any diff. */
+.diff-summary { display: flex; align-items: baseline; gap: 10px; font: 600 12px/1 var(--sans); color: var(--ink); }
+.diff-summary .chip-add, .diff-summary .chip-del { font: 600 12px/1 var(--mono); }
+.ds-review { margin-left: auto; font: 500 11px/1 var(--sans); color: var(--faint); }
 .diff-filebar { display: flex; flex-wrap: wrap; gap: 6px; position: sticky; top: 0; z-index: 1; background: var(--bg); padding-bottom: 6px; }
 .diff-filechip { display: inline-flex; align-items: center; gap: 6px; font: 600 11px/1 var(--sans); padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--plane); color: var(--ink-2); cursor: pointer; }
 .diff-filechip:hover { border-color: var(--accent); }
@@ -983,6 +1008,19 @@ a.act { text-decoration: none; display: inline-flex; align-items: center; }
 .companion-send { flex: 0 0 auto; width: 34px; height: 34px; min-width: 34px; padding: 0; border-radius: 50%; display: grid; place-items: center; }
 .companion-open { position: fixed; right: 16px; bottom: 18px; width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow); font-size: 19px; cursor: pointer; z-index: 25; }
 .companion-open:hover { border-color: var(--accent); }
+/* Persistent supervisor composer, docked bottom-right when the rail is closed. */
+.sup-dock { position: fixed; right: 16px; bottom: 18px; z-index: 25; display: flex; align-items: center; gap: 6px;
+  width: min(360px, calc(100vw - 32px)); padding: 6px 6px 6px 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow); }
+.sup-dock:focus-within { border-color: var(--accent); box-shadow: 0 8px 24px color-mix(in oklch, var(--accent) 22%, transparent); }
+.sup-dock-open { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.sup-dock-open:hover { color: var(--accent); }
+.sup-dock-input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; color: var(--ink); font: 400 13px/1.3 var(--sans); outline: none; }
+.sup-dock-input::placeholder { color: var(--faint); }
+.sup-dock-send { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: 0; display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink); cursor: pointer; transition: filter .16s var(--ease), opacity .16s var(--ease); }
+.sup-dock-send:hover:not(:disabled) { filter: brightness(1.06); }
+.sup-dock-send:disabled { opacity: .45; cursor: default; }
 @media (max-width: 900px) {
   .companion { position: fixed; right: 0; top: 0; z-index: 45; box-shadow: -10px 0 30px rgba(0, 0, 0, .25); }
   .cockpit-main.with-rail { padding-right: 0; }
@@ -1344,6 +1382,9 @@ a.act { text-decoration: none; display: inline-flex; align-items: center; }
 .mode-badge.mode-subscription { color: var(--st-merged-fg); background: var(--st-merged-bg); border-color: var(--st-merged-bd); }
 .mode-badge.mode-api { color: var(--st-merging-fg); background: var(--st-merging-bg); border-color: var(--st-merging-bd); }
 .mode-badge:hover { filter: brightness(1.05); }
+/* Which agent CLI is being driven — a quiet, non-interactive chip next to the mode badge. */
+.agent-ver { display: inline-flex; align-items: center; gap: 5px; font: 500 11px/1 var(--mono); color: var(--faint); white-space: nowrap; padding: 0 2px; }
+.agent-ver .lucide { color: var(--ink-2); }
 .an-mode { opacity: .7; margin-left: 4px; }
 
 /* --- Plan usage indicator (subscription) --- */
@@ -1677,24 +1718,36 @@ body {
 
 .plan-warn { color: var(--st-failed-fg, #d3543f); font-weight: 600; }
 
-/* --- Real subscription plan usage (from the OAuth /usage endpoint) --- */
-.plan-limits { display: flex; flex-direction: column; gap: 9px; margin-top: 8px; }
-.pl-row { display: flex; flex-direction: column; gap: 3px; }
-.pl-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.pl-label { font-size: 11px; color: var(--muted); }
-.pl-pct { font: 600 11px/1 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
-.pl-bar { height: 4px; border-radius: 3px; background: var(--border); overflow: hidden; }
-.pl-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s var(--ease, ease); }
-.pl-row.sev-warning .pl-fill, .pl-row.sev-high .pl-fill { background: #d3a018; }
-.pl-row.sev-critical .pl-fill, .pl-row.sev-reject .pl-fill { background: var(--st-failed-fg, #d3543f); }
-.pl-reset { font-size: 10px; color: var(--faint); }
+/* --- Real subscription plan usage (from the OAuth /usage endpoint) ---
+   One hero meter, then quiet cells. Three identical bars used to make every
+   window look equally urgent; only the one closest to stopping a run gets a bar. */
+.u-hero { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.u-hero-top { display: flex; align-items: baseline; gap: 10px; }
+.u-hero-lab { flex: 1; min-width: 0; font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-hero-right { font: 500 10.5px var(--mono); color: var(--faint); white-space: nowrap; }
+.u-hero-fig { display: flex; align-items: baseline; gap: 7px; }
+.u-hero-fig > b { font: 600 30px/1 var(--sans); letter-spacing: -0.03em; color: var(--ink); }
+.u-hero-fig > span { font-size: 12px; color: var(--muted); }
+.u-hero-left { margin-left: auto; font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+.u-hero-note { font-size: 10.5px; color: var(--faint); }
 
-/* --- Collapsed usage card: keep cost + current-session glance --- */
-.u-mini { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.u-fig.sm { font-size: 17px; }
-.u-mini-sess { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); }
-.u-mini-bar { width: 84px; height: 4px; border-radius: 3px; background: var(--border); overflow: hidden; flex: 0 0 auto; }
-.u-mini-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.pl-bar { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.pl-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s var(--ease, ease); }
+.sev-warning .pl-fill, .sev-high .pl-fill { background: #d3a018; }
+.sev-critical .pl-fill, .sev-reject .pl-fill { background: var(--st-failed-fg, #d3543f); }
+
+/* Secondary windows: two per row, separated by hairlines rather than whitespace. */
+.u-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; border-top: 1px solid var(--border); padding-top: 9px; margin-top: 2px; }
+.u-grid > .u-cell + .u-cell { border-left: 1px solid var(--border); padding-left: 14px; }
+.u-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.u-cell-lab { font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-cell-val { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.u-cell-val > b { font: 600 15px/1 var(--sans); letter-spacing: -0.02em; color: var(--ink); }
+.u-cell-val > span { font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-cell.sev-warning .u-cell-val > b, .u-cell.sev-high .u-cell-val > b { color: #d3a018; }
+.u-cell.sev-critical .u-cell-val > b, .u-cell.sev-reject .u-cell-val > b { color: var(--st-failed-fg, #d3543f); }
+
+@media (max-width: 620px) { .u-grid { grid-template-columns: 1fr; gap: 9px; } .u-grid > .u-cell + .u-cell { border-left: 0; padding-left: 0; } }
 
 .usage-card { cursor: pointer; transition: border-color .15s; }
 .usage-card:hover { border-color: var(--accent); }
