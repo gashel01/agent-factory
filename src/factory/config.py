@@ -41,6 +41,10 @@ class AgentConfig:
     extra_args: tuple[str, ...] = ()
     effort: str | None = None  # --effort <level>; None = the CLI's own default
     mcp_config: str | None = None  # path to an .mcp.json (e.g. the project knowledge base)
+    # Opt-in: commit the worktree after each file edit (a PostToolUse hook) so the
+    # dashboard can undo a single step. Off by default — it adds commits to the
+    # agent's scratch branch, so it only turns on when the operator asks for it.
+    checkpoints: bool = False
 
 
 @dataclass(frozen=True)
@@ -276,6 +280,7 @@ def load_config(path: Path | None) -> Config:
             extra_args=_as_str_tuple(agent.get("extra_args"), "agent.extra_args"),
             effort=_validate_effort(agent.get("effort")),
             mcp_config=agent.get("mcp_config"),
+            checkpoints=bool(agent.get("checkpoints", False)),
         ),
         setup=SetupConfig(
             commands=_as_str_tuple(setup.get("commands"), "setup.commands"),

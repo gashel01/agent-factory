@@ -18,6 +18,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from . import agent as agent_mod
+from . import checkpoint as checkpoint_mod
 from . import merge as merge_mod
 from . import sandbox as sandbox_mod
 from . import worktree as wt_mod
@@ -292,6 +293,30 @@ class Dispatcher:
                 task.failure_notes.append(f"The operator reviewed your work and asked: {feedback}")
             self.log.emit("changes_requested", task=task_id, reason=feedback[:500])
             self._set_state(task, TaskState.QUEUED)
+        elif op == "undo" and task_id in self._awaiting:
+            # Rewind a parked (approval-pending) branch to one of its checkpoints.
+            # Safe: the worktree has no live worker, and the branch is un-merged
+            # scratch history. Only a SHA we actually handed out is accepted.
+            task, wt = self._awaiting[task_id]
+            sha = str(action.get("to", "")).strip()
+            valid = {c["sha"] for c in checkpoint_mod.list_checkpoints(wt.path, task.base_branch)}
+            if sha not in valid:
+                return
+            try:
+                checkpoint_mod.undo_to(wt.path, sha)
+            except wt_mod.GitError:
+                self.log.emit("control", op="undo_failed", task=task_id)
+                return
+            # Re-emit the parked state so the dashboard refreshes the diff range and
+            # the now-shorter checkpoint list.
+            base = wt_mod.git(wt.repo, "rev-parse", task.base_branch, check=False).stdout.strip()
+            head = wt_mod.git(wt.repo, "rev-parse", wt.branch, check=False).stdout.strip()
+            cps = checkpoint_mod.list_checkpoints(wt.path, task.base_branch)
+            self.log.emit(
+                "awaiting_approval", task=task_id, repo=str(task.repo),
+                base=base, commit=head, checkpoints=cps,
+            )
+            self.log.emit("undone", task=task_id, to=sha[:8])
         elif op == "answer" and task_id in self.by_id:
             task = self.by_id[task_id]
             answer = str(action.get("text", "")).strip()
@@ -705,9 +730,15 @@ class Dispatcher:
                 base_sha = base.stdout.strip()
                 head_sha = head.stdout.strip()
                 self._awaiting[task.id] = (task, wt)
+                # When checkpoints are on, hand the dashboard the per-step commits so
+                # a single step can be undone before approval. Off → empty list.
+                cps = (
+                    checkpoint_mod.list_checkpoints(wt.path, task.base_branch)
+                    if self.cfg.agent.checkpoints else []
+                )
                 self.log.emit(
                     "awaiting_approval", task=task.id, repo=str(task.repo),
-                    base=base_sha, commit=head_sha,
+                    base=base_sha, commit=head_sha, checkpoints=cps,
                 )
                 self._set_state(task, TaskState.AWAITING_APPROVAL)
                 return

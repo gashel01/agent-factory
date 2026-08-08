@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -316,6 +317,7 @@ def build_cli(
     mcp_config: str | None = None,
     disallowed_tools: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
+    checkpoints: bool = False,
     missing: Callable[[str], Exception] | None = None,
 ) -> list[str]:
     """The shared `claude -p` headless invocation used by the coding agent, the
@@ -357,6 +359,21 @@ def build_cli(
         # these. A denied call surfaces to the agent, which (per the contract)
         # reports blocked instead of finding a workaround.
         cmd += ["--disallowedTools", ",".join(disallowed_tools)]
+    if checkpoints:
+        # A PostToolUse hook commits the worktree after each file edit, so the
+        # dashboard can undo a single step. The hook shells out to `factory
+        # checkpoint` with the SAME interpreter running this process (quoted for
+        # paths with spaces), which reads the tool payload on stdin and commits cwd.
+        py = sys.executable or "python"
+        hook = json.dumps({
+            "hooks": {
+                "PostToolUse": [{
+                    "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+                    "hooks": [{"type": "command", "command": f'"{py}" -m factory checkpoint'}],
+                }],
+            },
+        })
+        cmd += ["--settings", hook]
     cmd += list(extra_args)
     return cmd
 
@@ -408,6 +425,7 @@ def build_command(cfg: AgentConfig, task: Task) -> list[str]:
         mcp_config=cfg.mcp_config,
         disallowed_tools=DESTRUCTIVE_GIT_DENY,
         extra_args=cfg.extra_args,
+        checkpoints=cfg.checkpoints,
     )
 
 
