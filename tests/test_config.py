@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import write_ticket
-from factory.agent import build_command
+from factory.agent import DESTRUCTIVE_GIT_DENY, build_command
 from factory.config import AgentConfig, ConfigError, load_config
 from factory.task import load_backlog
 
@@ -68,6 +68,32 @@ def test_build_command_denies_destructive_git(tmp_path, repo):
     assert "Bash(git reset --hard:*)" in denied
     assert "Bash(git push --force:*)" in denied
     assert "Bash(git rebase:*)" in denied
+
+
+def test_destructive_git_denylist_locks_the_dangerous_ops():
+    # Locks the safety floor itself: every history-rewriting / tree-wiping git op an
+    # agent must never run stays on the denylist. This is the guard that survives the
+    # factory editing its own code — removing an entry fails HERE instead of silently
+    # weakening the guardrail for the next run. (New entries are fine; only removals
+    # of a required one break this.)
+    required = {
+        "Bash(git reset --hard:*)",
+        "Bash(git reset --keep:*)",
+        "Bash(git reset --merge:*)",
+        "Bash(git push --force:*)",
+        "Bash(git push -f:*)",
+        "Bash(git push --force-with-lease:*)",
+        "Bash(git rebase:*)",
+        "Bash(git clean:*)",
+        "Bash(git checkout --:*)",
+        "Bash(git checkout .:*)",
+        "Bash(git branch -D:*)",
+        "Bash(git branch -d:*)",
+        "Bash(git filter-branch:*)",
+        "Bash(git update-ref -d:*)",
+    }
+    missing = required - set(DESTRUCTIVE_GIT_DENY)
+    assert not missing, f"destructive-git denylist lost required entries: {sorted(missing)}"
 
 
 def test_default_max_retries_applies_to_tickets(tmp_path, repo):
