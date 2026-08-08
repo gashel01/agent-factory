@@ -19,8 +19,9 @@ export type ObsLevel = "info" | "good" | "warn" | "attention";
 export type ObsDegree = 0 | 1 | 2;
 
 export interface ObsAction {
-  op: "retry" | "kill" | "pause" | "resume" | "stop";
+  op: "retry" | "kill" | "pause" | "resume" | "stop" | "plan";
   task?: string;
+  goal?: string; // set on op:"plan" — the supervisor's articulation of what to build
   label: string;
 }
 

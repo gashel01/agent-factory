@@ -28,6 +28,21 @@ def test_clean_suggestions_keeps_only_executable_proposals():
     assert _clean_suggestions("nope") == []
 
 
+def test_clean_suggestions_keeps_plan_with_a_goal():
+    # A plan needs a goal; the goal is trimmed and the label defaults to "Draft tickets".
+    raw = [
+        {"op": "plan", "goal": "  Add a dark-mode toggle  ", "label": "Draft tickets"},
+        {"op": "plan", "label": "no goal"},        # dropped: no goal
+        {"op": "plan", "goal": "", "label": "x"},  # dropped: blank goal
+        {"op": "plan", "goal": "Just a goal"},     # kept: label defaults
+    ]
+    out = _clean_suggestions(raw)
+    assert out == [
+        {"op": "plan", "goal": "Add a dark-mode toggle", "label": "Draft tickets"},
+        {"op": "plan", "goal": "Just a goal", "label": "Draft tickets"},
+    ]
+
+
 def ask_sync(workdir: Path, message: str) -> dict:
     return asyncio.run(ask(make_config(), workdir, message, workdir / "sup.jsonl"))
 

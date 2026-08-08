@@ -554,6 +554,15 @@ function parseAnswer(raw: string): { text: string; suggestions: ObsAction[] } {
         for (const s of j.suggestions as Array<Record<string, unknown>>) {
           if (!s || typeof s !== "object") continue;
           const op = String(s.op ?? "") as ObsAction["op"];
+          // "plan" is not a control op: it carries a goal for the ticket planner,
+          // not a task to act on. Keep it only when the goal is present.
+          if (op === "plan") {
+            const goal = String(s.goal ?? "").trim();
+            if (!goal) continue;
+            const label = (String(s.label ?? "Draft tickets").slice(0, 24) || "Draft tickets");
+            suggestions.push({ op, label, goal: goal.slice(0, 2000) });
+            continue;
+          }
           if (!CONTROL_OPS.has(op)) continue;
           const task = s.task ? String(s.task) : undefined;
           if ((op === "retry" || op === "kill") && !task) continue;
