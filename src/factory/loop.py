@@ -168,6 +168,16 @@ async def _pick_work(
         except TicketError:
             return []
 
+    # AUTO-RETRY: tickets still in the loop backlog were attempted last round and did
+    # NOT merge (merged ones are archived to done/). Re-run THOSE first, before
+    # planning anything new — so a failure is retried, never duplicated, and the ids
+    # never restart. We only plan the next chunk once the backlog is drained.
+    if loop_backlog.is_dir() and any(loop_backlog.glob("*.md")):
+        try:
+            return load_backlog(loop_backlog, integ)
+        except TicketError:
+            pass
+
     if spec.mode == "self":
         goal = _self_goal(repo)
         if goal is None:
