@@ -35,9 +35,10 @@ SKIP_SUBSTRINGS = (".min.", ".bundle.", ".generated.", "-lock.", ".lock.")
 _BYTES_PER_TOKEN = 4
 
 # Default gate: a file whose full read would cost this many tokens or more is a
-# hotspot. ~6000 tokens ~= 24 KB ~= 800-1000 lines of source — the point where
-# reading it whole starts to dominate a ticket's budget.
-DEFAULT_MIN_TOKENS = 6000
+# hotspot. ~10000 tokens ~= 40 KB ~= 1200-1500 lines of source — set high enough
+# to flag only files that genuinely weigh on a ticket, not every longish file
+# (6k flagged a normal 540-line component and cried wolf).
+DEFAULT_MIN_TOKENS = 10000
 
 # How much recent history to weigh when judging "how central is this file".
 _RECENT_COMMITS = 200
@@ -129,10 +130,11 @@ def brief_for_planner(hotspots: list[Hotspot]) -> str:
     lines = [
         "# Oversized files in this repo (a deterministic size scan)",
         "",
-        "These files are large enough that any ticket reading one pays a heavy token "
-        "cost. If your plan's work touches one, prefer to FIRST split it into smaller "
-        "modules (as its own ticket that nothing else depends on file-wise), or scope "
-        "the edit tightly with files_hint. Do NOT split a file your goal does not touch.",
+        "These files are large; reading one in full can weigh on a ticket's token "
+        "budget. If your plan's work touches one, consider splitting it FIRST into "
+        "smaller modules (as its own ticket that nothing else depends on file-wise), "
+        "or scope the edit tightly with files_hint. Do NOT split a file your goal "
+        "does not touch.",
         "",
     ]
     lines.extend(f"- {h.label()}" for h in hotspots)

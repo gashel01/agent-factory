@@ -805,7 +805,7 @@ export function HotspotsPanel(
       <div className="hotspots-head">
         <span className="hotspots-title">
           <TriangleAlert size={13} />
-          {spots.length} large file{spots.length > 1 ? "s" : ""} make every ticket here costly to read
+          {spots.length} large file{spots.length > 1 ? "s" : ""} can weigh on tickets that touch them
         </span>
         <button className="hotspots-x" aria-label="Dismiss" onClick={() => setDismissed(true)}>
           <X size={13} />
