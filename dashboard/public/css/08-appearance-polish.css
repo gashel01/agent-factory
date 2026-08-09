@@ -834,7 +834,7 @@ body { background: var(--bg); }
 .empty-state-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 
 /* Oversized-file advisory (HotspotsPanel) — a warm, dismissible note atop the board. */
-.hotspots { margin: 0 0 14px; border: 1px solid var(--st-blocked-bd); background: var(--st-blocked-bg); border-radius: var(--radius-sm); padding: 10px 12px; }
+.hotspots { margin: 0 var(--gutter, 20px) 14px; border: 1px solid var(--st-blocked-bd); background: var(--st-blocked-bg); border-radius: var(--radius-sm); padding: 10px 12px; }
 .hotspots-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .hotspots-title { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: var(--st-blocked-fg); font-size: 12.5px; }
 .hotspots-x { border: 0; background: transparent; color: var(--st-blocked-fg); cursor: pointer; display: inline-flex; padding: 2px; border-radius: 6px; opacity: .7; }
