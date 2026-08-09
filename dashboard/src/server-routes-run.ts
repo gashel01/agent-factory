@@ -12,6 +12,11 @@ import {
   spawnJob, summarizeRun, workspaceRepo,
 } from "./server-core.js";
 import { agentVersion } from "./server-usage.js";
+import { summarize } from "./diagnostics.js";
+import {
+  buildForecasts, diagnoseTask, isSafeId, pickRun, readPendingForecast, readRunForecast,
+  reconcileRun, savePendingForecast,
+} from "./insights.js";
 import {
   appendChatMsg, chatObs, parseAnswer, pushCompanion, readChatHistory,
 } from "./server-companion.js";
@@ -194,6 +199,53 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
     return true;
   }
 
+  if (url.pathname === "/api/diagnostics" && req.method === "GET") {
+    // Why one ticket ended the way it did. `run` is optional: without it the
+    // question is about the run the operator is currently watching.
+    try {
+      const task = url.searchParams.get("task") ?? "";
+      if (!isSafeId(task)) throw new Error("bad task id");
+      const run = pickRun(ws.tailer.runsDir, url.searchParams.get("run"), ws.tailer.run);
+      // A workspace with no run at all still answers: `diagnose` reports an
+      // honest "unknown" for a task it has no evidence about.
+      const diagnosis = diagnoseTask(ws.tailer.runsDir, run, task);
+      json(res, 200, { ok: true, run, task, diagnosis, summary: summarize(diagnosis) });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/forecast" && req.method === "GET") {
+    const slots = Number(url.searchParams.get("slots"));
+    const bundle = buildForecasts(ws.workdir, ws.tailer.runsDir, slots);
+    // `pending` is the estimate accepted for a launch that has not been paired
+    // with its run yet — the panel shows it so an accepted estimate never
+    // disappears between the click and the first event.
+    json(res, 200, { ok: true, ...bundle, pending: readPendingForecast(ws.workdir) });
+    return true;
+  }
+
+  if (url.pathname === "/api/forecast/actual" && req.method === "GET") {
+    try {
+      const run = pickRun(ws.tailer.runsDir, url.searchParams.get("run"), ws.tailer.run);
+      const reconciliation = reconcileRun(ws.workdir, ws.tailer.runsDir, run);
+      if (!reconciliation) {
+        json(res, 200, {
+          ok: false, run, reconciliation: null, forecast: null,
+          error: "no estimate was stored for this run",
+        });
+        return true;
+      }
+      json(res, 200, {
+        ok: true, run, reconciliation, forecast: readRunForecast(ws.tailer.runsDir, run),
+      });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
   if (url.pathname === "/api/ticket/complete" && req.method === "POST") {
     // Expand a hand-written ticket into a proper Goal + Done-when body, on demand.
     try {
@@ -291,8 +343,17 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
 
   if (url.pathname === "/api/run" && req.method === "POST") {
     try {
-      const { slots } = JSON.parse(await readBody(req)) as { slots?: number };
+      const { slots, profile, forecast } = JSON.parse(await readBody(req)) as
+        { slots?: number; profile?: string; forecast?: unknown };
       if (ws.jobs.run.state === "running") throw new Error("a run is already in progress");
+      // A launch from the estimate panel carries the estimate the operator
+      // accepted. Persist it BEFORE spawning: the dispatcher names the run, so
+      // there is a moment where the run exists and the estimate would not —
+      // and an unnamed profile aborts the launch rather than starting a run
+      // nothing can later be scored against.
+      if (profile !== undefined || forecast !== undefined) {
+        savePendingForecast(ws.workdir, profile, forecast);
+      }
       const args = ["run"];
       if (slots && Number.isFinite(slots) && slots > 0) args.push("--slots", String(slots));
       // The run reads project lessons from its own workdir; the shared global
