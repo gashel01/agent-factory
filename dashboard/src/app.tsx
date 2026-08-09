@@ -29,7 +29,7 @@ import {
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
-import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, IntegrationBanner, Kanban, ModalState, RERUNNABLE, RemovedModal, Screen, SyncNote, headline, parseTicketDeps } from "./board.js";
+import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, HotspotsPanel, IntegrationBanner, Kanban, ModalState, RERUNNABLE, RemovedModal, Screen, SyncNote, headline, parseTicketDeps } from "./board.js";
 import { CockpitModal, PreviewModal, RepoModal } from "./cockpit.js";
 import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useCompanion, useEventStream, useNotifyPref, useNow, useRunActive, useStateAlerts } from "./core.js";
 import { DocsModal, LogModal, Row, SettingsModal, describe } from "./modals.js";
@@ -434,6 +434,14 @@ function App(): JSX.Element {
           )}
         </div>
       </div>
+      <HotspotsPanel
+        repo={repoPath()}
+        onSplit={(path) => setModal({
+          type: "newwork", tab: "goal",
+          goal: `Split ${path} into smaller, cohesive modules. Pure mechanical refactor: `
+            + `move code into new files and wire imports/exports — change no logic or behavior. `
+            + `Keep the typecheck and the build green.`,
+        })} />
       {tasks.length === 0 && pending.length === 0 && manual.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-art" aria-hidden="true"><Sparkles size={28} /></div>

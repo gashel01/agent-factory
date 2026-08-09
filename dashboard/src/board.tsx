@@ -754,3 +754,57 @@ export function Kanban(
   );
 }
 
+
+/* --------------------------------- oversized-file advisory --------------------------------- */
+
+export interface Hotspot {
+  path: string;
+  sizeBytes: number;
+  estTokens: number;
+  edits: number;
+  score: number;
+}
+
+/**
+ * Advisory panel (never a gate) shown atop the board: a deterministic size scan
+ * flags source files big enough that any ticket reading one pays a heavy token
+ * cost. "Plan a split" pre-fills the goal composer so the operator can hand the
+ * split to the AI in one click. Dismissible; silent when the repo is clean.
+ */
+export function HotspotsPanel(
+  { repo, onSplit }: { repo: string; onSplit: (path: string) => void },
+): JSX.Element | null {
+  const [spots, setSpots] = useState<Hotspot[] | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  useEffect(() => {
+    if (!repo) { setSpots([]); return; }
+    let live = true;
+    fetchJSON<{ hotspots?: Hotspot[] }>(`/api/hotspots?repo=${encodeURIComponent(repo)}`)
+      .then((r) => { if (live) setSpots(r.hotspots ?? []); })
+      .catch(() => { if (live) setSpots([]); });
+    return () => { live = false; };
+  }, [repo]);
+  if (dismissed || !spots || spots.length === 0) return null;
+  return (
+    <div className="hotspots" role="note">
+      <div className="hotspots-head">
+        <span className="hotspots-title">
+          <TriangleAlert size={13} />
+          {spots.length} large file{spots.length > 1 ? "s" : ""} make every ticket here costly to read
+        </span>
+        <button className="hotspots-x" aria-label="Dismiss" onClick={() => setDismissed(true)}>
+          <X size={13} />
+        </button>
+      </div>
+      <ul className="hotspots-list">
+        {spots.slice(0, 4).map((h) => (
+          <li key={h.path}>
+            <span className="hotspots-path" title={h.path}>{h.path}</span>
+            <span className="hotspots-meta">~{Math.round(h.estTokens / 1000)}k tokens · {h.edits} recent edits</span>
+            <button className="hotspots-split" onClick={() => onSplit(h.path)}>Plan a split</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
