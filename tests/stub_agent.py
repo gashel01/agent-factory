@@ -82,6 +82,16 @@ def main() -> int:
         print(json.dumps({"type": "result", "num_turns": 3, "result": json.dumps(payload)}))
         return 0
 
+    if "Autopilot supervisor" in prompt:
+        # Decompose once, then declare done: "continue" while nothing has landed on
+        # the work branch, "done" once progress shows a commit.
+        if "(nothing yet)" in prompt:
+            payload = {"status": "continue", "objective": "STUB:LOOP do the next chunk"}
+        else:
+            payload = {"status": "done", "reason": "mission complete"}
+        print(json.dumps({"type": "result", "num_turns": 2, "result": json.dumps(payload)}))
+        return 0
+
     if "Planning contract" in prompt:
         if "STUB:LOOP" in prompt:
             # Loop-friendly plan: two disjoint tickets with NO verify command, so

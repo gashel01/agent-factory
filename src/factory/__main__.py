@@ -188,8 +188,8 @@ def cmd_loop(args: argparse.Namespace) -> int:
     if not (repo / ".git").exists():
         print(f"error: {repo} is not a git repository", file=sys.stderr)
         return 2
-    if args.mode == "explicit" and not args.objective.strip():
-        print("error: explicit mode needs an objective", file=sys.stderr)
+    if args.mode in ("explicit", "supervisor") and not args.objective.strip():
+        print(f"error: {args.mode} mode needs an objective", file=sys.stderr)
         return 2
     if args.mode == "backlog" and not args.source_backlog:
         print("error: backlog mode needs --source-backlog", file=sys.stderr)
@@ -411,8 +411,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_loop.add_argument("objective", nargs="?", default="",
                         help="what the loop should achieve (explicit mode)")
-    p_loop.add_argument("--mode", choices=("explicit", "backlog", "self"), default="explicit",
-                        help="work source: plan objective / drain backlog / auto-split hotspots")
+    p_loop.add_argument("--mode", choices=("explicit", "backlog", "self", "supervisor"),
+                        default="explicit",
+                        help="work source: explicit objective / drain backlog / auto-split / supervisor")
     p_loop.add_argument("--accept", default="",
                         help="acceptance command: exits 0 when done (read-only); optional")
     p_loop.add_argument("--source-backlog", type=Path, default=None,

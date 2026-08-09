@@ -105,9 +105,41 @@ def _self_goal(repo: Path) -> str | None:
     )
 
 
+async def _next_step(
+    cfg: Config, repo: Path, mission: str, progress: str, log_path: Path
+) -> str | None:
+    """Supervisor mode's decomposer: given the mission and the work already landed
+    on the integration branch, a read-only agent proposes the NEXT concrete
+    objective — or declares the mission complete (returns None)."""
+    from .agent import build_cli, extract_trailing_json, spawn_env, stream_headless
+    from .plan import PLANNER_TOOLS
+    contract = (
+        "# Autopilot supervisor — decomposition\n\n"
+        "You steer an autopilot loop toward a MISSION. Read the repo as needed, then "
+        "propose the NEXT single, concrete, self-contained objective that moves the "
+        "mission forward (one meaningful chunk, not everything at once), OR declare "
+        "the mission complete if the progress already satisfies it.\n\n"
+        f"## Mission\n{mission}\n\n"
+        f"## Progress so far (commits on the work branch)\n{progress or '(nothing yet)'}\n\n"
+        'End with a strict JSON block (no fences): {"status": "continue", "objective": '
+        '"<the next concrete objective>"}  or  {"status": "done", "reason": "<why>"}.'
+    )
+    cmd = build_cli(cfg.agent.command, max_turns=40, allowed_tools=PLANNER_TOOLS,
+                    model=cfg.plan.model or cfg.agent.model)
+    try:
+        out = await stream_headless(cmd, contract, repo, log_path, timeout_s=10 * 60,
+                                    env=spawn_env(cfg.execution_mode))
+    except TimeoutError:
+        return None
+    j = extract_trailing_json(str(out.result.get("result", ""))) if out.result else None
+    if not j or j.get("status") != "continue":
+        return None
+    return str(j.get("objective", "")).strip() or None
+
+
 async def _pick_work(
-    spec: LoopSpec, cfg_i: Config, repo: Path, out: str, loop_dir: Path,
-    loop_backlog: Path, integ: str, i: int,
+    spec: LoopSpec, cfg_i: Config, repo: Path, out: str, base: str, integ: str,
+    loop_dir: Path, loop_backlog: Path, i: int,
 ) -> list[Task]:
     """Where one round's work comes from, per mode. Returns ready-to-run tasks
     (empty = nothing to do this round -> the loop counts a dry round)."""
@@ -122,6 +154,13 @@ async def _pick_work(
 
     if spec.mode == "self":
         goal = _self_goal(repo)
+        if goal is None:
+            return []
+    elif spec.mode == "supervisor":
+        # The supervisor decomposes the mission into the next concrete objective,
+        # given what has already landed on the integration branch.
+        progress = wt.git(repo, "log", "--oneline", f"{base}..{integ}", check=False).stdout.strip()
+        goal = await _next_step(cfg_i, repo, spec.objective, progress, loop_dir / f"sup-{i}.jsonl")
         if goal is None:
             return []
     else:  # explicit: plan the objective plus the acceptance output (the gap)
@@ -198,7 +237,8 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
 
         # Pick this round's work (mode-specific). Empty -> a dry round.
         tasks = await _pick_work(
-            spec, replace(cfg, base_branch=integ), repo, out, loop_dir, loop_backlog, integ, i
+            spec, replace(cfg, base_branch=integ), repo, out, base, integ,
+            loop_dir, loop_backlog, i,
         )
         if not tasks:
             dry += 1
