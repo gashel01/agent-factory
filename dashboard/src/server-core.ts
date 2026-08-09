@@ -428,7 +428,9 @@ export interface Workspace {
   // every browser/device sees it — NOT a per-browser "last typed" value.
   repo: string | null;
   tailer: RunTailer;
-  jobs: { plan: Job; run: Job; chat: Job; doctor: Job };
+  jobs: { plan: Job; run: Job; chat: Job; doctor: Job; loop: Job };
+  // The autopilot loop's child process, kept so /api/loop/stop can kill its tree.
+  loopProc: ChildProcess | null;
   preview: Preview;
   capsule: CapsuleRuntime;
   // Ticket ids the operator removed from the board. Display-only: run history
@@ -495,7 +497,9 @@ export class Registry {
         run: { state: "idle", output: "" },
         chat: { state: "idle", output: "" },
         doctor: { state: "idle", output: "" },
+        loop: { state: "idle", output: "" },
       },
+      loopProc: null,
       preview: { kind: "none", state: "idle", url: null, output: "", repo: null, proc: null, server: null },
       capsule: { runs: new Map(), services: new Map(), grants: loadGrants(dir), chatDraft: null, judgments: new Map() },
       hidden: loadHidden(dir),
@@ -533,13 +537,13 @@ export class Registry {
 
 export function spawnJob(
   ws: Workspace,
-  kind: "plan" | "run" | "chat" | "doctor",
+  kind: "plan" | "run" | "chat" | "doctor" | "loop",
   factory: string[],
   args: string[],
   env?: Record<string, string>,
   onDone?: (ok: boolean, output: string, stdout: string) => void,
   streamProgress = false,
-): void {
+): ChildProcess {
   ws.jobs[kind] = { state: "running", output: "", progress: "" };
   // NEVER shell:true — goals are user text (spaces, parentheses, quotes) and
   // must reach the CLI as one argv entry. Windows: the command must resolve
@@ -584,6 +588,7 @@ export function spawnJob(
     ws.jobs[kind].progress = "";
     onDone?.(code === 0, ws.jobs[kind].output.trim(), stdout.trim());
   });
+  return child;
 }
 
 

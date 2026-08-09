@@ -21,7 +21,52 @@ import {
   appendChatMsg, chatObs, parseAnswer, pushCompanion, readChatHistory,
 } from "./server-companion.js";
 import type { ChatMsg } from "./server-companion.js";
+import { killTree } from "./server-preview.js";
 import type { WsRouteCtx } from "./server-routes.js";
+
+/** Parse the latest state of an autopilot loop from its loop.jsonl (loop_start /
+ *  loop_iter / loop_end events). Returns null when no loop has run for this ws. */
+function readLoopState(workdir: string): Record<string, unknown> | null {
+  const runs = join(workdir, "runs");
+  if (!existsSync(runs)) return null;
+  const dirs = readdirSync(runs)
+    .filter((d) => d.startsWith("loop-") && existsSync(join(runs, d, "loop.jsonl")))
+    .map((d) => join(runs, d, "loop.jsonl"))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  if (!dirs.length) return null;
+  const state: Record<string, unknown> = {};
+  for (const line of readFileSync(dirs[0]!, "utf-8").split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      const e = JSON.parse(t) as Record<string, unknown>;
+      if (e.event === "loop_start") Object.assign(state, {
+        name: e.name, objective: e.objective, integ: e.integ, base: e.base,
+        budget: e.budget, maxIterations: e.max_iterations,
+      });
+      else if (e.event === "loop_iter") Object.assign(state, { iteration: e.n, spent: e.spent });
+      else if (e.event === "loop_end") Object.assign(state, {
+        stop: e.stop, spent: e.spent, accepted: e.accepted, pr: e.pr,
+      });
+    } catch { /* skip a torn line */ }
+  }
+  return state;
+}
+
+/** Pull a {objective, accept} JSON object out of a model's free-text answer. */
+function extractDraft(text: string): { objective: string; accept: string } | null {
+  const starts: number[] = [];
+  for (let i = 0; i < text.length; i++) if (text[i] === "{") starts.push(i);
+  for (const i of starts.reverse()) {
+    try {
+      const obj = JSON.parse(text.slice(i, text.lastIndexOf("}") + 1)) as Record<string, unknown>;
+      if (typeof obj.objective === "string" && typeof obj.accept === "string") {
+        return { objective: obj.objective, accept: obj.accept };
+      }
+    } catch { /* try an earlier brace */ }
+  }
+  return null;
+}
 
 export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
   const { req, res, url, ws, opts, globalMemFile } = ctx;
@@ -415,6 +460,73 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
       json(res, 200, { ok: true });
       return true;
     }
+  }
+
+  // --------------------------------- autopilot loop ---------------------------------
+  if (url.pathname === "/api/loop" && req.method === "GET") {
+    json(res, 200, { state: ws.jobs.loop.state, ...(readLoopState(ws.workdir) ?? {}) });
+    return true;
+  }
+
+  if (url.pathname === "/api/loop/start" && req.method === "POST") {
+    try {
+      const b = JSON.parse(await readBody(req)) as {
+        objective?: string; accept?: string; budget?: number;
+        maxIterations?: number; name?: string; repo?: string;
+      };
+      if (!b.objective?.trim()) throw new Error("objective is required");
+      if (!b.accept?.trim()) throw new Error("an acceptance command is required");
+      if (!b.repo?.trim()) throw new Error("repo path is required");
+      // No loop without a hard budget cap — the whole point is it can't run away.
+      if (!b.budget || !Number.isFinite(b.budget) || b.budget <= 0) {
+        throw new Error("a budget cap (USD) greater than 0 is required");
+      }
+      if (ws.jobs.loop.state === "running" || ws.jobs.run.state === "running"
+          || ws.jobs.plan.state === "running") {
+        throw new Error("a job is already running in this workspace");
+      }
+      const name = (b.name?.trim() || "autopilot").replace(/[^\w.-]/g, "-");
+      const iters = b.maxIterations && b.maxIterations > 0 ? Math.floor(b.maxIterations) : 5;
+      const args = [
+        "loop", b.objective.trim(), "--accept", b.accept.trim(),
+        "--budget", String(b.budget), "--max-iterations", String(iters),
+        "--name", name, "--repo", b.repo.trim(),
+      ];
+      ws.repo = resolve(b.repo.trim());
+      ws.loopProc = spawnJob(ws, "loop", opts.factory, args,
+        { FACTORY_GLOBAL_MEMORY: globalMemFile });
+      json(res, 200, { ok: true });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/loop/stop" && req.method === "POST") {
+    if (ws.loopProc) { killTree(ws.loopProc); ws.loopProc = null; }
+    ws.jobs.loop.state = "idle";
+    json(res, 200, { ok: true });
+    return true;
+  }
+
+  if (url.pathname === "/api/loop/draft" && req.method === "POST") {
+    try {
+      const { repo } = JSON.parse(await readBody(req)) as { repo?: string };
+      if (!repo?.trim()) throw new Error("repo path is required");
+      const prompt =
+        "Propose an autopilot objective for THIS repository. Read enough to be "
+        + "concrete. Return: (1) a one-paragraph objective statement, and (2) an "
+        + "EXECUTABLE acceptance command that exits 0 when the objective is met — "
+        + "read-only, using the repo's own runner (tests / typecheck / build). End "
+        + 'your answer with a strict JSON block: {"objective":"...","accept":"..."}';
+      const raw = await askOneShot(opts.factory, resolve(repo.trim()), prompt);
+      const draft = extractDraft(raw);
+      if (!draft) throw new Error("the model did not return a usable objective — try again");
+      json(res, 200, { ok: true, ...draft });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
   }
 
   return false;
