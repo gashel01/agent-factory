@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-import { json, lanIPv4, readBody, SAFE_WS, summarizeRun, workspaceRepo } from "./server-core.js";
+import { json, lanIPv4, portfolioCounts, readBody, SAFE_WS, summarizeRun, workspaceRepo } from "./server-core.js";
 import {
   dockerPreflight, hotspotsScan, sbxBuild, startDockerBuild, subscriptionUsage,
 } from "./server-usage.js";
@@ -59,13 +59,22 @@ export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/portfolio" && req.method === "GET") {
     json(res, 200, {
-      projects: [...registry.workspaces.values()].map((ws) => ({
-        name: ws.name,
-        workdir: ws.workdir,
-        currentRun: ws.tailer.run,
-        running: ws.jobs.run.state === "running",
-        ...summarizeRun(ws.tailer.runsDir, ws.tailer.run),
-      })),
+      projects: [...registry.workspaces.values()].map((ws) => {
+        const live = ws.jobs.run.state === "running" || ws.jobs.loop.state === "running";
+        // summarizeRun for spend/tokens/budget/mode; portfolioCounts for the
+        // board-accurate, cumulative, ghost-free counts (merged across all runs,
+        // in-flight dropped when nothing is live).
+        const pc = portfolioCounts(ws.tailer.runsDir, ws.tailer.run, live);
+        return {
+          name: ws.name,
+          workdir: ws.workdir,
+          currentRun: ws.tailer.run,
+          running: live,
+          ...summarizeRun(ws.tailer.runsDir, ws.tailer.run),
+          counts: pc.counts,
+          total: pc.total,
+        };
+      }),
     });
     return true;
   }

@@ -93,7 +93,7 @@
 .meas .tok { font-size: 12px; color: var(--faint); }
 .meas .try { margin-left: auto; font-size: 11px; color: var(--faint); }
 
-.kcard-actions { display: flex; gap: 7px; }
+.kcard-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .act { flex: 1; padding: 7px 10px; border-radius: 8px; border: 1px solid transparent; font: 600 12px var(--sans); cursor: pointer; transition: filter .15s; white-space: nowrap; }
 .act:hover { filter: brightness(.97); }
 .act.primary { background: var(--accent); color: var(--accent-ink); }
