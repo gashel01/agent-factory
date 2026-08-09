@@ -26,29 +26,42 @@ import type { WsRouteCtx } from "./server-routes.js";
 
 /** Parse the latest state of an autopilot loop from its loop.jsonl (loop_start /
  *  loop_iter / loop_end events). Returns null when no loop has run for this ws. */
-function readLoopState(workdir: string): Record<string, unknown> | null {
+/** The newest loop's directory under <workdir>/runs (or null). */
+function activeLoopDir(workdir: string): string | null {
   const runs = join(workdir, "runs");
   if (!existsSync(runs)) return null;
   const dirs = readdirSync(runs)
     .filter((d) => d.startsWith("loop-") && existsSync(join(runs, d, "loop.jsonl")))
-    .map((d) => join(runs, d, "loop.jsonl"))
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  if (!dirs.length) return null;
+    .map((d) => join(runs, d))
+    .sort((a, b) => statSync(join(b, "loop.jsonl")).mtimeMs - statSync(join(a, "loop.jsonl")).mtimeMs);
+  return dirs[0] ?? null;
+}
+
+function readLoopState(workdir: string): Record<string, unknown> | null {
+  const dir = activeLoopDir(workdir);
+  if (!dir) return null;
   const state: Record<string, unknown> = {};
-  for (const line of readFileSync(dirs[0]!, "utf-8").split("\n")) {
+  for (const line of readFileSync(join(dir, "loop.jsonl"), "utf-8").split("\n")) {
     const t = line.trim();
     if (!t) continue;
     try {
       const e = JSON.parse(t) as Record<string, unknown>;
       if (e.event === "loop_start") Object.assign(state, {
-        name: e.name, objective: e.objective, integ: e.integ, base: e.base,
+        name: e.name, mode: e.mode, objective: e.objective, integ: e.integ, base: e.base,
         budget: e.budget, maxIterations: e.max_iterations,
       });
       else if (e.event === "loop_iter") Object.assign(state, { iteration: e.n, spent: e.spent });
+      else if (e.event === "steered") state.objective = e.objective;
       else if (e.event === "loop_end") Object.assign(state, {
         stop: e.stop, spent: e.spent, accepted: e.accepted, pr: e.pr,
       });
     } catch { /* skip a torn line */ }
+  }
+  // The LIVE objective (objective.md) is authoritative — it reflects any re-steer.
+  const objFile = join(dir, "objective.md");
+  if (existsSync(objFile)) {
+    const txt = readFileSync(objFile, "utf-8").trim();
+    if (txt) state.objective = txt;
   }
   return state;
 }
@@ -517,6 +530,22 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
     if (ws.loopProc) { killTree(ws.loopProc); ws.loopProc = null; }
     ws.jobs.loop.state = "idle";
     json(res, 200, { ok: true });
+    return true;
+  }
+
+  if (url.pathname === "/api/loop/steer" && req.method === "POST") {
+    // The live volant: rewrite the running loop's objective.md; the loop re-reads
+    // it at the top of its next round (no restart).
+    try {
+      const { objective } = JSON.parse(await readBody(req)) as { objective?: string };
+      if (!objective?.trim()) throw new Error("a new objective is required");
+      const dir = activeLoopDir(ws.workdir);
+      if (!dir) throw new Error("no active loop to steer");
+      writeFileSync(join(dir, "objective.md"), objective.trim(), "utf-8");
+      json(res, 200, { ok: true });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
     return true;
   }
 

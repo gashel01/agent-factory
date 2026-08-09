@@ -91,6 +91,21 @@ def _safe_runs_dir(repo: Path, runs_dir: Path) -> Path:
     return repo.parent / ".warden-runs" / repo.name
 
 
+def _read_objective(loop_dir: Path, fallback: str) -> str:
+    """The loop's LIVE objective — re-read every round from objective.md so the
+    operator can re-steer a running loop (edit the file / POST it from the UI)
+    without restarting. Falls back to the objective it started with."""
+    f = loop_dir / "objective.md"
+    try:
+        if f.exists():
+            txt = f.read_text(encoding="utf-8").strip()
+            if txt:
+                return txt
+    except OSError:
+        pass
+    return fallback
+
+
 def _self_goal(repo: Path) -> str | None:
     """Self mode's work-picker: the top oversized file becomes a split objective.
     None when the repo has no oversized file left (the loop then stops, dry)."""
@@ -138,8 +153,8 @@ async def _next_step(
 
 
 async def _pick_work(
-    spec: LoopSpec, cfg_i: Config, repo: Path, out: str, base: str, integ: str,
-    loop_dir: Path, loop_backlog: Path, i: int,
+    spec: LoopSpec, cfg_i: Config, repo: Path, objective: str, out: str, base: str,
+    integ: str, loop_dir: Path, loop_backlog: Path, i: int,
 ) -> list[Task]:
     """Where one round's work comes from, per mode. Returns ready-to-run tasks
     (empty = nothing to do this round -> the loop counts a dry round)."""
@@ -160,11 +175,11 @@ async def _pick_work(
         # The supervisor decomposes the mission into the next concrete objective,
         # given what has already landed on the integration branch.
         progress = wt.git(repo, "log", "--oneline", f"{base}..{integ}", check=False).stdout.strip()
-        goal = await _next_step(cfg_i, repo, spec.objective, progress, loop_dir / f"sup-{i}.jsonl")
+        goal = await _next_step(cfg_i, repo, objective, progress, loop_dir / f"sup-{i}.jsonl")
         if goal is None:
             return []
     else:  # explicit: plan the objective plus the acceptance output (the gap)
-        goal = spec.objective + (f"\n\n## Current state — not yet met\n{out}" if out else "")
+        goal = objective + (f"\n\n## Current state — not yet met\n{out}" if out else "")
 
     try:
         contract = await run_planner(cfg_i, repo, goal, loop_dir / f"plan-{i}.jsonl")
@@ -207,6 +222,14 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
     loop_backlog = loop_dir / "backlog"
     log = EventLog(loop_dir / "loop.jsonl")
 
+    # The live objective: seed objective.md once, then re-read it every round so the
+    # operator can re-steer a running loop from the UI (POST /api/loop/steer) or by
+    # editing the file — the volant live.
+    obj_file = loop_dir / "objective.md"
+    if spec.objective and not obj_file.exists():
+        obj_file.write_text(spec.objective, encoding="utf-8")
+    last_objective = spec.objective
+
     # Create (or reuse) the integration branch off the base and check it out. The
     # dispatcher runs with base = integ, so verified tickets land HERE, not on main.
     if wt.git(repo, "branch", "--list", integ, check=False).stdout.strip():
@@ -227,6 +250,12 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
     stop = "max_iterations"
 
     for i in range(1, spec.max_iterations + 1):
+        # Re-steer: pick up any live edit to the objective before this round.
+        objective = _read_objective(loop_dir, spec.objective)
+        if objective != last_objective:
+            last_objective = objective
+            log.emit("steered", n=i, objective=objective[:500])
+
         ok, out = _acceptance(spec, repo)
         if ok:
             stop = "success"
@@ -237,7 +266,7 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
 
         # Pick this round's work (mode-specific). Empty -> a dry round.
         tasks = await _pick_work(
-            spec, replace(cfg, base_branch=integ), repo, out, base, integ,
+            spec, replace(cfg, base_branch=integ), repo, objective, out, base, integ,
             loop_dir, loop_backlog, i,
         )
         if not tasks:

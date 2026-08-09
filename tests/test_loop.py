@@ -103,6 +103,19 @@ def test_loop_supervisor_mode_decomposes_then_completes(tmp_path, repo):
     assert landed >= 1   # a decomposed round really merged onto the branch
 
 
+def test_loop_reads_a_live_objective_edit(tmp_path, repo):
+    # Live re-steer: objective.md pre-seeded different from the spec objective (as a
+    # UI steer would) is read at the top of the round and emits a "steered" event.
+    from factory.events import EventLog
+    runs = tmp_path / "runs"
+    (runs / "loop-steer").mkdir(parents=True)
+    (runs / "loop-steer" / "objective.md").write_text("STUB:LOOP steered goal", encoding="utf-8")
+    spec = LoopSpec(objective="STUB:LOOP original", accept_cmd=ACCEPT_OK, name="steer")
+    asyncio.run(run_loop(make_config(), spec, repo, runs))
+    events = list(EventLog.replay(runs / "loop-steer" / "loop.jsonl"))
+    assert any(e["event"] == "steered" for e in events)
+
+
 def test_self_goal_targets_top_hotspot_or_none(tmp_path, repo):
     # Self mode's work-picker: nothing to do on a tiny repo; once a file is big
     # enough to be a hotspot, it becomes the round's split objective.
