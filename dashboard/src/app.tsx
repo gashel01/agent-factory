@@ -132,10 +132,18 @@ function App(): JSX.Element {
     return () => window.removeEventListener("keydown", onKey);
   }, [modal, screen, view]);
 
-  const tasks = [...model.tasks.values()].sort((a, b) => a.id.localeCompare(b.id));
   const head = headline(model, runActive);
   const live = Boolean(model.run) && !model.endedTs && runActive;
-  const autopilot = isAutopilotRun(model.run);
+  // Autopilot UI (banner, Deps) keys on the loop job actually running, not the
+  // per-iteration `live` flag which blips off at each iteration boundary — and
+  // must go quiet once the loop is stopped, even though model.run still names
+  // the last (dead) loop iteration.
+  const autopilot = isAutopilotRun(model.run) && runActive;
+  const allTasks = [...model.tasks.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // A killed run (e.g. a stopped autopilot loop) leaves tickets stuck in an
+  // in-flight state with no terminal event. When nothing is actually running
+  // they're ghosts — hide them so the board shows no phantom "working" cards.
+  const tasks = runActive ? allTasks : allTasks.filter((t) => !inFlight(t.state));
   const done = tasks.filter((t) => t.state === "DONE");
   const attention = tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED");
   const working = tasks.filter((t) => inFlight(t.state));
