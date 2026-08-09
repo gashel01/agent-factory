@@ -183,6 +183,7 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
     json(res, 200, {
       plan: ws.jobs.plan,
       run: ws.jobs.run,
+      loop: ws.jobs.loop,
       chat: ws.jobs.chat,
       doctor: ws.jobs.doctor,
       backlogCount: backlog,
@@ -479,6 +480,20 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
   // --------------------------------- autopilot loop ---------------------------------
   if (url.pathname === "/api/loop" && req.method === "GET") {
     json(res, 200, { state: ws.jobs.loop.state, ...(readLoopState(ws.workdir) ?? {}) });
+    return true;
+  }
+
+  if (url.pathname === "/api/loop/backlog" && req.method === "GET") {
+    // The active loop's own backlog tickets (with their depends_on) — so the board
+    // can show the dependency graph for an autopilot run, whose tickets live here
+    // rather than in the workspace backlog.
+    const dir = activeLoopDir(ws.workdir);
+    const bl = dir ? join(dir, "backlog") : "";
+    const tickets = bl && existsSync(bl)
+      ? readdirSync(bl).filter((f) => f.endsWith(".md"))
+          .map((f) => ({ content: readFileSync(join(bl, f), "utf-8") }))
+      : [];
+    json(res, 200, { tickets });
     return true;
   }
 

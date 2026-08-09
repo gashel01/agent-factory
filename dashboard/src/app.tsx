@@ -430,7 +430,7 @@ function App(): JSX.Element {
           <button className="board-tool" title="Browse files, branches and history" onClick={() => setModal({ type: "repo" })}><GitBranch size={13} /> Repo</button>
           <button className="board-tool" title="Open pull requests — merge or close them here" onClick={() => setModal({ type: "prs" })}><GitMerge size={13} /> PRs</button>
           <button className="board-tool" title="Autopilot — run toward an objective under a budget cap" onClick={() => setModal({ type: "autopilot" })}><InfinityIcon size={13} /> Autopilot</button>
-          {hasDeps && (
+          {(hasDeps || autopilot) && (
             <button className="board-tool" title="Ticket dependency graph" onClick={() => setModal({ type: "depgraph" })}><GitMerge size={13} /> Deps</button>
           )}
           <button className="board-tool" title="This project's docs your agents can read" onClick={() => setModal({ type: "docs" })}><BookOpen size={13} /> Knowledge</button>
