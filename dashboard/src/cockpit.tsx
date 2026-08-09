@@ -1016,6 +1016,10 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
   const [maxIter, setMaxIter] = useState("5");
   const [drafting, setDrafting] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [steerObj, setSteerObj] = useState("");   // live re-steer draft
+  const [steering, setSteering] = useState(false);
+  const steerDirty = useRef(false);
+  const [costHint, setCostHint] = useState<number | null>(null);
   const every = useManagedInterval();
 
   const refresh = async (): Promise<LoopState | null> => {
@@ -1040,9 +1044,17 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
       }
       if (live) setRepo(r);
       await refresh();
+      try {
+        const f = await fetchJSON<{ history?: { medianUsdPerTicket?: number } }>(
+          `/api/forecast?ws=${encodeURIComponent(ws)}`);
+        if (live) setCostHint(f.history?.medianUsdPerTicket ?? null);
+      } catch { /* the cost hint is optional */ }
     })();
     return () => { live = false; };
   }, [ws]);
+
+  // Keep the re-steer draft in sync with the live objective until the operator edits it.
+  useEffect(() => { if (!steerDirty.current) setSteerObj(loop?.objective ?? ""); }, [loop?.objective]);
 
   // Poll while a loop is live so the gauge and iteration keep up.
   useEffect(() => {
@@ -1078,106 +1090,174 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
     catch (e) { toast(String(e), true); }
   };
 
+  const steer = async (): Promise<void> => {
+    setSteering(true);
+    try {
+      const r = await postJSON<{ ok?: boolean; error?: string }>("/api/loop/steer",
+        { objective: steerObj });
+      if (r.ok) { toast("Re-steered — applies next round."); steerDirty.current = false; await refresh(); }
+      else toast(r.error || "could not re-steer", true);
+    } catch (e) { toast(String(e), true); }
+    finally { setSteering(false); }
+  };
+
   const running = loop?.state === "running";
   const finished = !running && !creating && !!loop?.stop;
+
+  const MODES: Array<{ id: string; Icon: LucideIcon; title: string; desc: string }> = [
+    { id: "explicit", Icon: Flag, title: "Objective", desc: "Pursue a goal until an acceptance check passes." },
+    { id: "supervisor", Icon: Sparkles, title: "Mission", desc: "A supervisor turns a mission into a step each round." },
+    { id: "self", Icon: InfinityIcon, title: "Auto-improve", desc: "Split the largest files until none stay oversized." },
+    { id: "backlog", Icon: ListChecks, title: "Run backlog", desc: "Work through this project's backlog, hands-off." },
+  ];
+  const needObj = (mode === "explicit" || mode === "supervisor") && !objective.trim();
+  const noCap = !(Number(budget) > 0);
+  const capN = Number(budget) || 0;
+
+  // Live spend ring (running state): the arc fills toward the cap, warming to
+  // amber then red as it approaches.
+  const spent = loop?.spent ?? 0;
+  const cap = loop?.budget ?? 0;
+  const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0;
+  const R = 30;
+  const CIRC = 2 * Math.PI * R;
+  const ringColor = pct >= 95 ? "var(--st-failed-dot)" : pct >= 75 ? "var(--st-blocked-dot)" : "var(--accent)";
 
   return (
     <Modal title="Autopilot" onClose={onClose} wide>
       {running ? (
         <div className="loop-live">
-          <div className="loop-headline"><InfinityIcon size={15} /> Running — iteration {loop?.iteration ?? "…"}</div>
-          <p className="loop-obj">{loop?.objective}</p>
-          <div className="loop-gauge">
-            <div className="loop-gauge-fill"
-              style={{ width: `${Math.min(100, Math.round(((loop?.spent ?? 0) / (loop?.budget || 1)) * 100))}%` }} />
+          <div className="loop-live-top">
+            <div className="loop-ring-wrap">
+              <svg className="loop-ring" viewBox="0 0 72 72" width="72" height="72" aria-hidden="true">
+                <circle className="loop-ring-track" cx="36" cy="36" r={R} />
+                <circle className="loop-ring-arc" cx="36" cy="36" r={R}
+                  style={{ stroke: ringColor, strokeDasharray: CIRC, strokeDashoffset: CIRC * (1 - pct / 100) }} />
+              </svg>
+              <div className="loop-ring-label">
+                <span className="loop-ring-spent">${spent.toFixed(2)}</span>
+                <span className="loop-ring-cap">of ${cap.toFixed(2)}</span>
+              </div>
+            </div>
+            <div className="loop-live-head">
+              <div className="loop-headline"><span className="loop-pulse" aria-hidden="true" /> Autopilot running</div>
+              <div className="loop-substat">Iteration {loop?.iteration ?? "…"} · <span className="mono">{loop?.integ}</span></div>
+              <div className="loop-safety">
+                <span><GitBranch size={12} /> main untouched</span>
+                <span><Lock size={12} /> capped at ${cap.toFixed(0)}</span>
+              </div>
+            </div>
           </div>
-          <div className="loop-meta">
-            <span>${(loop?.spent ?? 0).toFixed(2)} / ${(loop?.budget ?? 0).toFixed(2)}</span>
-            <span className="mono">{loop?.integ}</span>
-          </div>
-          <p className="loop-note">Merges land on the integration branch — <strong>main is untouched</strong>. A PR opens when it finishes.</p>
+
+          {loop?.objective ? (
+            <div className="loop-steer">
+              <label className="work-label">Steer the objective — live</label>
+              <textarea className="input" rows={3} value={steerObj}
+                onChange={(e) => { steerDirty.current = true; setSteerObj(e.target.value); }} />
+              <div className="loop-steer-row">
+                <Button kind="btn" pending={steering}
+                  disabled={steering || !steerObj.trim() || steerObj.trim() === (loop?.objective ?? "").trim()}
+                  onClick={steer}><Send size={13} /> Re-steer</Button>
+                <span className="loop-note">applied at the start of the next round — no restart</span>
+              </div>
+            </div>
+          ) : (
+            <p className="loop-note">Working autonomously — merges land on the integration branch; a PR opens when it finishes.</p>
+          )}
+
           <ConfirmButton label="Stop autopilot" confirm="Stop now?" onConfirm={stop} />
         </div>
       ) : finished ? (
         <div className="loop-done">
-          <div className="loop-headline">
-            {loop?.stop === "success" ? <Check size={15} /> : <Square size={15} />} Stopped: {loop?.stop}
+          <div className={`loop-done-badge ${loop?.stop === "success" ? "ok" : "warn"}`}>
+            {loop?.stop === "success" ? <Check size={22} /> : <CircleDot size={22} />}
           </div>
-          <div className="loop-meta">
-            <span>spent ${(loop?.spent ?? 0).toFixed(2)}</span>
-            <span>objective met: {loop?.accepted ? "yes" : "no"}</span>
+          <div className="loop-headline">
+            {loop?.stop === "success" ? "Objective reached" : `Stopped — ${loop?.stop}`}
+          </div>
+          <div className="loop-done-stats">
+            <div><span className="loop-stat-n">${(loop?.spent ?? 0).toFixed(2)}</span><span className="loop-stat-l">spent of ${(loop?.budget ?? 0).toFixed(2)}</span></div>
+            <div><span className="loop-stat-n">{loop?.accepted ? "Yes" : "No"}</span><span className="loop-stat-l">objective met</span></div>
           </div>
           {loop?.pr
-            ? <p className="loop-note">Test the branch, then merge the PR from the <strong>PRs</strong> panel: <a href={loop.pr} target="_blank" rel="noreferrer">{loop.pr}</a></p>
+            ? <a className="btn primary loop-cta" href={loop.pr} target="_blank" rel="noreferrer"><GitMerge size={14} /> Review &amp; merge the PR</a>
             : <p className="loop-note">Work is on <span className="mono">{loop?.integ}</span> — test it, then merge into {loop?.base ?? "main"}.</p>}
-          <Button kind="btn" variant="primary" onClick={() => { setCreating(true); setLoop({ state: "idle" }); }}>Start a new loop</Button>
+          <Button kind="btn" onClick={() => { setCreating(true); setLoop({ state: "idle" }); }}>Start a new loop</Button>
         </div>
       ) : (
         <div className="loop-form">
-          <div className="loop-modes" role="tablist">
-            {([["explicit", "Objective"], ["supervisor", "Mission"],
-               ["self", "Auto-improve"], ["backlog", "Run backlog"]] as Array<[string, string]>)
-              .map(([m, label]) => (
-                <button key={m} role="tab" aria-selected={mode === m}
-                  className={`loop-mode${mode === m ? " on" : ""}`} onClick={() => setMode(m)}>
-                  {label}
-                </button>
-              ))}
+          <div className="loop-cards" role="radiogroup" aria-label="Autopilot mode">
+            {MODES.map((m) => (
+              <button key={m.id} type="button" role="radio" aria-checked={mode === m.id}
+                className={`loop-card${mode === m.id ? " on" : ""}`} onClick={() => setMode(m.id)}>
+                <m.Icon size={18} />
+                <span className="loop-card-title">{m.title}</span>
+                <span className="loop-card-desc">{m.desc}</span>
+              </button>
+            ))}
           </div>
 
-          {(mode === "explicit" || mode === "supervisor") && (
-            <>
-              <label className="work-label">{mode === "supervisor" ? "Mission" : "Objective"}</label>
-              <textarea className="input" rows={4}
-                placeholder={mode === "supervisor"
-                  ? "The mission — the supervisor breaks it into a concrete step each round"
-                  : "What should the autopilot achieve?"}
-                value={objective} onChange={(e) => setObjective(e.target.value)} />
-              <div className="loop-ai">
-                <Button kind="btn" pending={drafting} disabled={!repo || drafting} onClick={draft}>
-                  <Bot size={13} /> Draft with AI
-                </Button>
-                <span className="loop-note">
-                  reads the repo and proposes an objective{mode === "explicit" ? " + acceptance check" : ""}
-                </span>
-              </div>
-            </>
-          )}
+          <div className="loop-fields">
+            {(mode === "explicit" || mode === "supervisor") && (
+              <>
+                <label className="work-label">{mode === "supervisor" ? "Mission" : "Objective"}</label>
+                <textarea className="input loop-obj-input" rows={4}
+                  placeholder={mode === "supervisor"
+                    ? "Describe the mission — the supervisor breaks it into a concrete step each round."
+                    : "What should the autopilot achieve? Be specific about what “done” looks like."}
+                  value={objective} onChange={(e) => setObjective(e.target.value)} />
+                <button type="button" className="loop-draft" disabled={!repo || drafting} onClick={() => void draft()}>
+                  <Sparkles size={13} /> {drafting ? "Reading the repo…" : "Draft with AI"}
+                </button>
+              </>
+            )}
+            {mode === "explicit" && (
+              <>
+                <label className="work-label">Acceptance check <span className="loop-faint">— a command that exits 0 when done</span></label>
+                <input className="input mono" placeholder="e.g. npm --prefix dashboard test"
+                  value={accept} onChange={(e) => setAccept(e.target.value)} />
+              </>
+            )}
+            {mode === "self" && (
+              <p className="loop-mode-note"><InfinityIcon size={14} /> Each round splits the repo's largest file into modules, until none stay oversized. No objective needed.</p>
+            )}
+            {mode === "backlog" && (
+              <p className="loop-mode-note"><ListChecks size={14} /> Works through this project's backlog on an integration branch — no planning spend.</p>
+            )}
+          </div>
 
-          {mode === "explicit" && (
-            <>
-              <label className="work-label">Acceptance command (exits 0 when done)</label>
-              <input className="input mono" placeholder="e.g. npm --prefix dashboard test"
-                value={accept} onChange={(e) => setAccept(e.target.value)} />
-            </>
-          )}
-
-          {mode === "self" && (
-            <p className="loop-note">Auto-improve: each round splits the repo's largest file into modules,
-              until none stay oversized. No objective needed.</p>
-          )}
-          {mode === "backlog" && (
-            <p className="loop-note">Runs this project's backlog on an integration branch, then opens a PR —
-              no planning spend.</p>
-          )}
+          <div className="loop-safety loop-safety-strip">
+            <span><GitBranch size={13} /> Isolated branch</span>
+            <span><Lock size={13} /> Main untouched</span>
+            <span><ShieldCheck size={13} /> Stops at ${capN || "—"}</span>
+            <span><Check size={13} /> You review the PR</span>
+          </div>
 
           <div className="loop-caps">
             <div>
               <label className="work-label">Budget cap ($)</label>
               <input className="input" type="number" min="1" value={budget} onChange={(e) => setBudget(e.target.value)} />
+              <span className="loop-faint">hard stop</span>
             </div>
             <div>
               <label className="work-label">Max iterations</label>
               <input className="input" type="number" min="1" value={maxIter} onChange={(e) => setMaxIter(e.target.value)} />
+              <span className="loop-faint">rounds before it halts</span>
             </div>
           </div>
-          <p className="loop-note">The loop stops at the cap or when its work is done. <strong>Main is never touched</strong> — work lands on an integration branch and a PR opens for you to test and merge.</p>
-          <Button kind="btn" variant="primary" pending={starting}
-            disabled={(((mode === "explicit" || mode === "supervisor") && !objective.trim()))
-              || !(Number(budget) > 0) || !repo || starting}
-            onClick={start}>
-            <Play size={13} /> Start autopilot
-          </Button>
+          {costHint != null && costHint > 0 && (
+            <p className="loop-note">Your recent runs averaged <strong>~${costHint.toFixed(2)}/ticket</strong> — size the cap to how far you want it to go.</p>
+          )}
+
+          <div className="loop-launch">
+            <Button kind="btn" variant="primary" className="loop-cta" pending={starting}
+              disabled={needObj || noCap || !repo || starting} onClick={start}>
+              <Play size={14} /> Start autopilot{capN ? ` · capped at $${capN}` : ""}
+            </Button>
+            {(needObj || noCap) && (
+              <span className="loop-blocked">{noCap ? "Add a budget cap to start." : "Describe an objective to start."}</span>
+            )}
+          </div>
         </div>
       )}
     </Modal>
