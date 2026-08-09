@@ -57,6 +57,32 @@ def test_merge_lands_on_base(tmp_path, repo, task):
     assert not wt.path.exists()  # merge cleans up its worktree
 
 
+def test_merge_skips_reverify_when_base_did_not_move(tmp_path, repo, task):
+    # The dispatcher already verified this branch; if the base has not advanced
+    # under it, the rebase replays nothing and re-running verify is pure waste.
+    # A verify command that WOULD fail must not even run: the merge still lands.
+    wt = wt_mod.create(repo, tmp_path / "wt", "run1", task.id, "main")
+    _commit_in(wt, "output_001.txt")
+    result = merge_branch(task, wt, VerifyConfig(commands=('python -c "exit(1)"',)))
+    assert result.ok, result.reason
+    assert result.reverified is False
+    assert "output_001.txt" in git(repo, "show", "main", "--stat")
+
+
+def test_merge_reverifies_when_base_moved(tmp_path, repo, task):
+    # A sibling landed on base after this worktree branched: the rebase replays
+    # the ticket's commit, so the world changed and re-verify MUST run — a failing
+    # command now blocks the merge instead of being skipped.
+    wt = wt_mod.create(repo, tmp_path / "wt", "run1", task.id, "main")
+    _commit_in(wt, "output_001.txt")
+    (repo / "sibling.txt").write_text("landed\n", encoding="utf-8")
+    git(repo, "add", "sibling.txt")
+    git(repo, "commit", "-m", "feat: a sibling landed on base")
+    result = merge_branch(task, wt, VerifyConfig(commands=('python -c "exit(1)"',)))
+    assert not result.ok
+    assert "post-rebase verify failed" in result.reason
+
+
 def test_merge_reports_conflict_and_aborts(tmp_path, repo, task):
     wt = wt_mod.create(repo, tmp_path / "wt", "run1", task.id, "main")
     _commit_in(wt, "shared.txt", "agent version\n")

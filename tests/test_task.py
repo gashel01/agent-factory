@@ -46,6 +46,21 @@ body
     assert task.depends_on == ("001",)
 
 
+def test_render_lists_files_in_scope(tmp_path, repo):
+    # The agent must be handed the planner's files_hint so it opens those files
+    # directly instead of re-scanning the whole repo (the top token sink).
+    path = write_ticket(tmp_path / "backlog", "001", repo, files_hint="[src/app.tsx, src/api.ts]")
+    rendered = parse_ticket(path, "main").render()
+    assert "Files in scope" in rendered
+    assert "src/app.tsx" in rendered
+    assert "src/api.ts" in rendered
+
+
+def test_render_omits_scope_section_without_hints(tmp_path, repo):
+    rendered = parse_ticket(write_ticket(tmp_path / "backlog", "001", repo), "main").render()
+    assert "Files in scope" not in rendered
+
+
 def test_per_ticket_model_parses_and_overrides_agent(tmp_path, repo):
     from factory.agent import build_command
     from factory.config import AgentConfig
