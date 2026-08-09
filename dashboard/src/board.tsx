@@ -96,6 +96,12 @@ export function headline(model: Model, runActive: boolean): { text: string; tone
   return { text: "Everything is running fine.", tone: "good" };
 }
 
+/** True when this run belongs to an autopilot loop — its dir is named
+ *  "<timestamp>-loop-<name>-<iteration>", so the board can tag it as autopilot. */
+export function isAutopilotRun(run: string | null | undefined): boolean {
+  return !!run && /-loop-.+-\d+$/.test(run);
+}
+
 /** Post-run integration check (DevOps): the full suite on the merged branch. */
 export function IntegrationBanner({ integ }: { integ: Model["integration"] }): JSX.Element | null {
   const { running, results } = integ;
@@ -476,9 +482,9 @@ export function CardMeasures({ t, now }: { t: TaskModel; now: number }): JSX.Ele
 }
 
 export function KanbanCard(
-  { t, live, now, onLog, onAnswer, onLesson, onDiff, onDelete, onDiagnose }:
+  { t, live, now, onLog, onAnswer, onLesson, onDiff, onDelete, onDiagnose, autopilot }:
   { t: TaskModel; live: boolean; now: number; onLog: () => void; onAnswer: () => void; onLesson: () => void;
-    onDiff: () => void; onDelete?: () => void; onDiagnose?: () => void },
+    onDiff: () => void; onDelete?: () => void; onDiagnose?: () => void; autopilot?: boolean },
 ): JSX.Element {
   const attention = t.state === "FAILED" || t.state === "BLOCKED";
   const running = t.state === "RUNNING";
@@ -489,6 +495,7 @@ export function KanbanCard(
       title="Open its history">
       <div className="kcard-head">
         <span className="kcard-id">{t.id}</span>
+        {autopilot && <span className="model-badge autopilot-badge" title="Driven by the autopilot loop"><InfinityIcon size={11} /> auto</span>}
         {t.model && <span className="model-badge" title="Model pinned for this ticket">{t.model}</span>}
         {t.effort && <span className="model-badge" title="Reasoning effort pinned for this ticket"><Brain size={12} /> {t.effort}</span>}
         <StatusPill state={t.state} live={running} />
@@ -653,10 +660,11 @@ export const COL_STATUS: Record<string, string> = { queued: "todo", working: "do
 
 export function Kanban(
   { tasks, live, now, onLog, onAnswer, onLesson, onDiff, onDiagnose, focus, pending, manual,
-    onAddTicket, onEditTicket, onRemoveTicket, onRemoveTask, onMoveManual, onSetAssignee, onSetHold, onReviewManual }:
+    onAddTicket, onEditTicket, onRemoveTicket, onRemoveTask, onMoveManual, onSetAssignee, onSetHold, onReviewManual,
+    autopilot }:
   { tasks: TaskModel[]; live: boolean; now: number; onLog: (t: TaskModel) => void;
     onAnswer: (t: TaskModel) => void; onLesson: (t: TaskModel) => void; onDiff: (t: TaskModel) => void;
-    onDiagnose?: (t: TaskModel) => void; focus?: boolean;
+    onDiagnose?: (t: TaskModel) => void; focus?: boolean; autopilot?: boolean;
     pending: BoardTicket[]; manual: BoardTicket[]; onAddTicket: () => void; onEditTicket: (bt: BoardTicket) => void;
     onRemoveTicket: (bt: BoardTicket) => void; onRemoveTask: (id: string) => void; onMoveManual: (bt: BoardTicket, status: string) => void;
     onSetAssignee: (bt: BoardTicket, toHuman: boolean) => void; onSetHold: (bt: BoardTicket, on: boolean) => void;
@@ -701,7 +709,7 @@ export function Kanban(
   const taskCard = (t: TaskModel) => (
     <KanbanCard key={t.id} t={t} live={live} now={now} onDelete={() => onRemoveTask(t.id)}
       onLog={() => onLog(t)} onAnswer={() => onAnswer(t)} onLesson={() => onLesson(t)} onDiff={() => onDiff(t)}
-      onDiagnose={onDiagnose ? () => onDiagnose(t) : undefined} />
+      onDiagnose={onDiagnose ? () => onDiagnose(t) : undefined} autopilot={autopilot} />
   );
 
   // The Up-next body: the Add affordance, then running QUEUED cards, AI drafts and

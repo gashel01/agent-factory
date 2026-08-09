@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 from . import worktree as wt
@@ -293,15 +294,19 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
             cfg, base_branch=integ,
             pr=replace(cfg.pr, enabled=False), budget_usd=remaining,
         )
-        run_dir = loop_dir / f"iter-{i}"
+        # Each iteration is a TOP-LEVEL run (timestamp-prefixed so it sorts
+        # chronologically among normal runs, "-loop-<name>-" marks it autopilot):
+        # the dashboard's tailer picks it up, so the loop's tickets appear and move
+        # on the Kanban live instead of the loop being a black box.
+        run_dir = runs_dir / f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}-loop-{spec.name}-{i}"
         counts = await Dispatcher(iter_cfg, tasks, run_dir).run()
 
         costs = _run_costs(run_dir)
         spent += sum(costs)
         per_ticket_costs.extend(costs)
         merged = counts.get("DONE", 0)
-        log.emit("loop_iter", n=i, mode=spec.mode, planned=len(tasks), merged=merged,
-                 spent=round(spent, 4))
+        log.emit("loop_iter", n=i, mode=spec.mode, run=run_dir.name, planned=len(tasks),
+                 merged=merged, spent=round(spent, 4))
         if merged == 0:
             fails += 1
             if fails >= spec.fail_cap:

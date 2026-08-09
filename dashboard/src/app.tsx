@@ -29,7 +29,7 @@ import {
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
-import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, HotspotsPanel, IntegrationBanner, Kanban, ModalState, RERUNNABLE, RemovedModal, Screen, SyncNote, headline, parseTicketDeps } from "./board.js";
+import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, HotspotsPanel, IntegrationBanner, Kanban, ModalState, RERUNNABLE, RemovedModal, Screen, SyncNote, headline, isAutopilotRun, parseTicketDeps } from "./board.js";
 import { AutopilotModal, CockpitModal, PreviewModal, PullRequestsModal, RepoModal } from "./cockpit.js";
 import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useCompanion, useEventStream, useNotifyPref, useNow, useRunActive, useStateAlerts } from "./core.js";
 import { DiagnosticsModal, DocsModal, LogModal, Row, RunEstimateModal, SettingsModal, describe } from "./modals.js";
@@ -135,6 +135,7 @@ function App(): JSX.Element {
   const tasks = [...model.tasks.values()].sort((a, b) => a.id.localeCompare(b.id));
   const head = headline(model, runActive);
   const live = Boolean(model.run) && !model.endedTs && runActive;
+  const autopilot = isAutopilotRun(model.run);
   const done = tasks.filter((t) => t.state === "DONE");
   const attention = tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED");
   const working = tasks.filter((t) => inFlight(t.state));
@@ -404,6 +405,13 @@ function App(): JSX.Element {
 
       <SyncNote sync={model.sync} />
       <IntegrationBanner integ={model.integration} />
+      {autopilot && (
+        <div className="autopilot-banner">
+          <span className="ap-badge"><InfinityIcon size={13} /> Autopilot</span>
+          <span className="ap-text">These tickets are driven by the autopilot loop — it plans, runs and merges them on an integration branch.</span>
+          <button className="btn ghost" onClick={() => setModal({ type: "autopilot" })}>Open autopilot</button>
+        </div>
+      )}
 
       <div className="board-filter">
         {tasks.length > 6 && (
@@ -459,7 +467,7 @@ function App(): JSX.Element {
       ) : (
         <Kanban tasks={shownTasks} live={live} now={now} onLog={openLog}
           onAnswer={openAnswer} onLesson={openLesson} onDiff={openDiff} onDiagnose={openDiagnose}
-          focus={view === "focus"}
+          focus={view === "focus"} autopilot={autopilot}
           pending={pending} manual={manual} onAddTicket={() => setModal({ type: "newwork", tab: "one" })}
           onEditTicket={(bt) => setModal({ type: "editticket", ticket: bt })}
           onRemoveTicket={removeTicket} onRemoveTask={removeTask}
