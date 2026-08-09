@@ -56,5 +56,13 @@ def test_brief_for_planner_lists_files_and_advises_split(repo):
     assert "split" in note.lower()
 
 
+def test_default_threshold_ignores_a_normal_sized_file(repo):
+    # ~8k tokens (32 KB, a normal component) is BELOW the default 10k gate, so it
+    # is not flagged by default — but a lower explicit gate still catches it.
+    _commit(repo, "mid.tsx", 32_000)
+    assert scan_hotspots(repo) == []
+    assert [h.path for h in scan_hotspots(repo, min_tokens=6000)] == ["mid.tsx"]
+
+
 def test_non_git_path_returns_empty(tmp_path):
     assert scan_hotspots(tmp_path) == []

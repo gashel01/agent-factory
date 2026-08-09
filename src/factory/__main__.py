@@ -201,10 +201,10 @@ def cmd_hotspots(args: argparse.Namespace) -> int:
     if not spots:
         print("No oversized source files — nothing worth splitting.")
         return 0
-    print(f"{len(spots)} oversized file(s) — reading these cold is expensive:")
+    print(f"{len(spots)} large file(s) — reading one in full can weigh on a ticket:")
     for h in spots:
         print(f"  {h.label()}")
-    print("\nTip: split the top ones into modules before feature work lands on them.")
+    print("\nTip: splitting the top ones into modules keeps tickets that touch them cheaper.")
     return 0
 
 
