@@ -16,6 +16,7 @@ from .config import ConfigError, load_config
 from .dispatcher import Dispatcher
 from .doctor import DoctorError, format_report, run_doctor
 from .events import EventLog
+from .hotspots import DEFAULT_MIN_TOKENS, scan_hotspots
 from .plan import (
     PlanError,
     read_brief,
@@ -175,6 +176,35 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print(f"       verify: {'; '.join(task.verify_commands) or '(none — add one!)'}")
     # ASCII only: Windows consoles may still run a cp1252 codepage.
     print("\nReview/edit them, then:  factory run --dry-run  ->  factory run")
+    return 0
+
+
+def cmd_hotspots(args: argparse.Namespace) -> int:
+    """Deterministic oversized-file scan: no agent, no tokens. Feeds the dashboard
+    (``--json``) and gives the operator a straight answer at the terminal."""
+    repo = args.repo.resolve()
+    if not (repo / ".git").exists():
+        print(f"error: {repo} is not a git repository", file=sys.stderr)
+        return 2
+    spots = scan_hotspots(repo, min_tokens=args.min_tokens, limit=args.limit)
+    if args.json:
+        print(json.dumps({
+            "hotspots": [
+                {
+                    "path": h.path, "sizeBytes": h.size_bytes, "estTokens": h.est_tokens,
+                    "edits": h.edits, "score": round(h.score, 1),
+                }
+                for h in spots
+            ],
+        }))
+        return 0
+    if not spots:
+        print("No oversized source files — nothing worth splitting.")
+        return 0
+    print(f"{len(spots)} oversized file(s) — reading these cold is expensive:")
+    for h in spots:
+        print(f"  {h.label()}")
+    print("\nTip: split the top ones into modules before feature work lands on them.")
     return 0
 
 
@@ -339,6 +369,19 @@ def main(argv: list[str] | None = None) -> int:
     p_ask.add_argument("--stream", action="store_true",
                        help="emit per-turn progress as JSON lines on stderr (for the dashboard)")
     p_ask.set_defaults(func=cmd_ask)
+
+    p_hot = sub.add_parser(
+        "hotspots", parents=[common],
+        help="deterministic scan for oversized source files (no agent, no tokens)",
+    )
+    p_hot.add_argument("--repo", type=Path, default=Path("."),
+                       help="target repository (default: current directory)")
+    p_hot.add_argument("--min-tokens", type=int, default=DEFAULT_MIN_TOKENS,
+                       help=f"flag files estimated >= this many tokens (def {DEFAULT_MIN_TOKENS})")
+    p_hot.add_argument("--limit", type=int, default=10, help="max files to report")
+    p_hot.add_argument("--json", action="store_true",
+                       help="machine-readable output (for the dashboard)")
+    p_hot.set_defaults(func=cmd_hotspots)
 
     p_doctor = sub.add_parser("doctor", parents=[common],
                               help="verify agent permissions (internet, commands) for real")
