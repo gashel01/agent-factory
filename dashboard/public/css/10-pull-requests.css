@@ -18,3 +18,17 @@
 .pr-branches ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .pr-branches li { font-family: var(--mono); font-size: 11.5px; color: var(--faint); background: var(--plane); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
 .pr-branches li.cur { color: var(--ink); border-color: var(--accent); font-weight: 600; }
+
+/* Interactive branches: switch on click · delete · create. */
+.branch-new { display: flex; gap: 8px; margin: 4px 0 12px; }
+.branch-input { flex: 1 1 auto; min-width: 0; font: 500 13px var(--sans); padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--border2); background: var(--plane); color: var(--ink); outline: none; }
+.branch-input:focus { border-color: var(--accent); }
+.pr-branches ul.branch-list { flex-direction: column; gap: 5px; }
+.branch-list li { display: flex; align-items: center; gap: 6px; padding: 0; background: transparent; border: 0; }
+.branch-name { flex: 1 1 auto; min-width: 0; text-align: left; font-family: var(--mono); font-size: 11.5px;
+  color: var(--faint); background: var(--plane); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 9px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branch-name:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+.branch-list li.cur .branch-name { color: var(--ink); border-color: var(--accent); font-weight: 600; cursor: default; }
+.branch-list .danger-soft { flex: 0 0 auto; display: inline-grid; place-items: center; padding: 6px 9px; border-radius: 6px; }
