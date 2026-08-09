@@ -24,6 +24,7 @@ from .agent import (
     stream_headless,
 )
 from .config import Config
+from .hotspots import brief_for_planner, scan_hotspots
 from .task import archived_ids
 
 #: Exploration only — the planner must not be able to modify the repo.
@@ -166,6 +167,14 @@ def _with_brief(prompt: str, goal: str, brief: str) -> str:
     return prompt
 
 
+def _hotspot_section(repo: Path) -> str:
+    """A deterministic size scan appended to the planner prompt, so the planner
+    proposes splitting an oversized file when its work lands on one (advisory —
+    it never forces a split). Empty when the repo has no oversized source."""
+    note = brief_for_planner(scan_hotspots(repo))
+    return f"\n---\n\n{note}\n" if note else ""
+
+
 async def _stream_contract(cfg: Config, repo: Path, prompt: str, log_path: Path) -> dict:
     """Run ONE read-only planning agent to completion and return its trailing JSON
     contract. Shared by the ticket planner and the clarify-first questioner so
@@ -216,7 +225,7 @@ async def _stream_contract(cfg: Config, repo: Path, prompt: str, log_path: Path)
 async def run_planner(
     cfg: Config, repo: Path, goal: str, log_path: Path, brief: str = ""
 ) -> dict:
-    prompt = _with_brief(PLANNER_CONTRACT, goal, brief)
+    prompt = _with_brief(PLANNER_CONTRACT, goal, brief) + _hotspot_section(repo)
     contract = await _stream_contract(cfg, repo, prompt, log_path)
     if contract.get("status") == "blocked":
         raise PlanError(f"the planner needs an answer first: {contract.get('summary', '?')}")
@@ -231,7 +240,7 @@ async def run_questions(
     """Clarify-first pass: the planner explores the repo (read-only) and returns a
     short list of high-leverage clarifying questions instead of tickets. The
     operator answers, and their answers are folded into a normal planning pass."""
-    prompt = _with_brief(PLANNER_QUESTIONS_CONTRACT, goal, brief)
+    prompt = _with_brief(PLANNER_QUESTIONS_CONTRACT, goal, brief) + _hotspot_section(repo)
     contract = await _stream_contract(cfg, repo, prompt, log_path)
     raw = contract.get("questions")
     if not isinstance(raw, list) or not raw:
