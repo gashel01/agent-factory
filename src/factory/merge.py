@@ -24,19 +24,32 @@ class MergeResult:
     # after the branch is gone: git diff base_sha..head_sha == the ticket's work.
     base_sha: str = ""
     head_sha: str = ""
+    # True when the rebase actually replayed commits and we re-ran verify; False
+    # when the base had not moved under this branch, so the agent's own verify
+    # still held and the redundant re-run was skipped. Observable in the log.
+    reverified: bool = True
 
 
 def merge_branch(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> MergeResult:
+    head_before = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
     rebase = git(wt.path, "rebase", task.base_branch, check=False)
     if rebase.returncode != 0:
         git(wt.path, "rebase", "--abort", check=False)
         detail = (rebase.stderr or rebase.stdout).strip().splitlines()[-5:]
         return MergeResult(ok=False, reason="rebase conflict: " + " | ".join(detail))
 
-    reverify = run_verify(task, wt.path, verify_cfg)
-    if not reverify.ok:
-        reason = "post-rebase verify failed: " + "; ".join(reverify.failures)
-        return MergeResult(ok=False, reason=reason)
+    # Re-verify ONLY when the world actually moved: a rebase that replays nothing
+    # (the branch head is unchanged) means the base had no new commits under this
+    # ticket, so the deterministic verify the dispatcher already ran still holds.
+    # Skipping it here removes a full second verify pass (tsc/pytest on the whole
+    # project) from the common case where a ticket lands before its siblings.
+    head_after = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
+    reverified = head_after != head_before
+    if reverified:
+        reverify = run_verify(task, wt.path, verify_cfg)
+        if not reverify.ok:
+            reason = "post-rebase verify failed: " + "; ".join(reverify.failures)
+            return MergeResult(ok=False, reason=reason)
 
     branch = current_branch(wt.repo)
     if branch != task.base_branch:
@@ -67,7 +80,7 @@ def merge_branch(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> MergeRes
         return MergeResult(ok=False, reason="merge failed: " + " | ".join(detail))
 
     remove(wt, delete_branch=True)
-    return MergeResult(ok=True, base_sha=base_sha, head_sha=head_sha)
+    return MergeResult(ok=True, base_sha=base_sha, head_sha=head_sha, reverified=reverified)
 
 
 @dataclass(frozen=True)
@@ -88,17 +101,22 @@ def deliver_pr(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> PrResult:
     if not remotes(wt.repo):
         return PrResult(ok=False, reason="PR mode needs a git remote (origin); this repo has none")
 
+    head_before = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
     rebase = git(wt.path, "rebase", task.base_branch, check=False)
     if rebase.returncode != 0:
         git(wt.path, "rebase", "--abort", check=False)
         detail = (rebase.stderr or rebase.stdout).strip().splitlines()[-5:]
         return PrResult(ok=False, reason="rebase conflict: " + " | ".join(detail))
 
-    reverify = run_verify(task, wt.path, verify_cfg)
-    if not reverify.ok:
-        return PrResult(
-            ok=False, reason="post-rebase verify failed: " + "; ".join(reverify.failures)
-        )
+    # Only re-verify when the rebase actually replayed commits (see merge_branch):
+    # an unchanged branch head means the base did not move, so the earlier verify holds.
+    head_after = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
+    if head_after != head_before:
+        reverify = run_verify(task, wt.path, verify_cfg)
+        if not reverify.ok:
+            return PrResult(
+                ok=False, reason="post-rebase verify failed: " + "; ".join(reverify.failures)
+            )
 
     try:
         push_branch(wt.repo, wt.branch)

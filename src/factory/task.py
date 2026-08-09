@@ -114,6 +114,16 @@ class Task:
             f"Title: {self.title}",
             f"Base branch: {self.base_branch}",
         ]
+        if self.files_hint:
+            # The planner already worked out which files this ticket owns. Handing
+            # them to the agent is the difference between "open these three files"
+            # and "re-read the whole repo to find them" — the single biggest token
+            # sink on a large codebase (a 278 KB monolith read cold, every ticket).
+            lines.append(
+                "Files in scope (edit only these; open them directly, "
+                "do not scan the rest of the repo):"
+            )
+            lines.extend(f"  - {h}" for h in self.files_hint)
         if self.verify_commands:
             lines.append("Success criteria commands (must exit 0):")
             lines.extend(f"  - {cmd}" for cmd in self.verify_commands)

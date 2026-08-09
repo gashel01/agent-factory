@@ -54,6 +54,10 @@ DEFAULT_CONTRACT = """\
   Touch nothing outside this working directory.
 - Scope is the ticket below, nothing else. No opportunistic refactoring, no dependency
   upgrades that the ticket does not ask for.
+- Work from the ticket's "Files in scope" and the project map above: open those files
+  directly and use Grep / targeted Reads (offset+limit) to find what you need. Do NOT
+  read large files end-to-end or scan the whole repo — it burns your turn budget for
+  little gain. Explore beyond the listed files only when the task genuinely requires it.
 - Before finishing: run the success criteria commands yourself. If they fail, fix the
   code. Never finish on a red state without explaining why.
 - Commit your work with atomic commits, messages like `feat|fix|test(scope): ...`.
