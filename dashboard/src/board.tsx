@@ -45,6 +45,7 @@ export type ModalState =
   | { type: "newwork"; tab?: "one" | "goal"; goal?: string; autostart?: boolean }
   | { type: "editticket"; ticket: BoardTicket }
   | { type: "repo" }
+  | { type: "prs" }
   | { type: "preview" }
   | { type: "cockpit" }
   | { type: "removed" }
