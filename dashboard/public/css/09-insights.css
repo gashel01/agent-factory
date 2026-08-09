@@ -1,0 +1,132 @@
+/* =========================================================================
+   Insights — failure diagnostics (.dx-*) and the pre-launch forecast (.rf-*).
+   Both live inside the shared .overlay/.panel modal chrome; nothing here
+   re-invents a dialog. Numbered 09 so it lands last in the cascade.
+   ========================================================================= */
+
+/* ------------------------------- why did it fail? ------------------------------- */
+
+.dx { display: flex; flex-direction: column; gap: 18px; }
+
+.dx-task { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+
+.dx-error {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px; border: 1px solid var(--st-failed-bd);
+  background: var(--st-failed-bg); color: var(--st-failed-fg); border-radius: var(--radius-sm);
+}
+.dx-error-body { flex: 1; min-width: 0; }
+.dx-error-detail { margin-top: 4px; font-size: 11px; color: var(--muted); word-break: break-word; }
+
+/* The verdict block: category, confidence, headline, detail. The one thing the
+   operator should read if they read nothing else. */
+.dx-verdict {
+  padding: 14px 16px; border: 1px solid var(--border);
+  background: var(--plane); border-radius: var(--radius-sm);
+}
+.dx-verdict-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dx-cat {
+  padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  letter-spacing: .01em; text-transform: uppercase;
+  border: 1px solid var(--st-failed-bd); background: var(--st-failed-bg); color: var(--st-failed-fg);
+}
+/* An inconclusive reading must not wear the alarm colour it can't back up. */
+.dx-cat-unknown {
+  border-color: var(--st-upnext-bd); background: var(--st-upnext-bg); color: var(--st-upnext-fg);
+}
+.dx-conf { color: var(--muted); font-size: 11px; }
+.dx-headline { margin: 10px 0 0; font-size: 15px; line-height: 1.35; color: var(--ink); }
+.dx-detail { margin: 6px 0 0; color: var(--ink-2); }
+.dx-hedge { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+
+.dx-block { display: flex; flex-direction: column; gap: 8px; }
+.dx-h {
+  display: flex; align-items: center; gap: 6px; margin: 0;
+  font-size: 12px; font-weight: 600; color: var(--ink);
+}
+.dx-h-note { font-weight: 400; color: var(--faint); font-size: 11px; }
+
+/* Recommendations, in the order the diagnosis ranked them. */
+.dx-fixes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dx-fix {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border);
+  background: var(--surface); border-radius: var(--radius-sm);
+}
+.dx-fix:first-child { border-color: var(--border2); box-shadow: var(--shadow); }
+.dx-fix-body { flex: 1; min-width: 0; }
+.dx-fix-label { color: var(--ink); font-weight: 500; }
+.dx-fix-detail { margin-top: 3px; color: var(--muted); font-size: 12px; }
+
+/* The path to the failure, oldest step first. */
+.dx-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.dx-timeline li {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.dx-timeline li:last-child { border-bottom: 0; }
+.dx-step-n {
+  flex: none; width: 20px; text-align: right;
+  color: var(--faint); font-family: var(--mono); font-size: 11px;
+}
+.dx-step-text { flex: 1; min-width: 0; color: var(--ink-2); }
+.dx-step-when { flex: none; color: var(--faint); font-size: 11px; }
+
+/* Verbatim log excerpts. Monospace, pre-wrapped, visually quoted — never
+   reflowed into prose, so it stays obvious these are the agent's words. */
+.dx-ev { border-left: 2px solid var(--border2); padding-left: 10px; }
+.dx-ev + .dx-ev { margin-top: 10px; }
+.dx-ev-src { color: var(--faint); font-size: 11px; margin-bottom: 3px; word-break: break-all; }
+.dx-ev-text {
+  margin: 0; padding: 10px 12px; max-height: 220px; overflow: auto;
+  background: var(--plane); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--ink-2); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* The card affordance stays as quiet as the other ghost actions. */
+.act.dx-why { color: var(--muted); }
+
+/* ------------------------------- run forecast ------------------------------- */
+
+.rf-profiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.rf-profile {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+  padding: 10px 12px; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface);
+  border-radius: var(--radius-sm); color: var(--ink); font: inherit;
+}
+.rf-profile:hover { border-color: var(--border2); }
+.rf-profile.on { border-color: var(--accent); background: var(--accent-soft); }
+.rf-profile-name { font-weight: 600; }
+.rf-profile-cost { font-family: var(--mono); color: var(--ink); }
+.rf-profile-blurb { grid-column: 1 / -1; color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+.rf-estimate {
+  padding: 14px 16px; border: 1px solid var(--border);
+  background: var(--plane); border-radius: var(--radius-sm);
+}
+.rf-figures { display: flex; gap: 32px; flex-wrap: wrap; }
+.rf-fig { display: flex; flex-direction: column; gap: 2px; }
+.rf-fig-n { font-family: var(--mono); font-size: 22px; line-height: 1.1; color: var(--ink); }
+.rf-fig-k { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
+.rf-range { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.rf-basis { margin-top: 10px; color: var(--muted); font-size: 12px; }
+
+.rf-breakdown {
+  list-style: none; margin: 12px 0 0; padding: 12px 0 0;
+  border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; max-height: 200px; overflow: auto;
+}
+.rf-breakdown li {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 5px 0; font-size: 12px;
+}
+.rf-bd-title { flex: 1; min-width: 0; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rf-bd-dur { font-family: var(--mono); color: var(--faint); font-size: 11px; }
+.rf-bd-cost { font-family: var(--mono); color: var(--ink); }
+
+@media (max-width: 700px) {
+  .rf-profiles { grid-template-columns: 1fr; }
+  .rf-figures { gap: 20px; }
+}
