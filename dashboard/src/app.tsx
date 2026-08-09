@@ -435,9 +435,9 @@ function App(): JSX.Element {
         </div>
       </div>
       <HotspotsPanel
-        repo={repoPath()}
+        ws={ws}
         onSplit={(path) => setModal({
-          type: "newwork", tab: "goal",
+          type: "newwork", tab: "goal", autostart: false,
           goal: `Split ${path} into smaller, cohesive modules. Pure mechanical refactor: `
             + `move code into new files and wire imports/exports — change no logic or behavior. `
             + `Keep the typecheck and the build green.`,
@@ -463,7 +463,7 @@ function App(): JSX.Element {
       )}
 
       {modal?.type === "settings" && <SettingsModal onClose={() => setModal(null)} />}
-      {modal?.type === "newwork" && <NewWorkModal onClose={() => setModal(null)} onWorkspaceAdded={loadWorkspaces} onBacklogChange={backlog.refresh} takenIds={tasks.map((t) => t.id)} initialTab={modal.tab ?? "one"} initialGoal={modal.goal} />}
+      {modal?.type === "newwork" && <NewWorkModal onClose={() => setModal(null)} onWorkspaceAdded={loadWorkspaces} onBacklogChange={backlog.refresh} takenIds={tasks.map((t) => t.id)} initialTab={modal.tab ?? "one"} initialGoal={modal.goal} initialAutoStart={modal.autostart ?? true} />}
       {modal?.type === "editticket" && (
         <EditTicketModal ticket={modal.ticket} onClose={() => setModal(null)}
           onSave={(content) => patchTicket(modal.ticket, content, `Ticket ${modal.ticket.id} updated.`)} />

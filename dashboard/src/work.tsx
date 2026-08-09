@@ -469,9 +469,10 @@ export function RepoTools({ repo }: { repo: string }): JSX.Element {
  *  property, not part of writing a ticket); the `project` variant is the one
  *  exception, prepending first-run setup where the repo must be set inline. */
 export function NewWorkModal(
-  { onClose, onWorkspaceAdded, onBacklogChange, takenIds = [], initialTab = "one", initialGoal, variant = "work" }:
+  { onClose, onWorkspaceAdded, onBacklogChange, takenIds = [], initialTab = "one", initialGoal, initialAutoStart = true, variant = "work" }:
   { onClose: () => void; onWorkspaceAdded: () => void; onBacklogChange?: () => void;
-    takenIds?: string[]; initialTab?: "one" | "goal"; initialGoal?: string; variant?: "work" | "project" },
+    takenIds?: string[]; initialTab?: "one" | "goal"; initialGoal?: string;
+    initialAutoStart?: boolean; variant?: "work" | "project" },
 ): JSX.Element {
   const isProject = variant === "project";
   const [tab, setTab] = useState<"one" | "goal">(initialGoal ? "goal" : initialTab);
@@ -640,7 +641,9 @@ export function NewWorkModal(
   // at a previously-open workspace, and the goal came from the active one's
   // supervisor — then pin it so the draft can't plan against the wrong repo.
   useEffect(() => {
-    if (!initialGoal || !initialGoal.trim() || isProject) return;
+    // initialAutoStart=false (e.g. the hotspots "Plan a split") pre-fills the goal
+    // but must NOT spend tokens: the operator reviews, then starts the plan.
+    if (!initialGoal || !initialGoal.trim() || isProject || !initialAutoStart) return;
     void (async () => {
       let useRepo = repoPath();
       try {
