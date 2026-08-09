@@ -25,3 +25,9 @@ dashboard/workspaces.json
 # internal working docs — kept locally, not shared in the repo
 DASHBOARD_GAPS.md
 DASHBOARD_UX_PLAN.md
+
+# Nexa-managed agent rules — mirrored into the repo by the Nexa app, kept local
+# (their content is Nexa's, not part of this project); ignoring them also keeps
+# the working tree clean so runs targeting this repo aren't blocked at preflight
+AGENTS.md
+CLAUDE.md
