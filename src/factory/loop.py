@@ -25,7 +25,7 @@ from .config import Config
 from .dispatcher import Dispatcher
 from .events import EventLog
 from .plan import PlanError, run_planner, write_drafts
-from .task import load_backlog
+from .task import Task, TicketError, load_backlog
 
 
 class LoopError(Exception):
@@ -35,11 +35,20 @@ class LoopError(Exception):
 @dataclass(frozen=True)
 class LoopSpec:
     objective: str
-    accept_cmd: str              # exit 0 == the objective is met (a read-only check)
+    # exit 0 == the objective is met (a read-only check). Optional: when empty the
+    # loop has no acceptance gate and stops on work-exhaustion / budget / iterations
+    # (the natural terminator for the backlog and self modes).
+    accept_cmd: str = ""
+    # Where each round's work comes from:
+    #   "explicit" — plan the objective (+ acceptance output) into tickets;
+    #   "backlog"  — drain an existing backlog (source_backlog), no planning spend;
+    #   "self"     — auto-improve: split the repo's top oversized file each round.
+    mode: str = "explicit"
+    source_backlog: Path | None = None    # backlog mode: the ticket dir to drain
     name: str = "autopilot"
     budget_usd: float | None = None
     max_iterations: int = 5
-    dry_cap: int = 2             # consecutive rounds that plan nothing new -> stop
+    dry_cap: int = 2             # consecutive rounds that produce no work -> stop
     fail_cap: int = 2            # consecutive rounds where nothing merges -> stuck
     accept_timeout_s: int = 300
 
@@ -56,8 +65,77 @@ def _run(cmd: str, cwd: Path, timeout_s: int) -> tuple[int, str]:
 
 
 def _acceptance(spec: LoopSpec, repo: Path) -> tuple[bool, str]:
+    # No acceptance command -> no success gate; the loop terminates on
+    # work-exhaustion, budget or max iterations instead.
+    if not spec.accept_cmd.strip():
+        return False, ""
     rc, out = _run(spec.accept_cmd, repo, spec.accept_timeout_s)
     return rc == 0, out.strip()[-2000:]
+
+
+def _safe_runs_dir(repo: Path, runs_dir: Path) -> Path:
+    """Keep the loop's writes OUT of the target repo's working tree. A runs dir
+    inside the repo that git does NOT ignore would dirty the tree and fail the
+    preflight every iteration — so relocate it beside the repo. A dir outside the
+    repo, or one git ignores (e.g. the warden workspace's gitignored .factory/),
+    is left as-is."""
+    runs_dir = runs_dir.resolve()
+    repo = repo.resolve()
+    inside = runs_dir == repo or repo in runs_dir.parents
+    if not inside:
+        return runs_dir
+    rel = runs_dir.relative_to(repo)
+    ignored = wt.git(repo, "check-ignore", str(rel), check=False).returncode == 0
+    if ignored:
+        return runs_dir
+    return repo.parent / ".warden-runs" / repo.name
+
+
+def _self_goal(repo: Path) -> str | None:
+    """Self mode's work-picker: the top oversized file becomes a split objective.
+    None when the repo has no oversized file left (the loop then stops, dry)."""
+    from .hotspots import scan_hotspots
+    spots = scan_hotspots(repo)
+    if not spots:
+        return None
+    return (
+        f"Split {spots[0].path} into smaller, cohesive modules — a pure mechanical "
+        f"refactor: move code into new files and wire imports/exports, change no "
+        f"behavior. Keep the build and tests green."
+    )
+
+
+async def _pick_work(
+    spec: LoopSpec, cfg_i: Config, repo: Path, out: str, loop_dir: Path,
+    loop_backlog: Path, integ: str, i: int,
+) -> list[Task]:
+    """Where one round's work comes from, per mode. Returns ready-to-run tasks
+    (empty = nothing to do this round -> the loop counts a dry round)."""
+    if spec.mode == "backlog":
+        # Drain an existing backlog — no planning spend. Empty/exhausted -> [].
+        if not spec.source_backlog or not spec.source_backlog.is_dir():
+            return []
+        try:
+            return load_backlog(spec.source_backlog, integ)
+        except TicketError:
+            return []
+
+    if spec.mode == "self":
+        goal = _self_goal(repo)
+        if goal is None:
+            return []
+    else:  # explicit: plan the objective plus the acceptance output (the gap)
+        goal = spec.objective + (f"\n\n## Current state — not yet met\n{out}" if out else "")
+
+    try:
+        contract = await run_planner(cfg_i, repo, goal, loop_dir / f"plan-{i}.jsonl")
+    except PlanError:
+        return []
+    dicts = contract.get("tickets") or []
+    if not dicts:
+        return []
+    write_drafts(dicts, loop_backlog, repo)
+    return load_backlog(loop_backlog, integ)
 
 
 def _run_costs(run_dir: Path) -> list[float]:
@@ -79,6 +157,10 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
     if not wt.is_clean(repo):
         raise LoopError(f"{repo} has uncommitted changes — commit or stash them first")
 
+    # Never let the loop's own writes dirty the target repo (a runs dir inside the
+    # tree that git doesn't ignore fails the preflight every iteration).
+    runs_dir = _safe_runs_dir(repo, runs_dir)
+
     base = cfg.base_branch
     integ = f"warden/loop-{spec.name}"
     loop_dir = runs_dir / f"loop-{spec.name}"
@@ -95,8 +177,8 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
     base_before = wt.git(repo, "rev-parse", base, check=False).stdout.strip()
 
     log.emit(
-        "loop_start", name=spec.name, objective=spec.objective[:500], integ=integ,
-        base=base, budget=spec.budget_usd, max_iterations=spec.max_iterations,
+        "loop_start", name=spec.name, mode=spec.mode, objective=spec.objective[:500],
+        integ=integ, base=base, budget=spec.budget_usd, max_iterations=spec.max_iterations,
     )
 
     spent = 0.0
@@ -114,20 +196,11 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
             stop = "budget"
             break
 
-        # Plan the GAP: the objective plus the acceptance check's current output,
-        # so each round targets what is still failing rather than replanning blind.
-        goal = spec.objective
-        if out:
-            goal += f"\n\n## Current state — acceptance not yet met\n{out}"
-        try:
-            contract = await run_planner(
-                replace(cfg, base_branch=integ), repo, goal, loop_dir / f"plan-{i}.jsonl"
-            )
-            tickets = contract.get("tickets") or []
-        except PlanError as exc:
-            log.emit("loop_iter", n=i, planned=0, reason=str(exc)[:200])
-            tickets = []
-        if not tickets:
+        # Pick this round's work (mode-specific). Empty -> a dry round.
+        tasks = await _pick_work(
+            spec, replace(cfg, base_branch=integ), repo, out, loop_dir, loop_backlog, integ, i
+        )
+        if not tasks:
             dry += 1
             if dry >= spec.dry_cap:
                 stop = "dry"
@@ -140,12 +213,10 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
         if per_ticket_costs and spec.budget_usd is not None:
             ordered = sorted(per_ticket_costs)
             median = ordered[len(ordered) // 2]
-            if spent + median * len(tickets) > spec.budget_usd:
+            if spent + median * len(tasks) > spec.budget_usd:
                 stop = "budget_forecast"
                 break
 
-        write_drafts(tickets, loop_backlog, repo)
-        tasks = load_backlog(loop_backlog, integ)
         remaining = None if spec.budget_usd is None else max(spec.budget_usd - spent, 0.01)
         # Inside the loop, PR mode is OFF: tickets merge onto the integration
         # branch. Only the final integration -> base delivery is a PR.
@@ -160,7 +231,8 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
         spent += sum(costs)
         per_ticket_costs.extend(costs)
         merged = counts.get("DONE", 0)
-        log.emit("loop_iter", n=i, planned=len(tasks), merged=merged, spent=round(spent, 4))
+        log.emit("loop_iter", n=i, mode=spec.mode, planned=len(tasks), merged=merged,
+                 spent=round(spent, 4))
         if merged == 0:
             fails += 1
             if fails >= spec.fail_cap:
