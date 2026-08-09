@@ -1,0 +1,93 @@
+/* ------------------------------- overlay + centred panel ------------------------------- */
+.overlay {
+  position: fixed; inset: 0; background: rgba(18,18,16,.44); backdrop-filter: blur(2px);
+  display: flex; align-items: flex-start; justify-content: center; padding: 56px 20px; z-index: 40;
+  overflow: auto; animation: fade .2s ease;
+}
+@keyframes fade { from { opacity: 0; } }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+.panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  width: 100%; max-width: 560px; max-height: 86vh; display: flex; flex-direction: column;
+  box-shadow: var(--shadow-lg); overflow: hidden; animation: rise .26s ease both;
+}
+.panel.wide { max-width: 880px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--plane); }
+.panel-head h3 { margin: 0; font-size: 16px; font-weight: 700; }
+.panel-title-row { display: flex; align-items: center; gap: 10px; }
+.panel-body { padding: 18px 20px; overflow-y: auto; }
+.panel-foot { padding: 14px 20px; border-top: 1px solid var(--border); background: var(--plane); display: flex; justify-content: flex-end; gap: 10px; align-items: center; }
+.panel-foot.spread { justify-content: space-between; }
+.hint { color: var(--muted); font-size: 13px; }
+
+.live-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 700 11px/1 var(--sans); color: var(--st-failed-fg); background: var(--st-failed-bg);
+  border: 1px solid var(--st-failed-bd); padding: 3px 9px; border-radius: 999px;
+}
+.live-tag .live-dot { background: var(--st-failed-dot); }
+.live-tag .live-dot::after { border-color: var(--st-failed-dot); }
+
+/* ------------------------------- right slide-in drawer ------------------------------- */
+.drawer-overlay {
+  position: fixed; inset: 0; background: rgba(18,18,16,.4); backdrop-filter: blur(2px);
+  display: flex; justify-content: flex-end; z-index: 50; animation: fade .18s ease;
+}
+.drawer {
+  width: 100%; max-width: 560px; height: 100%; background: var(--surface);
+  border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; animation: slidein .26s cubic-bezier(.2,.7,.3,1) both;
+}
+/* Wider variant for a two-column body (e.g. Settings: anchor nav + panes). */
+.drawer.wide { max-width: 680px; }
+@keyframes slidein { from { transform: translateX(30px); opacity: .4; } }
+.drawer .panel-head { border-radius: 0; }
+/* The drawer is a flex column (head · body · foot). The body must fill the gap
+   AND be allowed to shrink (min-height:0) so its overflow-y:auto actually engages
+   — otherwise long settings grow past the viewport and get clipped instead of
+   scrolling, and the footer's Save button is pushed off-screen. */
+.drawer .panel-body { flex: 1 1 auto; min-height: 0; }
+
+/* ------------------------------- history modal (measures + timeline) ------------------------------- */
+.log-head { padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--plane); display: flex; flex-direction: column; gap: 10px; }
+.log-head-top { display: flex; align-items: center; gap: 10px; }
+.log-head-top .btn.icon { margin-left: auto; }
+.log-title { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; }
+.log-meas { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.log-body { max-height: 60vh; }
+.story-say { color: var(--ink); font-size: 13.5px; margin: 9px 0; line-height: 1.6; }
+.log-pre { margin: 0; font: 11.5px/1.5 var(--mono); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* "Learned from this task" section inside the history modal */
+.log-lessons { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border); }
+.log-lessons-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.log-lessons-head h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+.log-lessons-empty { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.log-actions { display: flex; gap: 8px; align-items: center; }
+
+.tl { position: relative; padding-left: 36px; }
+.tl::before { content: ""; position: absolute; left: 11px; top: 6px; bottom: 14px; width: 2px; background: var(--border); }
+.tl-node { position: relative; padding: 9px 0; }
+.tl-glyph { position: absolute; left: -36px; top: 2px; width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--mono); color: var(--accent); background: var(--surface); border: 1px solid var(--border); box-shadow: 0 0 0 4px var(--surface); }
+.tl-kind { font-size: 11px; color: var(--faint); font-weight: 500; letter-spacing: .02em; margin-bottom: 2px; }
+.tl-text { font-size: 13px; line-height: 1.45; color: var(--ink); overflow-wrap: anywhere; }
+/* Log-modal steps stack (label above full-width text) — not the rail's cramped
+   side-by-side grid — so long paths and commands stay readable. */
+.tl .tl-node { display: block; padding: 11px 0; }
+.tl .tl-kind { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+.tl .tl-text { font-size: 13px; line-height: 1.55; color: var(--ink-2); overflow-wrap: anywhere; word-break: break-word; }
+/* A tool call reads as a plain human verb with the raw path/command dimmed
+   beneath it (the Nexa-style two-line grammar); its glyph is muted so reads and
+   edits don't all shout in brass — only semantic kinds (Result) keep the accent. */
+.tl .tl-verb { font: 500 13px/1.4 var(--sans); color: var(--ink); display: flex; align-items: center; gap: 10px; }
+/* Rewind-to-here: quiet until you hover the step, so it doesn't clutter the read. */
+.tl-undo { display: inline-flex; align-items: center; gap: 4px; font: 500 11px/1 var(--sans); color: var(--faint);
+  background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; cursor: pointer;
+  opacity: 0; transition: opacity .14s var(--ease), color .14s var(--ease), border-color .14s var(--ease); }
+.tl-node.act:hover .tl-undo, .tl-undo:focus-visible { opacity: 1; }
+.tl-undo:hover { color: var(--accent); border-color: var(--accent); }
+.tl .tl-detail { margin-top: 3px; font: 11.5px/1.5 var(--mono); color: var(--faint); overflow-wrap: anywhere; word-break: break-word; }
+.tl-node.act .tl-glyph { color: var(--ink-2); }
+/* Run footprint: one dim status-bar line under the last step. */
+.tl .tl-foot { margin-top: 12px; padding: 12px 0 2px; border-top: 1px solid var(--border); font: 500 11px/1 var(--mono); color: var(--faint); letter-spacing: .02em; }
+

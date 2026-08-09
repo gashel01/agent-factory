@@ -1,0 +1,207 @@
+/* Extracted from server.ts — mechanical split. Workspace-independent, path-based
+ * repo tools: init/publish/visibility, the read-only git explorer (tree/file/
+ * branches/log/diff), and the guarded branch switch. Runs before per-workspace
+ * resolution. (The per-workspace /api/repo/path lives with the workspace routes.) */
+
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+
+import { json, readBody, runCmd } from "./server-core.js";
+import { BOOTSTRAP_GITIGNORE } from "./server-preview.js";
+import type { RouteCtx } from "./server-routes.js";
+
+export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
+  const { req, res, url, registry } = ctx;
+
+  if (url.pathname === "/api/repo/init" && req.method === "POST") {
+    try {
+      const { path } = JSON.parse(await readBody(req)) as { path?: string };
+      if (!path?.trim()) throw new Error("path is required");
+      const dir = resolve(path.trim());
+      if (existsSync(join(dir, ".git"))) throw new Error("already a git repository");
+      mkdirSync(dir, { recursive: true });
+      const init = await runCmd("git", ["init", "-b", "main"], dir);
+      if (init.code !== 0) throw new Error(init.output.trim());
+      if (!existsSync(join(dir, ".gitignore"))) {
+        writeFileSync(join(dir, ".gitignore"), BOOTSTRAP_GITIGNORE, "utf-8");
+      }
+      await runCmd("git", ["add", "-A"], dir);
+      const commit = await runCmd(
+        "git",
+        ["commit", "-m", "chore: initial commit (agent-factory bootstrap)"],
+        dir,
+      );
+      if (commit.code !== 0) throw new Error(commit.output.trim());
+      json(res, 200, { ok: true, output: `initialized ${dir} on branch main` });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/repo/publish" && req.method === "POST") {
+    try {
+      const { path, visibility } = JSON.parse(await readBody(req)) as {
+        path?: string;
+        visibility?: string;
+      };
+      if (!path?.trim() || !existsSync(join(resolve(path.trim()), ".git"))) {
+        throw new Error("path must be an existing git repository");
+      }
+      if (visibility !== "private" && visibility !== "public") {
+        throw new Error("visibility must be private or public");
+      }
+      const dir = resolve(path.trim());
+      const result = await runCmd(
+        "gh",
+        ["repo", "create", basename(dir), `--${visibility}`, "--source=.", "--push"],
+        dir,
+      );
+      if (result.code !== 0) throw new Error(result.output.trim() || "gh failed — is it installed and logged in?");
+      json(res, 200, { ok: true, output: result.output.trim() });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/repo/visibility" && req.method === "POST") {
+    try {
+      const { path, visibility } = JSON.parse(await readBody(req)) as {
+        path?: string;
+        visibility?: string;
+      };
+      if (!path?.trim() || !existsSync(join(resolve(path.trim()), ".git"))) {
+        throw new Error("path must be an existing git repository");
+      }
+      if (visibility !== "private" && visibility !== "public") {
+        throw new Error("visibility must be private or public");
+      }
+      const dir = resolve(path.trim());
+      // Newer gh requires an explicit consent flag for visibility changes;
+      // older gh rejects it as unknown — try with, fall back without.
+      let result = await runCmd(
+        "gh",
+        ["repo", "edit", "--visibility", visibility, "--accept-visibility-change-consequences"],
+        dir,
+      );
+      if (result.code !== 0 && /unknown flag/i.test(result.output)) {
+        result = await runCmd("gh", ["repo", "edit", "--visibility", visibility], dir);
+      }
+      if (result.code !== 0) throw new Error(result.output.trim() || "gh failed — is it installed and logged in?");
+      json(res, 200, { ok: true, output: result.output.trim() || `repository is now ${visibility}` });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  if (url.pathname.startsWith("/api/repo/") && req.method === "GET") {
+    const repo = resolve(url.searchParams.get("repo") ?? "");
+    if (!repo || !existsSync(join(repo, ".git"))) {
+      json(res, 400, { ok: false, error: "repo must be an existing git repository" });
+      return true;
+    }
+    const ref = url.searchParams.get("ref") ?? "HEAD";
+    if (!/^[\w./@^~-]+$/.test(ref)) {
+      json(res, 400, { ok: false, error: "bad ref" });
+      return true;
+    }
+
+    if (url.pathname === "/api/repo/tree") {
+      const result = await runCmd("git", ["ls-tree", "-r", "--name-only", ref], repo);
+      if (result.code !== 0) {
+        json(res, 400, { ok: false, error: result.output.trim() });
+        return true;
+      }
+      json(res, 200, { files: result.output.split("\n").filter(Boolean) });
+      return true;
+    }
+    if (url.pathname === "/api/repo/file") {
+      const file = url.searchParams.get("path") ?? "";
+      if (!file || file.includes("..")) {
+        json(res, 400, { ok: false, error: "bad path" });
+        return true;
+      }
+      const result = await runCmd("git", ["show", `${ref}:${file}`], repo);
+      if (result.code !== 0) {
+        json(res, 404, { ok: false, error: result.output.trim() });
+        return true;
+      }
+      json(res, 200, { content: result.output.slice(0, 200_000), path: file });
+      return true;
+    }
+    if (url.pathname === "/api/repo/branches") {
+      const branches = await runCmd("git", ["branch", "--format=%(refname:short)"], repo);
+      const current = await runCmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], repo);
+      json(res, 200, {
+        branches: branches.output.split("\n").filter(Boolean),
+        current: current.output.trim(),
+      });
+      return true;
+    }
+    if (url.pathname === "/api/repo/log") {
+      const result = await runCmd(
+        "git",
+        ["log", "--format=%h%x09%ad%x09%an%x09%s", "--date=relative", "-n", "60", ref],
+        repo,
+      );
+      const commits = result.output
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [hash, date, author, ...subject] = line.split("\t");
+          return { hash, date, author, subject: subject.join("\t") };
+        });
+      json(res, 200, { commits });
+      return true;
+    }
+    if (url.pathname === "/api/repo/diff") {
+      // ?commit=<hash> shows one commit; ?from=&to= compares two refs
+      const commit = url.searchParams.get("commit");
+      const from = url.searchParams.get("from");
+      const to = url.searchParams.get("to");
+      let args: string[];
+      if (commit && /^[\w^~]+$/.test(commit)) {
+        args = ["show", commit, "--stat", "--patch"];
+      } else if (from && to && /^[\w./@^~-]+$/.test(from) && /^[\w./@^~-]+$/.test(to)) {
+        args = ["diff", `${from}..${to}`, "--stat", "--patch"];
+      } else {
+        json(res, 400, { ok: false, error: "pass ?commit= or ?from=&to=" });
+        return true;
+      }
+      const result = await runCmd("git", args, repo);
+      json(res, 200, { diff: result.output.slice(0, 400_000) });
+      return true;
+    }
+    // A GET /api/repo/<unknown> with a valid repo falls through to workspace
+    // resolution and, ultimately, the 404 — exactly as before the split.
+  }
+
+  if (url.pathname === "/api/repo/switch" && req.method === "POST") {
+    try {
+      const { path, branch } = JSON.parse(await readBody(req)) as {
+        path?: string;
+        branch?: string;
+      };
+      const repo = resolve(path ?? "");
+      if (!repo || !existsSync(join(repo, ".git"))) {
+        throw new Error("repo must be an existing git repository");
+      }
+      if (!branch || !/^[\w./-]+$/.test(branch)) throw new Error("bad branch name");
+      // A run's merge queue targets the checked-out branch: never switch mid-run.
+      const running = [...registry.workspaces.values()].some(
+        (w) => w.jobs.run.state === "running",
+      );
+      if (running) throw new Error("refusing to switch branches while a run is in progress");
+      const result = await runCmd("git", ["switch", branch], repo);
+      if (result.code !== 0) throw new Error(result.output.trim());
+      json(res, 200, { ok: true, output: `now on ${branch}` });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  return false;
+}
