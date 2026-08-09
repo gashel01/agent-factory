@@ -39,6 +39,10 @@ import { AttachStrip, Button, Skeleton, toast, useAttachments, useEsc } from "./
 import { DockerStatus } from "./modals.js";
 import { ConfirmButton, Modal, Select, sendAnswer, sendControl } from "./widgets.js";
 import { NewWorkModal } from "./work.js";
+import {
+  ACCENTS, ATMOSPHERES, BACKGROUNDS, MAX_CUSTOM_BG, PANEL_COLORS, PANEL_STYLES, SCENES,
+} from "./appearance-types.js";
+import type { PanelStyle } from "./appearance-types.js";
 
 /* --------------------------------- projects landing --------------------------------- */
 
@@ -70,26 +74,42 @@ export interface Appearance {
   setDensity: (d: string) => void;
   compactHeader: boolean;
   setCompactHeader: (v: boolean) => void;
-  tint: number;
-  setTint: (v: number) => void;
-  blur: number;
-  setBlur: (v: number) => void;
-  darkness: number;
+  panelStyle: PanelStyle;
+  setPanelStyle: (v: PanelStyle) => void;
+  panelColor: string;                 // "" = theme default
+  setPanelColor: (v: string) => void;
+  background: string;                 // "" = none (theme --bg)
+  setBackground: (v: string) => void;
+  scene: string;                      // "" = none
+  setScene: (v: string) => void;
+  atmosphere: string;                 // "" = none
+  setAtmosphere: (v: string) => void;
+  customBgs: string[];                // data URLs, stored on this device
+  addCustomBg: (dataUrl: string) => void;
+  removeCustomBg: (i: number) => void;
+  customBg: number;                   // index into customBgs, or -1
+  setCustomBg: (i: number) => void;
+  darkness: number;                   // 0..100 backdrop dimmer
   setDarkness: (v: number) => void;
-  backgroundDim: number;
-  setBackgroundDim: (v: number) => void;
 }
-
-export const ACCENTS: Array<[string, string]> = [
-  ["brass", "#cf9f3e"], ["indigo", "#6366f1"], ["teal", "#0d9488"], ["orange", "#ea580c"], ["violet", "#7c3aed"],
-];
 
 export function readPref(key: string, fallback: string): string {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
 }
 
-/** Appearance: theme (light/dark/follow-OS), accent colour and density — all
- *  persisted and applied to <html> via data-attributes the CSS keys off. */
+function readNum(key: string, fallback: number): number {
+  const n = Number(readPref(key, String(fallback)));
+  return Number.isFinite(n) ? n : fallback;
+}
+function readList(key: string): string[] {
+  try { const v = JSON.parse(readPref(key, "[]")); return Array.isArray(v) ? v.filter((x) => typeof x === "string") : []; }
+  catch { return []; }
+}
+
+/** Appearance: theme, accent, density plus the full backdrop system — panel
+ *  style/colour, background colour, scenes, atmospheres, custom backgrounds and
+ *  a darkness dimmer. All persisted; applied to <html> via data-attributes and
+ *  inline CSS vars the CSS in 08-appearance-polish.css keys off. */
 export function useTheme(): Appearance {
   const [mode, setModeState] = useState<ThemeMode>(() => {
     const s = readPref("factory.theme", "system");
@@ -98,10 +118,17 @@ export function useTheme(): Appearance {
   const [accent, setAccentState] = useState(() => readPref("factory.accent", "brass"));
   const [density, setDensityState] = useState(() => readPref("factory.density", "comfortable"));
   const [compactHeader, setCompactHeaderState] = useState(() => readPref("factory.headerCompact", "0") === "1");
-  const [tint, setTintState] = useState(() => Number(readPref("factory.tint", "0")));
-  const [blur, setBlurState] = useState(() => Number(readPref("factory.blur", "0")));
-  const [darkness, setDarknessState] = useState(() => Number(readPref("factory.darkness", "0")));
-  const [backgroundDim, setBackgroundDimState] = useState(() => Number(readPref("factory.backgroundDim", "0")));
+  const [panelStyle, setPanelStyleState] = useState<PanelStyle>(() => {
+    const s = readPref("factory.panelStyle", "max");
+    return s === "solid" || s === "glass" ? s : "max";
+  });
+  const [panelColor, setPanelColorState] = useState(() => readPref("factory.panelColor", ""));
+  const [background, setBackgroundState] = useState(() => readPref("factory.background", ""));
+  const [scene, setSceneState] = useState(() => readPref("factory.scene", ""));
+  const [atmosphere, setAtmosphereState] = useState(() => readPref("factory.atmosphere", ""));
+  const [customBgs, setCustomBgsState] = useState<string[]>(() => readList("factory.customBgs"));
+  const [customBg, setCustomBgState] = useState(() => readNum("factory.customBg", -1));
+  const [darkness, setDarknessState] = useState(() => readNum("factory.darkness", 0));
   const [sysDark, setSysDark] = useState<boolean>(
     () => typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: dark)").matches,
   );
@@ -121,30 +148,61 @@ export function useTheme(): Appearance {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
   }, [dark]);
   useEffect(() => {
-    document.documentElement.setAttribute("data-accent", accent);
-    document.documentElement.setAttribute("data-density", density);
-    document.documentElement.setAttribute("data-header", compactHeader ? "compact" : "full");
+    const el = document.documentElement;
+    el.setAttribute("data-accent", accent);
+    el.setAttribute("data-density", density);
+    el.setAttribute("data-header", compactHeader ? "compact" : "full");
   }, [accent, density, compactHeader]);
   useEffect(() => {
-    document.documentElement.setAttribute("data-tint", String(tint));
-    document.documentElement.setAttribute("data-blur", String(blur));
-    document.documentElement.setAttribute("data-darkness", String(darkness));
-    document.documentElement.setAttribute("data-backgroundDim", String(backgroundDim));
-  }, [tint, blur, darkness, backgroundDim]);
+    const el = document.documentElement;
+    el.setAttribute("data-panel", panelStyle);
+    if (panelColor) el.setAttribute("data-panel-color", panelColor); else el.removeAttribute("data-panel-color");
+    if (background) el.setAttribute("data-bg", background); else el.removeAttribute("data-bg");
+    el.style.setProperty("--app-darkness", String(darkness));
+    // Custom background wins over a preset scene; both feed the same layer.
+    const custom = customBg >= 0 && customBg < customBgs.length ? customBgs[customBg] : null;
+    const sceneImg = SCENES.find((s) => s.id === scene)?.image ?? null;
+    const bgImage = custom ? `url("${custom}")` : sceneImg;
+    if (bgImage) el.style.setProperty("--app-scene", bgImage); else el.style.removeProperty("--app-scene");
+    const atmo = ATMOSPHERES.find((a) => a.id === atmosphere)?.overlay ?? null;
+    if (atmo) el.style.setProperty("--app-atmo", atmo); else el.style.removeProperty("--app-atmo");
+  }, [panelStyle, panelColor, background, scene, atmosphere, customBg, customBgs, darkness]);
 
   const persist = (key: string, value: string): void => {
     try { localStorage.setItem(key, value); } catch { /* private mode */ }
   };
   return {
-    dark, mode, accent, density, compactHeader, tint, blur, darkness, backgroundDim,
+    dark, mode, accent, density, compactHeader,
+    panelStyle, panelColor, background, scene, atmosphere, customBgs, customBg, darkness,
     setMode: (m) => { setModeState(m); persist("factory.theme", m); },
     setAccent: (a) => { setAccentState(a); persist("factory.accent", a); },
     setDensity: (d) => { setDensityState(d); persist("factory.density", d); },
     setCompactHeader: (v) => { setCompactHeaderState(v); persist("factory.headerCompact", v ? "1" : "0"); },
-    setTint: (v) => { setTintState(v); persist("factory.tint", String(v)); },
-    setBlur: (v) => { setBlurState(v); persist("factory.blur", String(v)); },
+    setPanelStyle: (v) => { setPanelStyleState(v); persist("factory.panelStyle", v); },
+    setPanelColor: (v) => { setPanelColorState(v); persist("factory.panelColor", v); },
+    setBackground: (v) => { setBackgroundState(v); persist("factory.background", v); },
+    setScene: (v) => { setSceneState(v); persist("factory.scene", v); if (v) { setCustomBgState(-1); persist("factory.customBg", "-1"); } },
+    setAtmosphere: (v) => { setAtmosphereState(v); persist("factory.atmosphere", v); },
+    addCustomBg: (dataUrl) => {
+      setCustomBgsState((prev) => {
+        const next = [...prev, dataUrl].slice(-MAX_CUSTOM_BG);
+        persist("factory.customBgs", JSON.stringify(next));
+        const idx = next.length - 1;
+        setCustomBgState(idx); persist("factory.customBg", String(idx));
+        setSceneState(""); persist("factory.scene", "");
+        return next;
+      });
+    },
+    removeCustomBg: (i) => {
+      setCustomBgsState((prev) => {
+        const next = prev.filter((_, k) => k !== i);
+        persist("factory.customBgs", JSON.stringify(next));
+        setCustomBgState((cur) => { const nc = cur === i ? -1 : cur > i ? cur - 1 : cur; persist("factory.customBg", String(nc)); return nc; });
+        return next;
+      });
+    },
+    setCustomBg: (i) => { setCustomBgState(i); persist("factory.customBg", String(i)); if (i >= 0) { setSceneState(""); persist("factory.scene", ""); } },
     setDarkness: (v) => { setDarknessState(v); persist("factory.darkness", String(v)); },
-    setBackgroundDim: (v) => { setBackgroundDimState(v); persist("factory.backgroundDim", String(v)); },
     toggle: () => { const m = dark ? "light" : "dark"; setModeState(m); persist("factory.theme", m); },
   };
 }
@@ -155,31 +213,152 @@ export function AppearanceButton({ onOpen }: { onOpen: () => void }): JSX.Elemen
   );
 }
 
-/** Theme mode, accent colour and density picker. Global UI prefs, not per-project. */
+/** The full appearance panel: theme, panels, background, scenes, atmospheres,
+ *  custom backgrounds, accent and a darkness dimmer. Global UI prefs. */
 export function AppearanceModal({ theme, onClose }: { theme: Appearance; onClose: () => void }): JSX.Element {
   const modes: Array<[ThemeMode, string]> = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
   const densities: Array<[string, string]> = [["comfortable", "Comfortable"], ["compact", "Compact"]];
+  const fileRef = useRef<HTMLInputElement>(null);
+  const full = theme.customBgs.length >= MAX_CUSTOM_BG;
+
+  // Read the picked file, downscale it (cap the longest edge at 1600px, JPEG
+  // 0.82) so five backgrounds stay well within the localStorage quota, then
+  // hand the data URL to the hook. Read via the ref so we need no React event.
+  const onPickFile = (): void => {
+    const input = fileRef.current;
+    const file = input?.files?.[0] ?? null;
+    if (input) input.value = "";
+    if (!file || full) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { theme.addCustomBg(String(reader.result)); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        try { theme.addCustomBg(canvas.toDataURL("image/jpeg", 0.82)); }
+        catch { toast("Couldn't store that image — try a smaller one.", true); }
+      };
+      img.onerror = () => toast("Couldn't read that image.", true);
+      img.src = String(reader.result);
+    };
+    reader.onerror = () => toast("Couldn't read that file.", true);
+    reader.readAsDataURL(file);
+  };
+
+  const noScene = !theme.scene && theme.customBg < 0;
   return (
     <Modal title="Appearance" onClose={onClose}>
       <div className="appearance-form">
         <div className="appearance-group">
-          <span className="appearance-label">Theme</span>
+          <span className="appearance-label">Mode</span>
           <div className="seg-choice">
             {modes.map(([v, l]) => (
               <button key={v} className={`seg-opt${theme.mode === v ? " on" : ""}`} onClick={() => theme.setMode(v)}>{l}</button>
             ))}
           </div>
         </div>
+
+        <div className="appearance-group">
+          <span className="appearance-label">Panel style</span>
+          <div className="seg-choice">
+            {PANEL_STYLES.map(([v, l]) => (
+              <button key={v} className={`seg-opt${theme.panelStyle === v ? " on" : ""}`} onClick={() => theme.setPanelStyle(v)}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        <div className="appearance-group">
+          <span className="appearance-label">Panel color</span>
+          <div className="swatches">
+            <button className={`swatch none${!theme.panelColor ? " on" : ""}`} title="Default" aria-label="Default panel colour" onClick={() => theme.setPanelColor("")} />
+            {PANEL_COLORS.map(([name, color]) => (
+              <button key={name} className={`swatch${theme.panelColor === name ? " on" : ""}`}
+                style={{ background: color }} title={name} aria-label={name} onClick={() => theme.setPanelColor(name)} />
+            ))}
+          </div>
+        </div>
+
+        <div className="appearance-group">
+          <span className="appearance-label">Background</span>
+          <div className="swatches">
+            <button className={`swatch none${!theme.background ? " on" : ""}`} title="Default" aria-label="Default background" onClick={() => theme.setBackground("")} />
+            {BACKGROUNDS.map(([name, color]) => (
+              <button key={name} className={`swatch${theme.background === name ? " on" : ""}`}
+                style={{ background: color }} title={name} aria-label={name} onClick={() => theme.setBackground(name)} />
+            ))}
+          </div>
+        </div>
+
+        <div className="appearance-group">
+          <span className="appearance-label">Atmospheres</span>
+          <div className="atmo-grid">
+            <button className={`atmo-tile none${!theme.atmosphere ? " on" : ""}`} title="None" aria-label="No atmosphere" onClick={() => theme.setAtmosphere("")} />
+            {ATMOSPHERES.map((a) => (
+              <button key={a.id} className={`atmo-tile${theme.atmosphere === a.id ? " on" : ""}`}
+                style={{ backgroundImage: a.overlay }} title={a.name} aria-label={a.name} onClick={() => theme.setAtmosphere(a.id)} />
+            ))}
+          </div>
+        </div>
+
+        <div className="appearance-group">
+          <span className="appearance-label">Scenes</span>
+          <div className="scene-grid">
+            <button className={`scene-tile none${noScene ? " on" : ""}`} title="None" aria-label="No scene" onClick={() => { theme.setScene(""); theme.setCustomBg(-1); }} />
+            {SCENES.map((s) => (
+              <button key={s.id} className={`scene-tile${theme.scene === s.id ? " on" : ""}`}
+                style={{ backgroundImage: s.image }} title={s.name} aria-label={s.name} onClick={() => theme.setScene(s.id)} />
+            ))}
+          </div>
+        </div>
+
+        <div className="appearance-group">
+          <div className="appearance-row">
+            <span className="appearance-label">Custom background</span>
+            <span className="appearance-count">{theme.customBgs.length}/{MAX_CUSTOM_BG}</span>
+          </div>
+          {theme.customBgs.length > 0 && (
+            <div className="scene-grid">
+              {theme.customBgs.map((url, i) => (
+                <div key={i} className={`scene-tile custom${theme.customBg === i ? " on" : ""}`} style={{ backgroundImage: `url("${url}")` }}>
+                  <button className="scene-pick" aria-label={`Use custom background ${i + 1}`} onClick={() => theme.setCustomBg(i)} />
+                  <button className="scene-del" aria-label="Remove background" onClick={() => theme.removeCustomBg(i)}><X size={11} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <button className="upload-bg" disabled={full} onClick={() => fileRef.current?.click()}>
+            <Upload size={14} /> Upload background
+          </button>
+          <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/avif" hidden onChange={onPickFile} />
+          <span className="appearance-hint">Static JPG, PNG, WebP, or AVIF · stored on this device</span>
+        </div>
+
         <div className="appearance-group">
           <span className="appearance-label">Accent</span>
           <div className="swatches">
             {ACCENTS.map(([name, color]) => (
               <button key={name} className={`swatch${theme.accent === name ? " on" : ""}`}
-                style={{ background: color }} title={name} aria-label={name}
-                onClick={() => theme.setAccent(name)} />
+                style={{ background: color }} title={name} aria-label={name} onClick={() => theme.setAccent(name)} />
             ))}
           </div>
         </div>
+
+        <div className="appearance-group">
+          <div className="appearance-row">
+            <span className="appearance-label">Darkness</span>
+            <span className="appearance-count">{theme.darkness}%</span>
+          </div>
+          <input type="range" className="appearance-range" min={0} max={100} step={1} value={theme.darkness}
+            onChange={(e) => theme.setDarkness(Number(e.target.value))} aria-label="Darkness" />
+          <span className="appearance-hint">Dims the backdrop behind the panels.</span>
+        </div>
+
         <div className="appearance-group">
           <span className="appearance-label">Density</span>
           <div className="seg-choice">
@@ -188,6 +367,7 @@ export function AppearanceModal({ theme, onClose }: { theme: Appearance; onClose
             ))}
           </div>
         </div>
+
         <div className="appearance-group">
           <span className="appearance-label">Header</span>
           <div className="seg-choice">
@@ -195,23 +375,6 @@ export function AppearanceModal({ theme, onClose }: { theme: Appearance; onClose
             <button className={`seg-opt${theme.compactHeader ? " on" : ""}`} onClick={() => theme.setCompactHeader(true)}>Compact</button>
           </div>
           <span className="appearance-hint">Compact hides the progress bar and usage panel so the board gets more room.</span>
-        </div>
-        <div className="appearance-group">
-          <span className="appearance-label">Effects</span>
-          {([
-            ["Tint", theme.tint, theme.setTint],
-            ["Blur", theme.blur, theme.setBlur],
-            ["Darkness", theme.darkness, theme.setDarkness],
-            ["Background dim", theme.backgroundDim, theme.setBackgroundDim],
-          ] as Array<[string, number, (v: number) => void]>).map(([label, val, set]) => (
-            <label key={label} className="appearance-slider">
-              <span className="appearance-slider-name">{label}</span>
-              <input type="range" min={0} max={100} step={1} value={val}
-                onChange={(e) => set(Number(e.target.value))} aria-label={label} />
-              <span className="appearance-slider-val">{val}</span>
-            </label>
-          ))}
-          <span className="appearance-hint">Layered visual effects — 0 turns each off.</span>
         </div>
       </div>
     </Modal>
