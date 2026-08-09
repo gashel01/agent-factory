@@ -257,6 +257,21 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (body.branch === current) throw new Error("can't delete the current branch — switch away first");
       const running = [...registry.workspaces.values()].some((w) => w.jobs.run.state === "running");
       if (running) throw new Error("refusing to delete branches while a run is in progress");
+      // Loop iterations leave the branch checked out in a disposable worktree
+      // under <repo>/.factory/ — git then refuses `branch -D`. Remove ONLY such
+      // Warden-managed worktrees (never a real one elsewhere) and retry.
+      const posix = (p: string): string => p.split(/[\\/]/).join("/");
+      const factoryDir = posix(join(repo, ".factory")) + "/";
+      const wt = await runCmd("git", ["worktree", "list", "--porcelain"], repo);
+      let curPath = "";
+      for (const line of wt.output.split("\n")) {
+        if (line.startsWith("worktree ")) curPath = posix(line.slice("worktree ".length).trim());
+        else if (line.startsWith("branch ") && line.trim() === `branch refs/heads/${body.branch}`
+          && curPath.startsWith(factoryDir)) {
+          await runCmd("git", ["worktree", "remove", "--force", curPath], repo);
+        }
+      }
+      await runCmd("git", ["worktree", "prune"], repo);
       const result = await runCmd("git", ["branch", "-D", body.branch], repo);
       if (result.code !== 0) throw new Error(result.output.trim());
       json(res, 200, { ok: true, output: `deleted ${body.branch}` });
