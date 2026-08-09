@@ -471,11 +471,11 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
   if (url.pathname === "/api/loop/start" && req.method === "POST") {
     try {
       const b = JSON.parse(await readBody(req)) as {
-        objective?: string; accept?: string; budget?: number;
-        maxIterations?: number; name?: string; repo?: string;
+        objective?: string; accept?: string; mode?: string; sourceBacklog?: string;
+        budget?: number; maxIterations?: number; name?: string; repo?: string;
       };
-      if (!b.objective?.trim()) throw new Error("objective is required");
-      if (!b.accept?.trim()) throw new Error("an acceptance command is required");
+      const mode = ["explicit", "backlog", "self", "supervisor"].includes(b.mode ?? "")
+        ? (b.mode as string) : "explicit";
       if (!b.repo?.trim()) throw new Error("repo path is required");
       // No loop without a hard budget cap — the whole point is it can't run away.
       if (!b.budget || !Number.isFinite(b.budget) || b.budget <= 0) {
@@ -487,12 +487,23 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
       }
       const name = (b.name?.trim() || "autopilot").replace(/[^\w.-]/g, "-");
       const iters = b.maxIterations && b.maxIterations > 0 ? Math.floor(b.maxIterations) : 5;
-      const args = [
-        "loop", b.objective.trim(), "--accept", b.accept.trim(),
-        "--budget", String(b.budget), "--max-iterations", String(iters),
-        "--name", name, "--repo", b.repo.trim(),
-      ];
-      ws.repo = resolve(b.repo.trim());
+      const repo = b.repo.trim();
+      // Map each command mode to its `factory loop` args.
+      const args = ["loop"];
+      if (mode === "explicit" || mode === "supervisor") {
+        if (!b.objective?.trim()) throw new Error(`${mode} mode needs an objective`);
+        args.push(b.objective.trim(), "--mode", mode);
+        if (mode === "explicit" && b.accept?.trim()) args.push("--accept", b.accept.trim());
+      } else if (mode === "self") {
+        args.push("--mode", "self");
+      } else {
+        const dir = b.sourceBacklog?.trim() || join(ws.workdir, "backlog");
+        if (!existsSync(dir)) throw new Error(`backlog directory not found: ${dir}`);
+        args.push("--mode", "backlog", "--source-backlog", dir);
+      }
+      args.push("--budget", String(b.budget), "--max-iterations", String(iters),
+                "--name", name, "--repo", repo);
+      ws.repo = resolve(repo);
       ws.loopProc = spawnJob(ws, "loop", opts.factory, args,
         { FACTORY_GLOBAL_MEMORY: globalMemFile });
       json(res, 200, { ok: true });
