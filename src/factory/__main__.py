@@ -413,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="what the loop should achieve (explicit mode)")
     p_loop.add_argument("--mode", choices=("explicit", "backlog", "self", "supervisor"),
                         default="explicit",
-                        help="work source: explicit objective / drain backlog / auto-split / supervisor")
+                        help="work source: explicit / backlog / self (auto-split) / supervisor")
     p_loop.add_argument("--accept", default="",
                         help="acceptance command: exits 0 when done (read-only); optional")
     p_loop.add_argument("--source-backlog", type=Path, default=None,
