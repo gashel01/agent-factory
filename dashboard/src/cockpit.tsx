@@ -888,6 +888,8 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
   const [branches, setBranches] = useState<{ list: string[]; current: string }>({ list: [], current: "" });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState<number | null>(null);
+  const [newBranch, setNewBranch] = useState("");
+  const [bBusy, setBBusy] = useState<string | null>(null); // branch name being acted on, or "__new__"
 
   const load = async (r: string): Promise<void> => {
     try {
@@ -935,6 +937,33 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
     finally { setBusy(null); }
   };
 
+  // Branch actions — all guarded server-side (no switch/create/delete mid-run,
+  // no deleting main or the current branch). bBusy locks the whole list.
+  const switchTo = async (b: string): Promise<void> => {
+    if (b === branches.current || bBusy) return;
+    setBBusy(b);
+    try {
+      const r = await postJSON<{ ok?: boolean; error?: string }>("/api/repo/switch", { path: repo, branch: b });
+      if (r.ok) { toast(`Now on ${b}.`); await load(repo); } else toast(r.error || "couldn't switch", true);
+    } catch (e) { toast(String(e), true); } finally { setBBusy(null); }
+  };
+  const delBranch = async (b: string): Promise<void> => {
+    setBBusy(b);
+    try {
+      const r = await postJSON<{ ok?: boolean; error?: string }>("/api/repo/branch/delete", { path: repo, branch: b });
+      if (r.ok) { toast(`Deleted ${b}.`); await load(repo); } else toast(r.error || "couldn't delete", true);
+    } catch (e) { toast(String(e), true); } finally { setBBusy(null); }
+  };
+  const createBranch = async (): Promise<void> => {
+    const name = newBranch.trim();
+    if (!name || bBusy) return;
+    setBBusy("__new__");
+    try {
+      const r = await postJSON<{ ok?: boolean; error?: string }>("/api/repo/branch/create", { path: repo, branch: name });
+      if (r.ok) { toast(`Created ${name}.`); setNewBranch(""); await load(repo); } else toast(r.error || "couldn't create", true);
+    } catch (e) { toast(String(e), true); } finally { setBBusy(null); }
+  };
+
   const mergeable = (m: string): { text: string; cls: string } =>
     m === "MERGEABLE" ? { text: "ready", cls: "ok" }
       : m === "CONFLICTING" ? { text: "conflicts", cls: "bad" }
@@ -978,15 +1007,34 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
       )}
       <div className="pr-branches">
         <div className="pr-branches-head"><GitBranch size={12} /> Branches</div>
+        <div className="branch-new">
+          <input className="branch-input" placeholder="New branch name…" value={newBranch}
+            aria-label="New branch name"
+            onChange={(e) => setNewBranch(e.currentTarget.value.replace(/[^\w./-]/g, ""))}
+            onKeyDown={(e) => { if (e.key === "Enter") void createBranch(); }} />
+          <Button kind="btn" pending={bBusy === "__new__"} disabled={!newBranch.trim() || bBusy !== null}
+            onClick={createBranch}><Plus size={13} /> Create</Button>
+        </div>
         {branches.list.length === 0 ? (
           <span className="pr-note">—</span>
         ) : (
-          <ul>
-            {branches.list.map((b) => (
-              <li key={b} className={b === branches.current ? "cur" : ""}>
-                {b}{b === branches.current ? " · current" : ""}
-              </li>
-            ))}
+          <ul className="branch-list">
+            {branches.list.map((b) => {
+              const cur = b === branches.current;
+              const locked = b === "main" || b === "master";
+              return (
+                <li key={b} className={cur ? "cur" : ""}>
+                  <button className="branch-name" disabled={cur || bBusy !== null}
+                    title={cur ? "Current branch" : `Switch to ${b}`} onClick={() => switchTo(b)}>
+                    {b}{cur ? " · current" : ""}
+                  </button>
+                  {!cur && !locked && (
+                    <ConfirmButton label={<Trash2 size={13} />} confirm="Delete?"
+                      plain onConfirm={() => delBranch(b)} />
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

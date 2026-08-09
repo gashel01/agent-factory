@@ -222,6 +222,50 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
     return true;
   }
 
+  // Create a branch and switch to it (optionally from a start-point). Same
+  // run-in-progress guard as switch, since it moves HEAD.
+  if (url.pathname === "/api/repo/branch/create" && req.method === "POST") {
+    try {
+      const body = JSON.parse(await readBody(req)) as { path?: string; branch?: string; from?: string };
+      const repo = resolve(body.path ?? "");
+      if (!repo || !existsSync(join(repo, ".git"))) throw new Error("repo must be an existing git repository");
+      if (!body.branch || !/^[\w./-]+$/.test(body.branch)) throw new Error("bad branch name");
+      const from = typeof body.from === "string" && /^[\w./-]+$/.test(body.from) ? body.from : null;
+      const running = [...registry.workspaces.values()].some((w) => w.jobs.run.state === "running");
+      if (running) throw new Error("refusing to create/switch branches while a run is in progress");
+      const args = from ? ["switch", "-c", body.branch, from] : ["switch", "-c", body.branch];
+      const result = await runCmd("git", args, repo);
+      if (result.code !== 0) throw new Error(result.output.trim());
+      json(res, 200, { ok: true, output: `created and switched to ${body.branch}` });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  // Delete a branch (force). Human-initiated only; refuses main, the current
+  // branch, and any delete while a run is in progress (the merge queue targets
+  // live branches).
+  if (url.pathname === "/api/repo/branch/delete" && req.method === "POST") {
+    try {
+      const body = JSON.parse(await readBody(req)) as { path?: string; branch?: string };
+      const repo = resolve(body.path ?? "");
+      if (!repo || !existsSync(join(repo, ".git"))) throw new Error("repo must be an existing git repository");
+      if (!body.branch || !/^[\w./-]+$/.test(body.branch)) throw new Error("bad branch name");
+      if (body.branch === "main" || body.branch === "master") throw new Error("won't delete the default branch");
+      const current = (await runCmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], repo)).output.trim();
+      if (body.branch === current) throw new Error("can't delete the current branch — switch away first");
+      const running = [...registry.workspaces.values()].some((w) => w.jobs.run.state === "running");
+      if (running) throw new Error("refusing to delete branches while a run is in progress");
+      const result = await runCmd("git", ["branch", "-D", body.branch], repo);
+      if (result.code !== 0) throw new Error(result.output.trim());
+      json(res, 200, { ok: true, output: `deleted ${body.branch}` });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
   // Pull requests (GitHub, via gh) — list open PRs and merge/close them from the
   // board, so PR mode's loop closes inside Warden instead of on github.com.
   if (url.pathname === "/api/prs" && req.method === "GET") {
