@@ -170,10 +170,13 @@ async def _stream_contract(cfg: Config, repo: Path, prompt: str, log_path: Path)
     """Run ONE read-only planning agent to completion and return its trailing JSON
     contract. Shared by the ticket planner and the clarify-first questioner so
     process handling, live progress and rate-limit/timeout handling exist once."""
-    # Planning can run on a cheaper tier than the coding agents.
+    # Planning can run on a cheaper tier than the coding agents. The turn budget
+    # has to cover BOTH exploration and emitting the tickets JSON — on a large
+    # repo (e.g. the factory's own), a first pass spends heavily on exploration
+    # before the map is cached, so keep enough headroom to still land the drafts.
     cmd = build_cli(
         cfg.agent.command,
-        max_turns=40,
+        max_turns=80,
         allowed_tools=PLANNER_TOOLS,
         model=cfg.plan.model or cfg.agent.model,
         missing=PlanError,
