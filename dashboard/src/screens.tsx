@@ -70,6 +70,14 @@ export interface Appearance {
   setDensity: (d: string) => void;
   compactHeader: boolean;
   setCompactHeader: (v: boolean) => void;
+  tint: number;
+  setTint: (v: number) => void;
+  blur: number;
+  setBlur: (v: number) => void;
+  darkness: number;
+  setDarkness: (v: number) => void;
+  backgroundDim: number;
+  setBackgroundDim: (v: number) => void;
 }
 
 export const ACCENTS: Array<[string, string]> = [
@@ -90,6 +98,10 @@ export function useTheme(): Appearance {
   const [accent, setAccentState] = useState(() => readPref("factory.accent", "brass"));
   const [density, setDensityState] = useState(() => readPref("factory.density", "comfortable"));
   const [compactHeader, setCompactHeaderState] = useState(() => readPref("factory.headerCompact", "0") === "1");
+  const [tint, setTintState] = useState(() => Number(readPref("factory.tint", "0")));
+  const [blur, setBlurState] = useState(() => Number(readPref("factory.blur", "0")));
+  const [darkness, setDarknessState] = useState(() => Number(readPref("factory.darkness", "0")));
+  const [backgroundDim, setBackgroundDimState] = useState(() => Number(readPref("factory.backgroundDim", "0")));
   const [sysDark, setSysDark] = useState<boolean>(
     () => typeof matchMedia !== "undefined" && matchMedia("(prefers-color-scheme: dark)").matches,
   );
@@ -113,16 +125,26 @@ export function useTheme(): Appearance {
     document.documentElement.setAttribute("data-density", density);
     document.documentElement.setAttribute("data-header", compactHeader ? "compact" : "full");
   }, [accent, density, compactHeader]);
+  useEffect(() => {
+    document.documentElement.setAttribute("data-tint", String(tint));
+    document.documentElement.setAttribute("data-blur", String(blur));
+    document.documentElement.setAttribute("data-darkness", String(darkness));
+    document.documentElement.setAttribute("data-backgroundDim", String(backgroundDim));
+  }, [tint, blur, darkness, backgroundDim]);
 
   const persist = (key: string, value: string): void => {
     try { localStorage.setItem(key, value); } catch { /* private mode */ }
   };
   return {
-    dark, mode, accent, density, compactHeader,
+    dark, mode, accent, density, compactHeader, tint, blur, darkness, backgroundDim,
     setMode: (m) => { setModeState(m); persist("factory.theme", m); },
     setAccent: (a) => { setAccentState(a); persist("factory.accent", a); },
     setDensity: (d) => { setDensityState(d); persist("factory.density", d); },
     setCompactHeader: (v) => { setCompactHeaderState(v); persist("factory.headerCompact", v ? "1" : "0"); },
+    setTint: (v) => { setTintState(v); persist("factory.tint", String(v)); },
+    setBlur: (v) => { setBlurState(v); persist("factory.blur", String(v)); },
+    setDarkness: (v) => { setDarknessState(v); persist("factory.darkness", String(v)); },
+    setBackgroundDim: (v) => { setBackgroundDimState(v); persist("factory.backgroundDim", String(v)); },
     toggle: () => { const m = dark ? "light" : "dark"; setModeState(m); persist("factory.theme", m); },
   };
 }
@@ -173,6 +195,23 @@ export function AppearanceModal({ theme, onClose }: { theme: Appearance; onClose
             <button className={`seg-opt${theme.compactHeader ? " on" : ""}`} onClick={() => theme.setCompactHeader(true)}>Compact</button>
           </div>
           <span className="appearance-hint">Compact hides the progress bar and usage panel so the board gets more room.</span>
+        </div>
+        <div className="appearance-group">
+          <span className="appearance-label">Effects</span>
+          {([
+            ["Tint", theme.tint, theme.setTint],
+            ["Blur", theme.blur, theme.setBlur],
+            ["Darkness", theme.darkness, theme.setDarkness],
+            ["Background dim", theme.backgroundDim, theme.setBackgroundDim],
+          ] as Array<[string, number, (v: number) => void]>).map(([label, val, set]) => (
+            <label key={label} className="appearance-slider">
+              <span className="appearance-slider-name">{label}</span>
+              <input type="range" min={0} max={100} step={1} value={val}
+                onChange={(e) => set(Number(e.target.value))} aria-label={label} />
+              <span className="appearance-slider-val">{val}</span>
+            </label>
+          ))}
+          <span className="appearance-hint">Layered visual effects — 0 turns each off.</span>
         </div>
       </div>
     </Modal>
