@@ -182,6 +182,44 @@ export function historyFor(runsDir: string, exceptRun: string | null): HistoryTi
 }
 
 
+/**
+ * Board-accurate counts for a portfolio card. Unlike summarizeRun (which
+ * describes a SINGLE run, as analytics needs), this mirrors what the board
+ * actually shows: `merged` is cumulative across ALL runs (deduped by id, like
+ * the board's history fold), and in-flight tickets are dropped when the project
+ * is not `live` — a killed run (e.g. a stopped autopilot loop) leaves tickets
+ * stuck in RUNNING forever, and those are ghosts, not real work.
+ */
+export function portfolioCounts(runsDir: string, run: string | null, live: boolean): {
+  counts: { queued: number; working: number; needs: number; merged: number }; total: number;
+} {
+  const WORKING = new Set(["RUNNING", "VERIFYING", "REVIEWING", "MERGE_QUEUED", "MERGING"]);
+  const mergedIds = new Set(historyFor(runsDir, null).map((h) => h.id));
+  const counts = { queued: 0, working: 0, needs: 0, merged: mergedIds.size };
+  const states = new Map<string, string>();
+  if (run) {
+    const file = join(runsDir, run, "events.jsonl");
+    if (existsSync(file)) {
+      for (const line of readFileSync(file, "utf-8").split("\n")) {
+        if (!line.trim()) continue;
+        let e: Record<string, unknown>;
+        try { e = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+        if (e.event === "state" && typeof e.task === "string" && typeof e.to === "string") {
+          states.set(e.task, e.to);
+        }
+      }
+    }
+  }
+  for (const [id, st] of states) {
+    if (mergedIds.has(id)) continue; // a later run merged it — count once, as merged
+    if (st === "QUEUED") counts.queued++;
+    else if (st === "FAILED" || st === "BLOCKED") counts.needs++;
+    else if (WORKING.has(st) && live) counts.working++; // drop ghosts from a dead run
+  }
+  return { counts, total: counts.merged + counts.queued + counts.working + counts.needs };
+}
+
+
 // YAML/JSON on Windows must use forward slashes: a backslash in a double-quoted
 // scalar is read as an escape sequence (C:\Users -> invalid \U). Chroma and the
 // claude CLI both accept forward slashes on Windows.
