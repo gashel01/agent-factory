@@ -24,15 +24,15 @@ import {
   ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine,
   BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
-  ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
+  DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
   GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
   MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
-import { Skeleton, StatusPill, WorkspaceInfo, toast, useEsc, useManagedInterval } from "./core.js";
+import { Button, Skeleton, StatusPill, WorkspaceInfo, toast, useEsc, useManagedInterval } from "./core.js";
 import { FactEditor, useFacts } from "./screens.js";
-import { Drawer, Select, quickRun, sendControl } from "./widgets.js";
+import { Drawer, Modal, Select, quickRun, sendControl } from "./widgets.js";
 import { RepoTools } from "./work.js";
 
 export function describe(event: FactoryEvent): string {
@@ -696,6 +696,438 @@ export function DocsModal({ onClose }: { onClose: () => void }): JSX.Element {
         </div>
       </div>
     </Drawer>
+  );
+}
+
+/* --------------------------------- insights: diagnostics + forecast --------------------------------- */
+
+/* `/api/diagnostics` and `/api/forecast` — and the pure `diagnose` / `forecast`
+ * modules behind them — ship with a sibling ticket. Until they land, their
+ * payloads are read here as untrusted JSON: every field goes through a small
+ * reader, so a missing or oddly-shaped key degrades to an empty slot in the UI
+ * instead of throwing. When the modules are merged, these readers are the one
+ * place to swap for their exported types. */
+const asRec = (v: unknown): Record<string, unknown> =>
+  (v !== null && typeof v === "object" && !Array.isArray(v)) ? v as Record<string, unknown> : {};
+const asStr = (v: unknown): string =>
+  typeof v === "string" ? v : typeof v === "number" ? String(v) : "";
+const asNum = (v: unknown): number | null =>
+  (typeof v === "number" && Number.isFinite(v)) ? v : null;
+const asArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+/** A confidence on the wire may be a 0–1 ratio or an already-scaled percentage. */
+function pct(v: number | null): number | null {
+  if (v === null) return null;
+  return Math.max(0, Math.min(100, Math.round(v <= 1 ? v * 100 : v)));
+}
+
+export interface DiagnosisStep { when: string; text: string }
+export interface DiagnosisEvidence { source: string; text: string }
+/** A recommendation with an `op` is actionable: it maps to an /api/control op. */
+export interface DiagnosisFix { label: string; detail: string; op: string; task: string }
+export interface Diagnosis {
+  category: string; headline: string; detail: string; confidence: number | null;
+  timeline: DiagnosisStep[]; evidence: DiagnosisEvidence[]; recommendations: DiagnosisFix[];
+}
+
+/** Human wording per diagnosis category. An unlisted one (or "unknown") falls
+ *  back to the raw category — "no conclusive cause" is a normal answer here,
+ *  not an error state. */
+export const DX_CATEGORY: Record<string, string> = {
+  verify: "Verification failed",
+  test: "Tests failed",
+  build: "Build broke",
+  timeout: "Ran out of time",
+  budget: "Budget reached",
+  merge: "Merge conflict",
+  blocked: "Needed an answer",
+  agent: "The agent gave up",
+  infra: "Environment problem",
+  scope: "Ticket scope problem",
+  unknown: "No conclusive cause",
+};
+
+function parseDiagnosis(raw: unknown): Diagnosis {
+  const d = asRec(raw);
+  return {
+    category: asStr(d["category"]) || "unknown",
+    headline: asStr(d["headline"]),
+    detail: asStr(d["detail"]),
+    confidence: asNum(d["confidence"]),
+    timeline: asArr(d["timeline"])
+      .map((s): DiagnosisStep => {
+        if (typeof s === "string") return { when: "", text: s };
+        const o = asRec(s);
+        return { when: asStr(o["ts"] ?? o["at"]), text: asStr(o["text"] ?? o["label"]) };
+      })
+      .filter((s) => s.text || s.when),
+    evidence: asArr(d["evidence"])
+      .map((e): DiagnosisEvidence => {
+        if (typeof e === "string") return { source: "", text: e };
+        const o = asRec(e);
+        return { source: asStr(o["source"] ?? o["file"]), text: asStr(o["text"] ?? o["excerpt"]) };
+      })
+      .filter((e) => e.text),
+    recommendations: asArr(d["recommendations"])
+      .map((r): DiagnosisFix => {
+        const o = asRec(r);
+        return {
+          label: asStr(o["label"]), detail: asStr(o["detail"]),
+          op: asStr(o["op"]), task: asStr(o["task"]),
+        };
+      })
+      .filter((r) => r.label || r.detail),
+  };
+}
+
+/**
+ * "Why did it fail?" — the post-mortem for one failed ticket. It answers the
+ * three questions an operator actually has: what happened, what proves it, and
+ * what to do next. The evidence stays verbatim in a monospace block — restyling
+ * a log excerpt into prose would make it read as our words, not the agent's.
+ */
+export function DiagnosticsModal(
+  { taskId, title, run, onClose }:
+  { taskId: string; title: string; run?: string | null; onClose: () => void },
+): JSX.Element {
+  const [diag, setDiag] = useState<Diagnosis | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    setDiag(null); setErr(null);
+    const q = `/api/diagnostics?task=${encodeURIComponent(taskId)}`
+      + (run ? `&run=${encodeURIComponent(run)}` : "");
+    void fetchJSON<Record<string, unknown>>(q)
+      .then((r) => { if (alive) setDiag(parseDiagnosis(r)); })
+      .catch((e: unknown) => { if (alive) setErr(String(e)); });
+    return () => { alive = false; };
+  }, [taskId, run, attempt]);
+
+  const conf = pct(diag?.confidence ?? null);
+  const empty = diag !== null && !diag.headline && !diag.detail
+    && diag.timeline.length === 0 && diag.evidence.length === 0 && diag.recommendations.length === 0;
+
+  return (
+    <Modal title="Why did it fail?" onClose={onClose} wide>
+      <div className="dx">
+        <div className="dx-task"><span className="kcard-id">{taskId}</span> {title}</div>
+
+        {err !== null && (
+          <div className="dx-error" role="alert">
+            <TriangleAlert size={14} />
+            <div className="dx-error-body">
+              <b>No diagnosis available.</b> The dashboard couldn’t reach the failure analysis.
+              <div className="dx-error-detail mono">{err}</div>
+            </div>
+            <button className="btn ghost" onClick={() => setAttempt((n) => n + 1)}><RotateCw size={13} /> Try again</button>
+          </div>
+        )}
+
+        {err === null && diag === null && <Skeleton lines={5} />}
+
+        {err === null && empty && (
+          <p className="hint">Nothing to analyse for this ticket yet — no failure was recorded in its run.</p>
+        )}
+
+        {err === null && diag !== null && !empty && (
+          <>
+            <div className="dx-verdict">
+              <div className="dx-verdict-top">
+                <span className={`dx-cat dx-cat-${diag.category}`}>{DX_CATEGORY[diag.category] ?? diag.category}</span>
+                {conf !== null && (
+                  <span className="dx-conf" title="How sure this reading is">
+                    <span className="tnum">{conf}%</span> confident
+                  </span>
+                )}
+              </div>
+              {diag.headline && <h4 className="dx-headline">{diag.headline}</h4>}
+              {diag.detail && <p className="dx-detail">{diag.detail}</p>}
+              {diag.category === "unknown" && (
+                <p className="dx-hedge">The signals don’t point at one cause — the excerpts below are the raw material to judge for yourself.</p>
+              )}
+            </div>
+
+            {diag.recommendations.length > 0 && (
+              <section className="dx-block">
+                <h5 className="dx-h"><Lightbulb size={13} /> What to do next <span className="dx-h-note">best first</span></h5>
+                <ol className="dx-fixes">
+                  {diag.recommendations.map((f, i) => (
+                    <li key={i} className="dx-fix">
+                      <div className="dx-fix-body">
+                        <div className="dx-fix-label">{f.label}</div>
+                        {f.detail && <div className="dx-fix-detail">{f.detail}</div>}
+                      </div>
+                      {f.op && (
+                        <Button kind="btn" variant={i === 0 ? "primary" : "ghost"} autoPending
+                          onClick={() => sendControl(f.op, f.task || taskId)}>{f.op}</Button>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+
+            {diag.timeline.length > 0 && (
+              <section className="dx-block">
+                <h5 className="dx-h"><ListChecks size={13} /> How it got there</h5>
+                <ol className="dx-timeline">
+                  {diag.timeline.map((s, i) => (
+                    <li key={i}>
+                      <span className="dx-step-n tnum">{i + 1}</span>
+                      <span className="dx-step-text">{s.text}</span>
+                      {s.when && <span className="dx-step-when mono">{s.when}</span>}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+
+            {diag.evidence.length > 0 && (
+              <section className="dx-block">
+                <h5 className="dx-h"><FileText size={13} /> Raw excerpts <span className="dx-h-note">verbatim, unedited</span></h5>
+                {diag.evidence.map((e, i) => (
+                  <div key={i} className="dx-ev">
+                    {e.source && <div className="dx-ev-src mono">{e.source}</div>}
+                    <pre className="dx-ev-text mono">{e.text}</pre>
+                  </div>
+                ))}
+              </section>
+            )}
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/* ------------------------------ pre-launch cost estimate ------------------------------ */
+
+export type RunProfile = "cheap" | "standard" | "thorough";
+
+export const RUN_PROFILES: Array<{ key: RunProfile; label: string; blurb: string }> = [
+  { key: "cheap", label: "Cheap", blurb: "Smaller model, fewer retries. Good for mechanical tickets." },
+  { key: "standard", label: "Standard", blurb: "Your configured setup — the usual balance." },
+  { key: "thorough", label: "Thorough", blurb: "More thinking, more retries. For the ones that keep failing." },
+];
+
+export interface ForecastTicket { id: string; title: string; usd: number; durationS: number | null }
+export interface ProfileForecast {
+  profile: RunProfile;
+  usd: number; lowUsd: number | null; highUsd: number | null;
+  durationS: number | null; basis: string; confidence: number | null;
+  tickets: ForecastTicket[];
+  /** The server's own object, posted back with /api/run so the run records the
+   *  estimate it was launched against. */
+  raw: unknown;
+}
+
+/** How the number was reached — stated plainly, because a heuristic guess and a
+ *  history-backed estimate deserve very different trust. */
+export const FORECAST_BASIS: Record<string, string> = {
+  history: "based on your past runs",
+  heuristic: "a heuristic guess — no comparable run yet",
+  blend: "your past runs blended with a heuristic",
+};
+
+function parseProfileForecast(profile: RunProfile, raw: unknown): ProfileForecast {
+  const f = asRec(raw);
+  const range = asRec(f["range"]);
+  return {
+    profile,
+    usd: asNum(f["usd"]) ?? asNum(f["totalUsd"]) ?? 0,
+    lowUsd: asNum(f["lowUsd"]) ?? asNum(range["low"]),
+    highUsd: asNum(f["highUsd"]) ?? asNum(range["high"]),
+    durationS: asNum(f["durationS"]) ?? asNum(f["etaS"]),
+    basis: asStr(f["basis"]),
+    confidence: asNum(f["confidence"]),
+    tickets: asArr(f["tickets"] ?? f["perTicket"]).map((t): ForecastTicket => {
+      const o = asRec(t);
+      return {
+        id: asStr(o["id"]), title: asStr(o["title"]),
+        usd: asNum(o["usd"]) ?? 0, durationS: asNum(o["durationS"]) ?? asNum(o["etaS"]),
+      };
+    }),
+    raw,
+  };
+}
+
+/** The payload may key its forecasts by profile or list them — accept both. */
+function parseForecasts(raw: unknown): Map<RunProfile, ProfileForecast> {
+  const top = asRec(raw);
+  const box: unknown = top["forecasts"] ?? top["profiles"] ?? raw;
+  const pairs: Array<[string, unknown]> = Array.isArray(box)
+    ? box.map((f): [string, unknown] => [asStr(asRec(f)["profile"]), f])
+    : Object.entries(asRec(box));
+  const out = new Map<RunProfile, ProfileForecast>();
+  for (const [key, value] of pairs) {
+    const p = RUN_PROFILES.find((x) => x.key === key);
+    if (p) out.set(p.key, parseProfileForecast(p.key, value));
+  }
+  return out;
+}
+
+/**
+ * The last thing between the operator and a run that spends money: how many
+ * tickets go out, what each profile is likely to cost, and where the budget
+ * stands. Everything the old run guard warned about is still here — API mode,
+ * sandbox readiness, the budget cap — because a nicer estimate is no excuse to
+ * drop a warning. If the forecast can't be fetched the dialog degrades to that
+ * plain confirmation: the operator can always launch.
+ */
+export function RunEstimateModal(
+  { tickets, budgetUsd, avgCost, onClose, onSettings }:
+  { tickets: number; budgetUsd: number | null; avgCost: number | null;
+    onClose: () => void; onSettings: () => void },
+): JSX.Element {
+  const [profile, setProfile] = useState<RunProfile>("standard");
+  const [forecasts, setForecasts] = useState<Map<RunProfile, ProfileForecast> | null>(null);
+  const [fcErr, setFcErr] = useState(false);
+  // The guard is about the NEXT run, so read the current settings (not the last
+  // run's mode) — a toggle saved but not yet run must still warn.
+  const [apiMode, setApiMode] = useState(false);
+  const [sandbox, setSandbox] = useState(false);
+  const [dockerReady, setDockerReady] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void fetchJSON<Record<string, unknown>>("/api/forecast")
+      .then((r) => { if (alive) setForecasts(parseForecasts(r)); })
+      .catch(() => { if (alive) { setForecasts(new Map()); setFcErr(true); } });
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    void fetchJSON<{ content: string }>("/api/config")
+      .then((r) => {
+        const s = parseSettings(r.content);
+        setApiMode(s.executionMode === "api");
+        setSandbox(s.isolation === "sandbox");
+      })
+      .catch(() => { /* offline */ });
+  }, []);
+  useEffect(() => {
+    if (!sandbox) { setDockerReady(null); return; }
+    void fetchJSON<DockerStatus>("/api/docker")
+      .then((d) => setDockerReady(Boolean(d.engine) && Boolean(d.image)))
+      .catch(() => setDockerReady(false));
+  }, [sandbox]);
+
+  const sel = forecasts?.get(profile) ?? null;
+  const noCap = budgetUsd === null || budgetUsd <= 0;
+  const overCap = sel !== null && !noCap && (sel.highUsd ?? sel.usd) > budgetUsd!;
+  const conf = pct(sel?.confidence ?? null);
+  const fallback = avgCost !== null ? avgCost * tickets : null;
+
+  const start = async (): Promise<void> => {
+    try {
+      await postJSON("/api/run", { profile, ...(sel ? { forecast: sel.raw } : {}) });
+      toast(`Run starting on the ${profile} profile — remaining tickets replay with the current config.`);
+      onClose();
+    } catch (err) { toast(String(err), true); }
+  };
+
+  return (
+    <Modal title="Start this run?" onClose={onClose} wide>
+      <div className="work-form">
+        <div className="run-guard-line">
+          <span className="rg-n">{tickets}</span>
+          <span>ticket{tickets === 1 ? "" : "s"} will run (everything not yet merged).</span>
+        </div>
+
+        <div className="rf-profiles" role="radiogroup" aria-label="Run profile">
+          {RUN_PROFILES.map((p) => {
+            const f = forecasts?.get(p.key) ?? null;
+            return (
+              <button key={p.key} role="radio" aria-checked={profile === p.key}
+                className={`rf-profile${profile === p.key ? " on" : ""}`} onClick={() => setProfile(p.key)}>
+                <span className="rf-profile-name">{p.label}</span>
+                <span className="rf-profile-cost tnum">{f ? fmtUsd(f.usd) : "—"}</span>
+                <span className="rf-profile-blurb">{p.blurb}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {forecasts === null && <Skeleton lines={3} />}
+
+        {sel !== null && (
+          <div className="rf-estimate">
+            <div className="rf-figures">
+              <div className="rf-fig">
+                <span className="rf-fig-n tnum">{fmtUsd(sel.usd)}</span>
+                <span className="rf-fig-k"><DollarSign size={12} /> estimated total</span>
+                {(sel.lowUsd !== null || sel.highUsd !== null) && (
+                  <span className="rf-range tnum">
+                    {fmtUsd(sel.lowUsd ?? sel.usd)} – {fmtUsd(sel.highUsd ?? sel.usd)}
+                  </span>
+                )}
+              </div>
+              {sel.durationS !== null && (
+                <div className="rf-fig">
+                  <span className="rf-fig-n tnum">{fmtDuration(sel.durationS)}</span>
+                  <span className="rf-fig-k"><Timer size={12} /> estimated wall time</span>
+                </div>
+              )}
+            </div>
+            <div className="rf-basis">
+              {FORECAST_BASIS[sel.basis] ?? "estimate"}
+              {conf !== null && <> · <span className="tnum">{conf}%</span> confidence</>}
+            </div>
+            {sel.tickets.length > 0 && (
+              <ul className="rf-breakdown">
+                {sel.tickets.map((t, i) => (
+                  <li key={t.id || i}>
+                    <span className="kcard-id">{t.id}</span>
+                    <span className="rf-bd-title">{t.title}</span>
+                    {t.durationS !== null && <span className="rf-bd-dur tnum">{fmtDuration(t.durationS)}</span>}
+                    <span className="rf-bd-cost tnum">{fmtUsd(t.usd)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {fcErr && (
+          <p className="work-hint">
+            No estimate this time — the forecast didn’t answer. {fallback !== null
+              ? <>Your past runs averaged <b>{fmtUsd(avgCost!)}</b> per merged ticket, so roughly <b>{fmtUsd(fallback)}</b> for this one. A rough guide, not a quote.</>
+              : <>You can still start the run.</>}
+          </p>
+        )}
+
+        {apiMode && (
+          <div className="run-guard-budget warn">
+            <Key size={14} /> <b>API mode</b> — this run bills real dollars to your <code>ANTHROPIC_API_KEY</code>.
+            <button className="btn link" onClick={onSettings}>Switch to Subscription</button>
+          </div>
+        )}
+        {sandbox && (
+          dockerReady === false ? (
+            <div className="run-guard-budget warn">
+              <Lock size={14} /> <b>Sandbox selected, but Docker isn’t ready</b> — the run will fail until the engine is up and the image is built.
+              <button className="btn link" onClick={onSettings}>Fix in Settings</button>
+            </div>
+          ) : (
+            <div className="run-guard-budget">
+              <Lock size={14} /> <b>Sandbox mode</b> — agents run confined: only their worktree is visible, egress limited to Anthropic.
+            </div>
+          )
+        )}
+
+        <div className={`run-guard-budget${noCap || overCap ? " warn" : ""}`}>
+          {noCap
+            ? <>No budget cap — this run can spend without a limit. <button className="btn link" onClick={onSettings}>Set a cap</button></>
+            : overCap
+              ? <>Budget cap in force: <b>{fmtUsd(budgetUsd!)}</b> — the high end of this estimate goes past it, so the run may stop before every ticket is done. <button className="btn link" onClick={onSettings}>Raise it</button></>
+              : <>Budget cap in force: <b>{fmtUsd(budgetUsd!)}</b>. The run stops launching new agents once it’s reached.</>}
+        </div>
+      </div>
+      <div className="panel-foot spread modal-foot">
+        <button className="btn ghost" onClick={onClose}>Cancel</button>
+        <Button kind="btn" variant="primary" autoPending onClick={start}><Play size={14} /> Start run</Button>
+      </div>
+    </Modal>
   );
 }
 

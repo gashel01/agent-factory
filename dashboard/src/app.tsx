@@ -32,9 +32,9 @@ import type { LucideIcon } from "./icons.js";
 import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, HotspotsPanel, IntegrationBanner, Kanban, ModalState, RERUNNABLE, RemovedModal, Screen, SyncNote, headline, parseTicketDeps } from "./board.js";
 import { CockpitModal, PreviewModal, RepoModal } from "./cockpit.js";
 import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useCompanion, useEventStream, useNotifyPref, useNow, useRunActive, useStateAlerts } from "./core.js";
-import { DocsModal, LogModal, Row, SettingsModal, describe } from "./modals.js";
-import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, RunGuardModal, SupervisorDock, useTheme } from "./screens.js";
-import { CommandPalette, ConfirmButton, OverflowMenu, Select, UsageCard, quickRun, sendControl, useBacklog, useHidden } from "./widgets.js";
+import { DiagnosticsModal, DocsModal, LogModal, Row, RunEstimateModal, SettingsModal, describe } from "./modals.js";
+import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, SupervisorDock, useTheme } from "./screens.js";
+import { CommandPalette, ConfirmButton, OverflowMenu, Select, UsageCard, sendControl, useBacklog, useHidden } from "./widgets.js";
 // The command-palette item type. Aliased because the bare name `Command` is also a
 // Lucide icon value imported above; in the pre-split monolith the value-import and
 // the interface merged in one file — apart, the type must be pulled in explicitly.
@@ -143,6 +143,7 @@ function App(): JSX.Element {
   const openAnswer = (t: TaskModel) =>
     setModal({ type: "answer", taskId: t.id, title: t.title, question: t.note ?? "",
                context: t.blockedContext });
+  const openDiagnose = (t: TaskModel) => setModal({ type: "diagnostics", taskId: t.id, title: t.title });
   const openLesson = (t: TaskModel) =>
     setModal({ type: "lesson", draft: { text: t.note ? `${t.note}\n\nLesson: ` : "", ticketId: t.id } });
   const openDiff = (t: TaskModel) => {
@@ -176,7 +177,7 @@ function App(): JSX.Element {
       { id: "appearance", group: "Open", label: "Appearance", run: () => setModal({ type: "appearance" }) },
     ];
     if (runnableCount > 0) {
-      nav.splice(1, 0, { id: "runagain", group: "Actions", label: `Run again (${runnableCount} ticket${runnableCount > 1 ? "s" : ""})`, run: () => setModal({ type: "runguard" }) });
+      nav.splice(1, 0, { id: "runagain", group: "Actions", label: `Run again (${runnableCount} ticket${runnableCount > 1 ? "s" : ""})`, hint: "estimate first", run: () => setModal({ type: "runestimate", tickets: runnableCount }) });
     }
     const toggles: CmdItem[] = [
       { id: "view", group: "Toggle", label: view === "focus" ? "Switch to Kanban view" : "Switch to Focus view", hint: "f", run: () => setView(view === "focus" ? "kanban" : "focus") },
@@ -388,7 +389,7 @@ function App(): JSX.Element {
                     <ConfirmButton label={<><Square size={13} /> Stop all</>} confirm="Sure? Click again" plain className="hbtn" onConfirm={() => void sendControl("stop")} />
                   </>
                 ) : (
-                  <button className="hbtn accent" onClick={() => setModal({ type: "runguard" })}>
+                  <button className="hbtn accent" onClick={() => setModal({ type: "runestimate", tickets: willRun })}>
                     <Play size={14} /> {model.run ? "Run again" : "Start run"} ({willRun})
                   </button>
                 )}
@@ -454,7 +455,8 @@ function App(): JSX.Element {
         </div>
       ) : (
         <Kanban tasks={shownTasks} live={live} now={now} onLog={openLog}
-          onAnswer={openAnswer} onLesson={openLesson} onDiff={openDiff} focus={view === "focus"}
+          onAnswer={openAnswer} onLesson={openLesson} onDiff={openDiff} onDiagnose={openDiagnose}
+          focus={view === "focus"}
           pending={pending} manual={manual} onAddTicket={() => setModal({ type: "newwork", tab: "one" })}
           onEditTicket={(bt) => setModal({ type: "editticket", ticket: bt })}
           onRemoveTicket={removeTicket} onRemoveTask={removeTask}
@@ -477,12 +479,15 @@ function App(): JSX.Element {
       {modal?.type === "appearance" && (
         <AppearanceModal theme={theme} onClose={() => setModal(null)} />
       )}
-      {modal?.type === "runguard" && (
-        <RunGuardModal runnable={willRun} budgetUsd={model.budgetUsd}
+      {modal?.type === "runestimate" && (
+        <RunEstimateModal tickets={modal.tickets} budgetUsd={model.budgetUsd}
           avgCost={done.length > 0 && spent > 0 ? spent / done.length : null}
           onClose={() => setModal(null)}
-          onConfirm={async () => { await quickRun(); setModal(null); }}
           onSettings={() => setModal({ type: "settings" })} />
+      )}
+      {modal?.type === "diagnostics" && (
+        <DiagnosticsModal taskId={modal.taskId} title={modal.title} run={model.run}
+          onClose={() => setModal(null)} />
       )}
       {modal?.type === "diff" && (
         <DiffModal taskId={modal.taskId} title={modal.title} diff={modal.diff}
