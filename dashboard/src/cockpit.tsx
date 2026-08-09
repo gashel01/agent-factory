@@ -859,3 +859,133 @@ export function Diff({ text, review }: { text: string; review?: ReviewProps }): 
   );
 }
 
+
+/* --------------------------------- pull requests + branches --------------------------------- */
+
+interface PullRequest {
+  number: number;
+  title: string;
+  headRefName: string;
+  baseRefName: string;
+  url: string;
+  mergeable: string; // MERGEABLE | CONFLICTING | UNKNOWN
+  isDraft: boolean;
+}
+
+/**
+ * Closes the PR-mode loop inside Warden: lists the repo's open PRs and merges or
+ * closes them from the board (via `gh`), instead of sending you to github.com.
+ * Also shows the branch list. Resolves the repo from the current workspace, so it
+ * works right after opening a project (repoPath() may still be empty then).
+ */
+export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => void }): JSX.Element {
+  const [repo, setRepo] = useState("");
+  const [prs, setPrs] = useState<PullRequest[] | null>(null);
+  const [branches, setBranches] = useState<{ list: string[]; current: string }>({ list: [], current: "" });
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState<number | null>(null);
+
+  const load = async (r: string): Promise<void> => {
+    try {
+      const p = await fetchJSON<{ prs?: PullRequest[]; error?: string }>(
+        `/api/prs?repo=${encodeURIComponent(r)}`,
+      );
+      setPrs(p.prs ?? []);
+      setErr(p.error ?? "");
+    } catch { setPrs([]); setErr("could not reach the server"); }
+    try {
+      const b = await fetchJSON<{ branches?: string[]; current?: string }>(
+        `/api/repo/branches?repo=${encodeURIComponent(r)}`,
+      );
+      setBranches({ list: b.branches ?? [], current: b.current ?? "" });
+    } catch { /* branches are secondary */ }
+  };
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      let r = repoPath();
+      if (!r) {
+        try {
+          const list = await fetchJSON<{ workspaces?: Array<{ name: string; repo: string | null }> }>(
+            "/api/workspaces",
+          );
+          r = (list.workspaces ?? []).find((w) => w.name === ws)?.repo ?? "";
+        } catch { /* */ }
+      }
+      if (!live) return;
+      setRepo(r);
+      if (r) await load(r);
+      else { setPrs([]); setErr("no repository set for this project"); }
+    })();
+    return () => { live = false; };
+  }, [ws]);
+
+  const act = async (n: number, kind: "merge" | "close"): Promise<void> => {
+    setBusy(n);
+    try {
+      const r = await postJSON<{ ok?: boolean; error?: string }>(`/api/prs/${kind}`, { repo, number: n });
+      if (r.ok) { toast(`PR #${n} ${kind === "merge" ? "merged" : "closed"}.`); await load(repo); }
+      else toast(r.error || `could not ${kind} PR #${n}`, true);
+    } catch (e) { toast(String(e), true); }
+    finally { setBusy(null); }
+  };
+
+  const mergeable = (m: string): { text: string; cls: string } =>
+    m === "MERGEABLE" ? { text: "ready", cls: "ok" }
+      : m === "CONFLICTING" ? { text: "conflicts", cls: "bad" }
+        : { text: "checking…", cls: "warn" };
+
+  return (
+    <Modal title="Pull requests" onClose={onClose} wide>
+      {err && <p className="pr-note">{err}</p>}
+      {prs === null ? (
+        <p className="pr-note">Loading…</p>
+      ) : prs.length === 0 ? (
+        !err && <p className="pr-note">No open pull requests. When a run lands in PR mode, they show up here.</p>
+      ) : (
+        <ul className="pr-list">
+          {prs.map((pr) => {
+            const m = mergeable(pr.mergeable);
+            return (
+              <li key={pr.number} className="pr-row">
+                <div className="pr-main">
+                  <a className="pr-num" href={pr.url} target="_blank" rel="noreferrer">
+                    #{pr.number} <ExternalLink size={11} />
+                  </a>
+                  <span className="pr-title">{pr.title}</span>
+                </div>
+                <div className="pr-meta">
+                  <span className="pr-branch"><GitBranch size={11} /> {pr.headRefName} → {pr.baseRefName}</span>
+                  <span className={`pr-mergeable ${m.cls}`}>{pr.isDraft ? "draft" : m.text}</span>
+                </div>
+                <div className="pr-actions">
+                  <Button kind="btn" variant="primary" pending={busy === pr.number}
+                    disabled={pr.isDraft || pr.mergeable === "CONFLICTING" || busy !== null}
+                    onClick={() => act(pr.number, "merge")}>
+                    <GitMerge size={13} /> Merge
+                  </Button>
+                  <ConfirmButton label="Close" confirm="Close PR?" onConfirm={() => act(pr.number, "close")} />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="pr-branches">
+        <div className="pr-branches-head"><GitBranch size={12} /> Branches</div>
+        {branches.list.length === 0 ? (
+          <span className="pr-note">—</span>
+        ) : (
+          <ul>
+            {branches.list.map((b) => (
+              <li key={b} className={b === branches.current ? "cur" : ""}>
+                {b}{b === branches.current ? " · current" : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Modal>
+  );
+}

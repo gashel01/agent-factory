@@ -3,12 +3,31 @@
  * branches/log/diff), and the guarded branch switch. Runs before per-workspace
  * resolution. (The per-workspace /api/repo/path lives with the workspace routes.) */
 
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 import { json, readBody, runCmd } from "./server-core.js";
 import { BOOTSTRAP_GITIGNORE } from "./server-preview.js";
 import type { RouteCtx } from "./server-routes.js";
+
+/** Run `gh` capturing stdout SEPARATELY from stderr, so `--json` output parses
+ *  cleanly (runCmd merges the two, and gh's notices would corrupt the JSON). */
+function ghJson(args: string[], cwd: string): Promise<{ ok: boolean; data: unknown; err: string }> {
+  return new Promise((res) => {
+    const child = spawn("gh", args, { cwd, shell: false, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (c) => (out += c));
+    child.stderr.on("data", (c) => (err += c));
+    child.on("error", (e) => res({ ok: false, data: null, err: String(e) }));
+    child.on("exit", (code) => {
+      if (code !== 0) return res({ ok: false, data: null, err: (err || out).trim() });
+      try { res({ ok: true, data: JSON.parse(out || "[]"), err: "" }); }
+      catch { res({ ok: false, data: null, err: "unreadable gh output" }); }
+    });
+  });
+}
 
 export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
   const { req, res, url, registry } = ctx;
@@ -197,6 +216,45 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       const result = await runCmd("git", ["switch", branch], repo);
       if (result.code !== 0) throw new Error(result.output.trim());
       json(res, 200, { ok: true, output: `now on ${branch}` });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  // Pull requests (GitHub, via gh) — list open PRs and merge/close them from the
+  // board, so PR mode's loop closes inside Warden instead of on github.com.
+  if (url.pathname === "/api/prs" && req.method === "GET") {
+    const repo = resolve(url.searchParams.get("repo") ?? "");
+    if (!repo || !existsSync(join(repo, ".git"))) {
+      json(res, 400, { prs: [], error: "repo must be an existing git repository" });
+      return true;
+    }
+    const r = await ghJson(
+      ["pr", "list", "--state", "open", "--limit", "30",
+       "--json", "number,title,headRefName,baseRefName,url,mergeable,isDraft,createdAt"],
+      repo,
+    );
+    // Degrade softly: no gh / not a GitHub remote just means "no PRs to show".
+    json(res, 200, r.ok ? { prs: r.data } : { prs: [], error: r.err || "gh unavailable" });
+    return true;
+  }
+
+  if ((url.pathname === "/api/prs/merge" || url.pathname === "/api/prs/close")
+      && req.method === "POST") {
+    try {
+      const { repo: repoIn, number } = JSON.parse(await readBody(req)) as {
+        repo?: string; number?: number;
+      };
+      const repo = resolve(repoIn ?? "");
+      if (!repo || !existsSync(join(repo, ".git"))) throw new Error("bad repo");
+      if (!Number.isInteger(number) || (number as number) <= 0) throw new Error("bad PR number");
+      const args = url.pathname.endsWith("/merge")
+        ? ["pr", "merge", String(number), "--merge", "--delete-branch"]
+        : ["pr", "close", String(number)];
+      const result = await runCmd("gh", args, repo);
+      if (result.code !== 0) throw new Error(result.output.trim() || "gh command failed");
+      json(res, 200, { ok: true, output: result.output.trim() });
     } catch (err) {
       json(res, 400, { ok: false, error: String(err) });
     }
