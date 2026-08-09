@@ -40,6 +40,10 @@ import type {
 } from "./types.js";
 import { type CompanionCtx, type ObsAction, type Observation, foldRun, newCtx, observe } from "./companion.js";
 import { capsuleDiff, extractCapsule, extractConsents, parseVerdict } from "./capsule-core.js";
+import {
+  attachPendingForecast, buildForecasts, diagnoseTask, isSafeId, reconcileRun, savePendingForecast,
+} from "./insights.js";
+import type { Forecast } from "./forecast.js";
 
 interface Options {
   workdir: string;
@@ -2042,6 +2046,10 @@ function main(): void {
       const newest = latestRun(ws.tailer.runsDir);
       if (newest && newest !== ws.tailer.run) ws.tailer.switchTo(newest);
       ws.tailer.poll();
+      // A forecast committed at /api/run parks under forecasts/pending.json because
+      // the run id did not exist yet. Bind it to the run as soon as one is known;
+      // the call is idempotent and costs a single stat once there is nothing pending.
+      if (ws.tailer.run) attachPendingForecast(ws.workdir, ws.tailer.run);
       const t = ws.tailer;
       const pending = t.pendingWrapup;
       if (pending) {
@@ -3002,6 +3010,52 @@ function main(): void {
       return;
     }
 
+    /* ---------------- diagnostics + cost forecast ---------------- */
+
+    if (url.pathname === "/api/diagnostics" && req.method === "GET") {
+      // Why did this task fail? Events + the tail of its agent log, analysed by the
+      // pure core in diagnostics.ts. Defaults to the run the board is showing.
+      const task = url.searchParams.get("task") ?? "";
+      const run = url.searchParams.get("run") ?? ws.tailer.run;
+      if (!isSafeId(task)) {
+        json(res, 400, { ok: false, error: "bad task id" });
+        return;
+      }
+      if (!run || !isSafeId(run)) {
+        json(res, 400, { ok: false, error: "bad or missing run id" });
+        return;
+      }
+      const diagnosis = diagnoseTask(ws.tailer.runsDir, run, task);
+      if (!diagnosis) {
+        // Unknown task, not a broken one: a diagnosis for a typo would look
+        // authoritative while being about nothing.
+        json(res, 404, { ok: false, error: "no data for this task in this run" });
+        return;
+      }
+      json(res, 200, { diagnosis });
+      return;
+    }
+
+    if (url.pathname === "/api/forecast" && req.method === "GET") {
+      // What the current backlog would cost under each profile, calibrated against
+      // this workspace's own past runs.
+      const { profiles, forecasts, history } = buildForecasts(ws.tailer.runsDir, backlogDir);
+      json(res, 200, { profiles, forecasts, history });
+      return;
+    }
+
+    if (url.pathname === "/api/forecast/actual" && req.method === "GET") {
+      // Predicted vs actual for a run. `null` means nothing was forecast for it —
+      // an honest absence, not an error.
+      const run = url.searchParams.get("run") ?? ws.tailer.run;
+      if (!run || !isSafeId(run)) {
+        json(res, 400, { ok: false, error: "bad or missing run id" });
+        return;
+      }
+      json(res, 200, { reconciliation: reconcileRun(ws.workdir, ws.tailer.runsDir, run) });
+      return;
+    }
+
     if (url.pathname === "/api/ticket/complete" && req.method === "POST") {
       // Expand a hand-written ticket into a proper Goal + Done-when body, on demand.
       try {
@@ -3099,10 +3153,17 @@ function main(): void {
 
     if (url.pathname === "/api/run" && req.method === "POST") {
       try {
-        const { slots } = JSON.parse(await readBody(req)) as { slots?: number };
+        const { slots, profile, forecast } = JSON.parse(await readBody(req)) as
+          { slots?: number; profile?: string; forecast?: Forecast };
         if (ws.jobs.run.state === "running") throw new Error("a run is already in progress");
         const args = ["run"];
         if (slots && Number.isFinite(slots) && slots > 0) args.push("--slots", String(slots));
+        // If the operator committed to a quote, park it BEFORE spawning: `factory
+        // run` mints the run id, so the forecast waits under forecasts/pending.json
+        // and the poll loop binds it the moment the run appears. Saving first means
+        // a run can never start unrecorded; saving after the "already running"
+        // check means a rejected run leaves nothing behind.
+        if (forecast) savePendingForecast(ws.workdir, forecast, profile);
         // The run reads project lessons from its own workdir; the shared global
         // lessons live outside it, so hand their path over explicitly.
         spawnJob(ws, "run", opts.factory, args, { FACTORY_GLOBAL_MEMORY: globalMemFile });

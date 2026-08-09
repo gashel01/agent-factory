@@ -249,6 +249,37 @@ export interface CapsuleView {
   services: Record<string, CapsuleServiceState>; // actionId -> live server state
 }
 
+/* ==================== diagnostics + cost forecast ====================
+ * The wire shapes of /api/diagnostics, /api/forecast and /api/forecast/actual.
+ * Re-exported, never redeclared: the cores own these definitions, and a second
+ * copy here would drift the moment one of them changes. Type-only, so the client
+ * bundle never pulls in the fs-backed insights module. */
+
+export type {
+  AgentLogEntry,
+  Diagnosis,
+  Evidence,
+  FailureCategory,
+  Recommendation,
+  RecommendationAction,
+  TimelineStep,
+} from "./diagnostics.js";
+
+export type {
+  Forecast,
+  HistoryStats,
+  ModelStats,
+  Profile,
+  ProfileId,
+  Reconciliation,
+  TaskForecast,
+  TaskReconciliation,
+  TicketMeta,
+  TokenMix,
+} from "./forecast.js";
+
+export type { ForecastBundle, ForecastHistory, StoredForecast } from "./insights.js";
+
 export type FactoryEvent =
   | RunStartEvent
   | StateEvent
