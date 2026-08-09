@@ -57,6 +57,12 @@ Rules for a good decomposition:
   one-liner in the repo's language (node -e / python -c) for content checks.
 - Each body must contain: ## Context, ## Success criteria, ## Out of scope.
 - Budget honestly: timeout_min 10-45 depending on size.
+- Assign each ticket a "model" to control cost. Set "model": "haiku" ONLY for a
+  genuinely trivial, mechanical ticket a cheap model nails first try — a config or
+  copy tweak, a tiny script, setting up a test harness, a small wiring change. OMIT
+  "model" (the run default, a stronger model) for anything logic-heavy, algorithmic,
+  or risky: a cheap model there just fails and retries, costing MORE than it saved.
+  When unsure, omit it. Most tickets should omit it; reach for haiku deliberately.
 
 Also return a "brief": a compact, durable project map (~150-300 words) that a
 FUTURE agent can read INSTEAD of re-exploring the whole repo. Include: what the
@@ -65,10 +71,12 @@ conventions to follow, and the exact build/test commands. If a project map is
 already provided below, trust it — verify only what your goal touches — and
 return it updated, not rewritten from scratch.
 
-End your final message with a strict JSON block (no fences):
+End your final message with a strict JSON block (no fences). "model" is optional —
+include it (e.g. "haiku") only on a trivial ticket, omit it otherwise:
 {"status": "done", "brief": "<the project map>", "tickets": [{"id": "001",
  "title": "...", "files_hint": ["src/x.py"], "depends_on": [], "priority": 1,
- "timeout_min": 30, "verify": ["pytest -q"], "body": "## Context\\n..."}]}
+ "timeout_min": 30, "verify": ["pytest -q"], "model": "haiku",
+ "body": "## Context\\n..."}]}
 
 If the goal is too vague to decompose safely, return
 {"status": "blocked", "summary": "<the precise question you need answered>"}.
@@ -306,7 +314,7 @@ def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
             "max_retries": 2,
             "budget": {
                 "timeout_min": _plan_int(t.get("timeout_min"), 30, "timeout_min"),
-                "max_turns": 50,
+                "max_turns": 65,
             },
             "verify": _as_list(t.get("verify")),
         }
@@ -319,7 +327,7 @@ def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
         lines.append(f"priority: {front['priority']}")
         lines.append("max_retries: 2")
         lines.append(
-            f"budget: {{ timeout_min: {front['budget']['timeout_min']}, max_turns: 50 }}"
+            f"budget: {{ timeout_min: {front['budget']['timeout_min']}, max_turns: 65 }}"
         )
         lines.append(f"verify: {json.dumps(front['verify'])}")
         if t.get("model"):

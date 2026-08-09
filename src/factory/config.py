@@ -148,6 +148,10 @@ class Config:
     # task that keeps failing review does not silently burn the subscription: each
     # retry is a full agent run. A ticket can still override with its own max_retries.
     default_max_retries: int = 1
+    # Times a task that ran out of its turn budget may be RESUMED to continue
+    # (distinct from retries, which are for failures). Bounds a genuinely stuck
+    # ticket that would otherwise resume forever without finishing.
+    max_continuations: int = 2
     # Cost ceiling for the whole run, in API-equivalent USD (the number the CLI
     # reports per agent). None = no cap. When cumulative spend crosses it, no new
     # agents launch; in-flight ones finish. A visible, adjustable safety net.
@@ -254,6 +258,9 @@ def load_config(path: Path | None) -> Config:
             conc.get("stagger_seconds"), 20.0, "concurrency.stagger_seconds"
         ),
         default_max_retries=_cfg_int(conc.get("max_retries"), 1, "concurrency.max_retries"),
+        max_continuations=_cfg_int(
+            conc.get("max_continuations"), 2, "concurrency.max_continuations"
+        ),
         budget_usd=(
             _cfg_float(budget["max_usd"], 0.0, "budget.max_usd")
             if budget.get("max_usd") not in (None, "")

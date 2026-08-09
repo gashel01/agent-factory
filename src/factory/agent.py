@@ -515,6 +515,15 @@ async def run_agent(
             "ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None, session, usage,
             rate_limit_info=rli,
         )
+    if out.result is not None and out.result.get("subtype") == "error_max_turns":
+        # The agent ran out of turn budget mid-task. This is NOT a failure — it was
+        # progressing and simply needs more turns. The worktree holds its work so
+        # far, so the dispatcher resumes the SAME session to continue (a fraction of
+        # a cold restart) instead of burning a retry on a phantom "error".
+        return AgentResult(
+            "maxturns", "hit the turn budget before finishing", turns, out.wall_s,
+            None, session, usage, rate_limit_info=rli,
+        )
     if out.returncode != 0 or out.result is None:
         summary = out.stderr_tail or f"agent exited {out.returncode} without a result"
         return AgentResult(

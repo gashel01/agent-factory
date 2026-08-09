@@ -670,6 +670,29 @@ class Dispatcher:
                     f"{result.summary[:160]}"
                 )
                 return
+            if result.status == "maxturns":
+                # The agent ran out of turns but was progressing — resume its session
+                # to CONTINUE rather than fail. Capped (max_continuations) so a stuck
+                # ticket can't loop forever, and it does NOT consume a retry. With no
+                # session to resume, or once the cap is hit, fall through to a normal
+                # retryable failure.
+                if result.session_id and task.continuations < self.cfg.max_continuations:
+                    task.continuations += 1
+                    task.resume_session = result.session_id
+                    task.failure_notes.append(
+                        "You ran out of your turn budget before finishing. Your work is "
+                        "intact in the worktree — continue from where you stopped, run "
+                        "the success criteria, and finish the ticket."
+                    )
+                    self._parked_retry[task.id] = wt
+                    self.log.emit("continued", task=task.id, n=task.continuations)
+                    self._set_state(task, TaskState.QUEUED)
+                else:
+                    await self._retryable_failure(
+                        task, wt, None if task.resume_session else result.session_id,
+                        "ran out of turn budget repeatedly without finishing",
+                    )
+                return
             if result.status in ("timeout", "error"):
                 # A resumed attempt that errored again does NOT re-park: the
                 # session may be the problem, so the next attempt starts fresh.
