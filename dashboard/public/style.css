@@ -1977,3 +1977,16 @@ body {
 /* Empty-state (no tickets and no drafts) — now actionable. */
 .empty-state-lead { font-size: 15px; color: var(--muted); margin: 0 0 14px; }
 .empty-state-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+/* Oversized-file advisory (HotspotsPanel) — a warm, dismissible note atop the board. */
+.hotspots { margin: 0 0 14px; border: 1px solid var(--st-blocked-bd); background: var(--st-blocked-bg); border-radius: var(--radius-sm); padding: 10px 12px; }
+.hotspots-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hotspots-title { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: var(--st-blocked-fg); font-size: 12.5px; }
+.hotspots-x { border: 0; background: transparent; color: var(--st-blocked-fg); cursor: pointer; display: inline-flex; padding: 2px; border-radius: 6px; opacity: .7; }
+.hotspots-x:hover { opacity: 1; background: color-mix(in srgb, var(--st-blocked-fg) 12%, transparent); }
+.hotspots-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.hotspots-list li { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.hotspots-path { font-family: var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+.hotspots-meta { color: var(--faint); white-space: nowrap; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.hotspots-split { flex: 0 0 auto; border: 1px solid var(--st-blocked-bd); background: var(--surface); color: var(--st-blocked-fg); font: 600 11px var(--sans); padding: 4px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.hotspots-split:hover { background: color-mix(in srgb, var(--st-blocked-fg) 10%, var(--surface)); }

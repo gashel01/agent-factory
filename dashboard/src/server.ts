@@ -963,6 +963,29 @@ function dockerPreflight(factory: string[]): Promise<Record<string, unknown>> {
   });
 }
 
+/** Ask the factory for the repo's oversized-file hotspots (one-shot subprocess,
+ *  deterministic — no agent, no tokens). Failures degrade to an empty list so a
+ *  missing/odd repo never breaks the screen that shows the advisory. */
+function hotspotsScan(factory: string[], repo: string): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    const [cmd, ...prefix] = factory;
+    const child = spawn(cmd!, [...prefix, "hotspots", "--repo", repo, "--json"], {
+      shell: false, windowsHide: true, env: process.env,
+    });
+    let out = "";
+    child.stdout.on("data", (c: Buffer) => (out += c.toString("utf-8")));
+    child.on("error", () => resolve({ hotspots: [] }));
+    child.on("exit", () => {
+      try {
+        const line = out.trim().split("\n").filter(Boolean).pop() ?? "{}";
+        resolve(JSON.parse(line) as Record<string, unknown>);
+      } catch {
+        resolve({ hotspots: [] });
+      }
+    });
+  });
+}
+
 /** Build the sandbox images in the background, streaming into sbxBuild.log. */
 function startDockerBuild(factory: string[]): void {
   if (sbxBuild.running) return;
@@ -2139,6 +2162,12 @@ function main(): void {
       if (sbxBuild.running) { json(res, 409, { ok: false, error: "a build is already running" }); return; }
       startDockerBuild(opts.factory);
       json(res, 200, { ok: true });
+      return;
+    }
+    if (url.pathname === "/api/hotspots" && req.method === "GET") {
+      const repo = url.searchParams.get("repo");
+      if (!repo) { json(res, 400, { hotspots: [], error: "repo is required" }); return; }
+      json(res, 200, await hotspotsScan(opts.factory, repo));
       return;
     }
     if (url.pathname === "/api/portfolio" && req.method === "GET") {
