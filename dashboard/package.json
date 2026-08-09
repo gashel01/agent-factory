@@ -7,7 +7,7 @@
   "scripts": {
     "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js && esbuild src/app.tsx --bundle --format=iife --outfile=dist/client.js --loader:.tsx=tsx --minify --define:process.env.NODE_ENV='\"production\"'",
     "typecheck": "tsc --noEmit",
-    "test": "esbuild test/capsule-core.test.ts --bundle --platform=node --format=esm --outfile=dist/test.mjs && node --test dist/test.mjs",
+    "test": "node scripts/run-tests.mjs",
     "start": "node dist/server.js"
   },
   "devDependencies": {
