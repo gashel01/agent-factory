@@ -650,7 +650,9 @@ export function FileTree({ paths, onOpen, activePath }: { paths: string[]; onOpe
   );
 }
 
-export function RepoModal({ onClose }: { onClose: () => void }): JSX.Element {
+export function RepoModal(
+  { onClose, initialFile }: { onClose: () => void; initialFile?: string },
+): JSX.Element {
   const repo = repoPath();
   const [tab, setTab] = useState<"files" | "history">("files");
   const [files, setFiles] = useState<string[]>([]);
@@ -663,6 +665,8 @@ export function RepoModal({ onClose }: { onClose: () => void }): JSX.Element {
     if (!repo) return;
     void repoGet<{ branches: string[]; current: string }>("branches").then(setBranches).catch(() => {});
     void repoGet<{ files: string[] }>("tree").then((r) => setFiles(r.files)).catch(() => {});
+    // Opened from a hotspot row (or any deep link): preview that file straight away.
+    if (initialFile) void openFile(initialFile);
   }, []);
   useEffect(() => {
     if (tab === "history") void repoGet<{ commits: typeof commits }>("log").then((r) => setCommits(r.commits)).catch(() => {});

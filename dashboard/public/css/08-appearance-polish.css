@@ -745,7 +745,8 @@ body {
 .hotspots-x:hover { opacity: 1; background: color-mix(in srgb, var(--st-blocked-fg) 12%, transparent); }
 .hotspots-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .hotspots-list li { display: flex; align-items: center; gap: 10px; font-size: 12px; }
-.hotspots-path { font-family: var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+.hotspots-path { font-family: var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; text-align: left; border: 0; background: transparent; padding: 0; cursor: pointer; }
+.hotspots-path:hover { color: var(--st-blocked-fg); text-decoration: underline; }
 .hotspots-meta { color: var(--faint); white-space: nowrap; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .hotspots-split { flex: 0 0 auto; border: 1px solid var(--st-blocked-bd); background: var(--surface); color: var(--st-blocked-fg); font: 600 11px var(--sans); padding: 4px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
 .hotspots-split:hover { background: color-mix(in srgb, var(--st-blocked-fg) 10%, var(--surface)); }
