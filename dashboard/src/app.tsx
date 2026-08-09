@@ -439,6 +439,7 @@ function App(): JSX.Element {
       </div>
       <HotspotsPanel
         ws={ws}
+        onOpenFile={(path) => setModal({ type: "repo", file: path })}
         onSplit={(path) => setModal({
           type: "newwork", tab: "goal", autostart: false,
           goal: `Split ${path} into smaller, cohesive modules. Pure mechanical refactor: `
@@ -472,7 +473,7 @@ function App(): JSX.Element {
         <EditTicketModal ticket={modal.ticket} onClose={() => setModal(null)}
           onSave={(content) => patchTicket(modal.ticket, content, `Ticket ${modal.ticket.id} updated.`)} />
       )}
-      {modal?.type === "repo" && <RepoModal onClose={() => setModal(null)} />}
+      {modal?.type === "repo" && <RepoModal onClose={() => setModal(null)} initialFile={modal.file} />}
       {modal?.type === "prs" && <PullRequestsModal ws={ws} onClose={() => setModal(null)} />}
       {modal?.type === "autopilot" && <AutopilotModal ws={ws} onClose={() => setModal(null)} />}
       {modal?.type === "preview" && <PreviewModal onClose={() => setModal(null)} onFiles={() => setModal({ type: "repo" })} />}

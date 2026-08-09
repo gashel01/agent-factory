@@ -44,7 +44,7 @@ export type ModalState =
   | { type: "settings" }
   | { type: "newwork"; tab?: "one" | "goal"; goal?: string; autostart?: boolean }
   | { type: "editticket"; ticket: BoardTicket }
-  | { type: "repo" }
+  | { type: "repo"; file?: string }
   | { type: "prs" }
   | { type: "autopilot" }
   | { type: "preview" }
@@ -788,9 +788,11 @@ export interface Hotspot {
  * split to the AI in one click. Dismissible; silent when the repo is clean.
  */
 export function HotspotsPanel(
-  { ws, onSplit }: { ws: string; onSplit: (path: string) => void },
+  { ws, onSplit, onOpenFile }:
+  { ws: string; onSplit: (path: string) => void; onOpenFile: (path: string) => void },
 ): JSX.Element | null {
   const [spots, setSpots] = useState<Hotspot[] | null>(null);
+  const [repo, setRepo] = useState("");
   const [dismissed, setDismissed] = useState(false);
   // Resolve the repo from the workspace itself, not repoPath() (localStorage —
   // empty right after opening a project, so the panel would never show). Refetch
@@ -804,6 +806,7 @@ export function HotspotsPanel(
           "/api/workspaces",
         );
         const repo = (list.workspaces ?? []).find((w) => w.name === ws)?.repo ?? "";
+        if (live) setRepo(repo);
         if (!repo) { if (live) setSpots([]); return; }
         const r = await fetchJSON<{ hotspots?: Hotspot[] }>(
           `/api/hotspots?repo=${encodeURIComponent(repo)}`,
@@ -830,7 +833,8 @@ export function HotspotsPanel(
       <ul className="hotspots-list">
         {spots.slice(0, 4).map((h) => (
           <li key={h.path}>
-            <span className="hotspots-path" title={h.path}>{h.path}</span>
+            <button type="button" className="hotspots-path" title={`Open ${h.path}`}
+              onClick={() => { if (repo) setRepoPath(repo); onOpenFile(h.path); }}>{h.path}</button>
             <span className="hotspots-meta">~{Math.round(h.estTokens / 1000)}k tokens · {h.edits} recent edits</span>
             <button className="hotspots-split" onClick={() => onSplit(h.path)}>Plan a split</button>
           </li>
