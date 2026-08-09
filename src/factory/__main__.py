@@ -188,8 +188,15 @@ def cmd_loop(args: argparse.Namespace) -> int:
     if not (repo / ".git").exists():
         print(f"error: {repo} is not a git repository", file=sys.stderr)
         return 2
+    if args.mode == "explicit" and not args.objective.strip():
+        print("error: explicit mode needs an objective", file=sys.stderr)
+        return 2
+    if args.mode == "backlog" and not args.source_backlog:
+        print("error: backlog mode needs --source-backlog", file=sys.stderr)
+        return 2
     spec = LoopSpec(
-        objective=args.objective, accept_cmd=args.accept, name=args.name,
+        objective=args.objective, accept_cmd=args.accept, mode=args.mode,
+        source_backlog=args.source_backlog, name=args.name,
         budget_usd=args.budget, max_iterations=args.max_iterations,
         dry_cap=args.dry_cap, fail_cap=args.fail_cap,
     )
@@ -402,9 +409,14 @@ def main(argv: list[str] | None = None) -> int:
         "loop", parents=[common],
         help="autopilot: plan+run toward an objective on an integration branch (opt-in, bounded)",
     )
-    p_loop.add_argument("objective", help="what the loop should achieve, in a sentence or two")
-    p_loop.add_argument("--accept", required=True,
-                        help="acceptance command: exits 0 when the objective is met (read-only)")
+    p_loop.add_argument("objective", nargs="?", default="",
+                        help="what the loop should achieve (explicit mode)")
+    p_loop.add_argument("--mode", choices=("explicit", "backlog", "self"), default="explicit",
+                        help="work source: plan objective / drain backlog / auto-split hotspots")
+    p_loop.add_argument("--accept", default="",
+                        help="acceptance command: exits 0 when done (read-only); optional")
+    p_loop.add_argument("--source-backlog", type=Path, default=None,
+                        help="backlog mode: the ticket directory to drain")
     p_loop.add_argument("--repo", type=Path, default=Path("."), help="target repository")
     p_loop.add_argument("--name", default="autopilot",
                         help="loop name (names the integration branch)")

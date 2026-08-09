@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
-from conftest import git
-from factory.loop import LoopSpec, run_loop
+from conftest import git, write_ticket
+from factory.loop import LoopSpec, _self_goal, run_loop
 from test_e2e import make_config
 
 # The stub planner returns loop-friendly tickets (no verify) when it sees this.
@@ -64,3 +64,38 @@ def test_loop_stops_at_max_iterations(tmp_path, repo):
     assert result["stop"] == "max_iterations"
     assert result["accepted"] is False
     assert result["base_untouched"] is True
+
+
+def test_loop_relocates_runs_out_of_the_repo(tmp_path, repo):
+    # --runs pointing INSIDE the repo (not gitignored) would dirty the tree and
+    # fail the preflight; the loop relocates it and still succeeds, tree stays clean.
+    spec = LoopSpec(objective=OBJECTIVE, accept_cmd=ACCEPT_OK, name="reloc")
+    result = asyncio.run(run_loop(make_config(), spec, repo, repo / "runs"))
+    assert result["stop"] == "success"
+    assert git(repo, "status", "--porcelain").strip() == ""   # repo not dirtied
+    assert not (repo / "runs").exists()                        # nothing written inside
+
+
+def test_loop_backlog_mode_drains_a_backlog(tmp_path, repo):
+    # Backlog mode runs an existing backlog under the guardrails (no planning
+    # spend), stops "dry" once drained, and archives the done tickets.
+    src = tmp_path / "src-backlog"
+    write_ticket(src, "001", repo, files_hint="[output_001.txt]")
+    write_ticket(src, "002", repo, files_hint="[output_002.txt]")
+    spec = LoopSpec(objective="", mode="backlog", source_backlog=src, name="bl",
+                    budget_usd=5.0, max_iterations=4)
+    result = asyncio.run(run_loop(make_config(), spec, repo, tmp_path / "runs"))
+    assert result["stop"] == "dry"
+    assert result["base_untouched"] is True
+    assert len(list((src / "done").glob("*.md"))) == 2   # both merged and archived
+
+
+def test_self_goal_targets_top_hotspot_or_none(tmp_path, repo):
+    # Self mode's work-picker: nothing to do on a tiny repo; once a file is big
+    # enough to be a hotspot, it becomes the round's split objective.
+    assert _self_goal(repo) is None
+    (repo / "huge.py").write_text("x = 1\n" * 12000, encoding="utf-8")   # ~72 KB
+    git(repo, "add", "huge.py")
+    git(repo, "commit", "-m", "add a big file")
+    goal = _self_goal(repo)
+    assert goal is not None and "huge.py" in goal
