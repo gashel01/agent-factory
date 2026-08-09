@@ -83,6 +83,22 @@ def main() -> int:
         return 0
 
     if "Planning contract" in prompt:
+        if "STUB:LOOP" in prompt:
+            # Loop-friendly plan: two disjoint tickets with NO verify command, so
+            # each just commits and passes the git-only verify gate (the default
+            # unittest tickets below would fail — there is no tests/ dir).
+            loop_tickets = [
+                {"id": "001", "title": "loop step A", "files_hint": ["output_a.txt"],
+                 "depends_on": [], "priority": 1, "timeout_min": 15, "verify": [],
+                 "body": "## Context\nloop.\n## Success criteria\ncommit.\n## Out of scope\nx."},
+                {"id": "002", "title": "loop step B", "files_hint": ["output_b.txt"],
+                 "depends_on": [], "priority": 1, "timeout_min": 15, "verify": [],
+                 "body": "## Context\nloop.\n## Success criteria\ncommit.\n## Out of scope\nx."},
+            ]
+            print(json.dumps({"type": "result", "num_turns": 3,
+                              "result": json.dumps({"status": "done", "brief": "loop map.",
+                                                    "tickets": loop_tickets})}))
+            return 0
         tickets = [
             {
                 "id": "001", "title": "Set up the test harness",

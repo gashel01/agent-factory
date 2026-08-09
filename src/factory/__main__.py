@@ -17,6 +17,7 @@ from .dispatcher import Dispatcher
 from .doctor import DoctorError, format_report, run_doctor
 from .events import EventLog
 from .hotspots import DEFAULT_MIN_TOKENS, scan_hotspots
+from .loop import LoopError, LoopSpec, run_loop
 from .plan import (
     PlanError,
     read_brief,
@@ -176,6 +177,33 @@ def cmd_plan(args: argparse.Namespace) -> int:
         print(f"       verify: {'; '.join(task.verify_commands) or '(none — add one!)'}")
     # ASCII only: Windows consoles may still run a cp1252 codepage.
     print("\nReview/edit them, then:  factory run --dry-run  ->  factory run")
+    return 0
+
+
+def cmd_loop(args: argparse.Namespace) -> int:
+    """Autopilot: plan->run toward an objective's acceptance criteria on a
+    dedicated integration branch, under hard guardrails. Opt-in and bounded."""
+    cfg = load_config(args.config)
+    repo = args.repo.resolve()
+    if not (repo / ".git").exists():
+        print(f"error: {repo} is not a git repository", file=sys.stderr)
+        return 2
+    spec = LoopSpec(
+        objective=args.objective, accept_cmd=args.accept, name=args.name,
+        budget_usd=args.budget, max_iterations=args.max_iterations,
+        dry_cap=args.dry_cap, fail_cap=args.fail_cap,
+    )
+    print(f"autopilot '{spec.name}' → integration branch warden/loop-{spec.name} "
+          f"(base {cfg.base_branch} stays untouched)")
+    result = asyncio.run(run_loop(cfg, spec, repo, args.runs))
+    print(
+        f"\nstopped: {result['stop']}  (spent ${result['spent']:.2f}, "
+        f"accepted={result['accepted']}, base untouched={result['base_untouched']})"
+    )
+    if result["pr"]:
+        print(f"PR opened for you to test and merge: {result['pr']}")
+    else:
+        print(f"work is on {result['integ']} — test it, then merge into {cfg.base_branch}")
     return 0
 
 
@@ -370,6 +398,26 @@ def main(argv: list[str] | None = None) -> int:
                        help="emit per-turn progress as JSON lines on stderr (for the dashboard)")
     p_ask.set_defaults(func=cmd_ask)
 
+    p_loop = sub.add_parser(
+        "loop", parents=[common],
+        help="autopilot: plan+run toward an objective on an integration branch (opt-in, bounded)",
+    )
+    p_loop.add_argument("objective", help="what the loop should achieve, in a sentence or two")
+    p_loop.add_argument("--accept", required=True,
+                        help="acceptance command: exits 0 when the objective is met (read-only)")
+    p_loop.add_argument("--repo", type=Path, default=Path("."), help="target repository")
+    p_loop.add_argument("--name", default="autopilot",
+                        help="loop name (names the integration branch)")
+    p_loop.add_argument("--budget", type=float, default=None,
+                        help="hard USD cap for the whole loop")
+    p_loop.add_argument("--max-iterations", type=int, default=5,
+                        help="hard stop after N iterations")
+    p_loop.add_argument("--dry-cap", type=int, default=2,
+                        help="stop after N rounds planning nothing")
+    p_loop.add_argument("--fail-cap", type=int, default=2,
+                        help="stop after N rounds with no merge")
+    p_loop.set_defaults(func=cmd_loop)
+
     p_hot = sub.add_parser(
         "hotspots", parents=[common],
         help="deterministic scan for oversized source files (no agent, no tokens)",
@@ -412,7 +460,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (TicketError, ConfigError, GitError, PlanError, SuperviseError, DoctorError) as exc:
+    except (TicketError, ConfigError, GitError, PlanError, SuperviseError, DoctorError,
+            LoopError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
