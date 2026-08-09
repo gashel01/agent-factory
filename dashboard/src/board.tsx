@@ -42,7 +42,7 @@ export type Screen = "projects" | "cockpit" | "memory";
 export type ModalState =
   | null
   | { type: "settings" }
-  | { type: "newwork"; tab?: "one" | "goal"; goal?: string }
+  | { type: "newwork"; tab?: "one" | "goal"; goal?: string; autostart?: boolean }
   | { type: "editticket"; ticket: BoardTicket }
   | { type: "repo" }
   | { type: "preview" }
@@ -772,18 +772,33 @@ export interface Hotspot {
  * split to the AI in one click. Dismissible; silent when the repo is clean.
  */
 export function HotspotsPanel(
-  { repo, onSplit }: { repo: string; onSplit: (path: string) => void },
+  { ws, onSplit }: { ws: string; onSplit: (path: string) => void },
 ): JSX.Element | null {
   const [spots, setSpots] = useState<Hotspot[] | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  // Resolve the repo from the workspace itself, not repoPath() (localStorage —
+  // empty right after opening a project, so the panel would never show). Refetch
+  // when the workspace changes.
   useEffect(() => {
-    if (!repo) { setSpots([]); return; }
     let live = true;
-    fetchJSON<{ hotspots?: Hotspot[] }>(`/api/hotspots?repo=${encodeURIComponent(repo)}`)
-      .then((r) => { if (live) setSpots(r.hotspots ?? []); })
-      .catch(() => { if (live) setSpots([]); });
+    setSpots(null);
+    (async () => {
+      try {
+        const list = await fetchJSON<{ workspaces?: Array<{ name: string; repo: string | null }> }>(
+          "/api/workspaces",
+        );
+        const repo = (list.workspaces ?? []).find((w) => w.name === ws)?.repo ?? "";
+        if (!repo) { if (live) setSpots([]); return; }
+        const r = await fetchJSON<{ hotspots?: Hotspot[] }>(
+          `/api/hotspots?repo=${encodeURIComponent(repo)}`,
+        );
+        if (live) setSpots(r.hotspots ?? []);
+      } catch {
+        if (live) setSpots([]);
+      }
+    })();
     return () => { live = false; };
-  }, [repo]);
+  }, [ws]);
   if (dismissed || !spots || spots.length === 0) return null;
   return (
     <div className="hotspots" role="note">
