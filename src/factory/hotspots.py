@@ -35,10 +35,11 @@ SKIP_SUBSTRINGS = (".min.", ".bundle.", ".generated.", "-lock.", ".lock.")
 _BYTES_PER_TOKEN = 4
 
 # Default gate: a file whose full read would cost this many tokens or more is a
-# hotspot. ~10000 tokens ~= 40 KB ~= 1200-1500 lines of source — set high enough
-# to flag only files that genuinely weigh on a ticket, not every longish file
-# (6k flagged a normal 540-line component and cried wolf).
-DEFAULT_MIN_TOKENS = 10000
+# hotspot. ~15000 tokens ~= 60 KB ~= 1800+ lines of source. Deliberately high: the
+# real monoliths this was built for were 147 KB and 278 KB; a well-factored
+# 40-50 KB module (~750-1000 lines) is healthy and must NOT be nagged. The panel
+# fires only when a file genuinely bloats past that, not for every large module.
+DEFAULT_MIN_TOKENS = 15000
 
 # How much recent history to weigh when judging "how central is this file".
 _RECENT_COMMITS = 200
