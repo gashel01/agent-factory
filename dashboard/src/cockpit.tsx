@@ -1009,6 +1009,7 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
   const [repo, setRepo] = useState("");
   const [loop, setLoop] = useState<LoopState | null>(null);
   const [creating, setCreating] = useState(false); // force the create form after a finished loop
+  const [mode, setMode] = useState("explicit"); // explicit | supervisor | self | backlog
   const [objective, setObjective] = useState("");
   const [accept, setAccept] = useState("");
   const [budget, setBudget] = useState("10");
@@ -1063,7 +1064,7 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
     setStarting(true);
     try {
       const r = await postJSON<{ ok?: boolean; error?: string }>("/api/loop/start", {
-        objective, accept, repo,
+        mode, objective, accept, repo,
         budget: Number(budget), maxIterations: Number(maxIter),
       });
       if (r.ok) { toast("Autopilot started."); setCreating(false); await refresh(); }
@@ -1113,18 +1114,53 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
         </div>
       ) : (
         <div className="loop-form">
-          <label className="work-label">Objective</label>
-          <textarea className="input" rows={4} placeholder="What should the autopilot achieve?"
-            value={objective} onChange={(e) => setObjective(e.target.value)} />
-          <div className="loop-ai">
-            <Button kind="btn" pending={drafting} disabled={!repo || drafting} onClick={draft}>
-              <Bot size={13} /> Draft with AI
-            </Button>
-            <span className="loop-note">reads the repo and proposes an objective + acceptance check</span>
+          <div className="loop-modes" role="tablist">
+            {([["explicit", "Objective"], ["supervisor", "Mission"],
+               ["self", "Auto-improve"], ["backlog", "Run backlog"]] as Array<[string, string]>)
+              .map(([m, label]) => (
+                <button key={m} role="tab" aria-selected={mode === m}
+                  className={`loop-mode${mode === m ? " on" : ""}`} onClick={() => setMode(m)}>
+                  {label}
+                </button>
+              ))}
           </div>
-          <label className="work-label">Acceptance command (exits 0 when done)</label>
-          <input className="input mono" placeholder="e.g. npm --prefix dashboard test"
-            value={accept} onChange={(e) => setAccept(e.target.value)} />
+
+          {(mode === "explicit" || mode === "supervisor") && (
+            <>
+              <label className="work-label">{mode === "supervisor" ? "Mission" : "Objective"}</label>
+              <textarea className="input" rows={4}
+                placeholder={mode === "supervisor"
+                  ? "The mission — the supervisor breaks it into a concrete step each round"
+                  : "What should the autopilot achieve?"}
+                value={objective} onChange={(e) => setObjective(e.target.value)} />
+              <div className="loop-ai">
+                <Button kind="btn" pending={drafting} disabled={!repo || drafting} onClick={draft}>
+                  <Bot size={13} /> Draft with AI
+                </Button>
+                <span className="loop-note">
+                  reads the repo and proposes an objective{mode === "explicit" ? " + acceptance check" : ""}
+                </span>
+              </div>
+            </>
+          )}
+
+          {mode === "explicit" && (
+            <>
+              <label className="work-label">Acceptance command (exits 0 when done)</label>
+              <input className="input mono" placeholder="e.g. npm --prefix dashboard test"
+                value={accept} onChange={(e) => setAccept(e.target.value)} />
+            </>
+          )}
+
+          {mode === "self" && (
+            <p className="loop-note">Auto-improve: each round splits the repo's largest file into modules,
+              until none stay oversized. No objective needed.</p>
+          )}
+          {mode === "backlog" && (
+            <p className="loop-note">Runs this project's backlog on an integration branch, then opens a PR —
+              no planning spend.</p>
+          )}
+
           <div className="loop-caps">
             <div>
               <label className="work-label">Budget cap ($)</label>
@@ -1135,9 +1171,10 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
               <input className="input" type="number" min="1" value={maxIter} onChange={(e) => setMaxIter(e.target.value)} />
             </div>
           </div>
-          <p className="loop-note">The loop stops at the cap or when the objective is met. <strong>Main is never touched</strong> — work lands on an integration branch and a PR opens for you to test and merge.</p>
+          <p className="loop-note">The loop stops at the cap or when its work is done. <strong>Main is never touched</strong> — work lands on an integration branch and a PR opens for you to test and merge.</p>
           <Button kind="btn" variant="primary" pending={starting}
-            disabled={!objective.trim() || !accept.trim() || !(Number(budget) > 0) || !repo || starting}
+            disabled={(((mode === "explicit" || mode === "supervisor") && !objective.trim()))
+              || !(Number(budget) > 0) || !repo || starting}
             onClick={start}>
             <Play size={13} /> Start autopilot
           </Button>

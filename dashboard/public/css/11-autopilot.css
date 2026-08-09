@@ -12,3 +12,9 @@
 .loop-meta { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .loop-meta .mono { font-family: var(--mono); }
 textarea.input { resize: vertical; font: inherit; }
+
+/* Autopilot mode selector (segmented). */
+.loop-modes { display: flex; gap: 4px; padding: 3px; margin-bottom: 14px; border-radius: 10px; background: var(--plane); border: 1px solid var(--border); }
+.loop-mode { flex: 1 1 0; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: 600 12px var(--sans); cursor: pointer; white-space: nowrap; }
+.loop-mode:hover { color: var(--ink-2); }
+.loop-mode.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
