@@ -1,20 +1,90 @@
 /* ------------------------------- autopilot loop ------------------------------- */
-.loop-form, .loop-live, .loop-done { display: flex; flex-direction: column; gap: 10px; }
-.loop-headline { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--ink); }
-.loop-obj { color: var(--muted); font-size: 12.5px; margin: 0; }
-.loop-note { color: var(--faint); font-size: 11.5px; margin: 2px 0; }
-.loop-ai { display: flex; align-items: center; gap: 10px; }
-.loop-caps { display: flex; gap: 14px; }
-.loop-caps > div { flex: 1; }
-.loop-caps .input { width: 100%; }
-.loop-gauge { height: 10px; border-radius: 999px; background: var(--plane); border: 1px solid var(--border); overflow: hidden; }
-.loop-gauge-fill { height: 100%; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #e0574a)); transition: width .4s ease; }
-.loop-meta { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
-.loop-meta .mono { font-family: var(--mono); }
+.loop-form, .loop-live, .loop-done { display: flex; flex-direction: column; gap: 16px; }
+.loop-headline { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; color: var(--ink); letter-spacing: -0.01em; }
+.loop-note { color: var(--faint); font-size: 12px; line-height: 1.5; margin: 0; }
+.loop-faint { color: var(--faint); font-weight: 400; }
 textarea.input { resize: vertical; font: inherit; }
 
-/* Autopilot mode selector (segmented). */
-.loop-modes { display: flex; gap: 4px; padding: 3px; margin-bottom: 14px; border-radius: 10px; background: var(--plane); border: 1px solid var(--border); }
-.loop-mode { flex: 1 1 0; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: 600 12px var(--sans); cursor: pointer; white-space: nowrap; }
-.loop-mode:hover { color: var(--ink-2); }
-.loop-mode.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+/* --- create: mode chooser as cards --- */
+.loop-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.loop-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left;
+  padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+  color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s, box-shadow .15s, transform .15s; }
+.loop-card:hover { border-color: var(--border2); transform: translateY(-1px); box-shadow: var(--shadow); }
+.loop-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.loop-card svg { color: var(--muted); transition: color .15s; }
+.loop-card-title { font-weight: 650; font-size: 13.5px; color: var(--ink); }
+.loop-card-desc { font-size: 11.5px; line-height: 1.45; color: var(--faint); }
+.loop-card.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent) inset; }
+.loop-card.on svg, .loop-card.on .loop-card-title { color: color-mix(in srgb, var(--accent) 78%, var(--ink)); }
+.loop-card.on .loop-card-desc { color: var(--ink-2); }
+
+/* --- create: progressive fields --- */
+.loop-fields { display: flex; flex-direction: column; gap: 8px; animation: loop-reveal .18s ease both; }
+@keyframes loop-reveal { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.loop-obj-input { min-height: 84px; }
+.loop-draft { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border2);
+  background: transparent; color: var(--muted); font: 600 12px var(--sans); padding: 6px 11px; border-radius: 8px; cursor: pointer; transition: background .15s, color .15s; }
+.loop-draft:hover:not(:disabled) { background: var(--plane); color: var(--ink-2); }
+.loop-draft:disabled { opacity: .5; cursor: default; }
+.loop-draft svg { color: var(--accent); }
+.loop-mode-note { display: flex; align-items: flex-start; gap: 8px; color: var(--muted); font-size: 12.5px; line-height: 1.5;
+  padding: 12px 14px; background: var(--plane); border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 0; }
+.loop-mode-note svg { color: var(--accent); flex: 0 0 auto; margin-top: 1px; }
+
+/* --- the trust strip --- */
+.loop-safety { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.loop-safety span { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.loop-safety svg { color: color-mix(in srgb, var(--st-merged-dot, var(--accent)) 80%, var(--muted)); }
+.loop-safety-strip { padding: 10px 14px; background: var(--plane); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+
+/* --- caps --- */
+.loop-caps { display: flex; gap: 14px; }
+.loop-caps > div { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.loop-caps .input { width: 100%; }
+.loop-caps .loop-faint { font-size: 11px; }
+
+/* --- launch --- */
+.loop-launch { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.loop-cta { justify-content: center; font-size: 13.5px; padding: 11px 16px; }
+.loop-blocked { align-self: center; font-size: 11.5px; color: var(--faint); }
+
+/* --- running: spend ring + live head --- */
+.loop-live-top { display: flex; align-items: center; gap: 18px; }
+.loop-ring-wrap { position: relative; flex: 0 0 auto; width: 72px; height: 72px; }
+.loop-ring { transform: rotate(-90deg); }
+.loop-ring-track { fill: none; stroke: var(--border); stroke-width: 6; }
+.loop-ring-arc { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .5s ease, stroke .3s ease; }
+.loop-ring-label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+.loop-ring-spent { font: 650 14px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+.loop-ring-cap { font-size: 9.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.loop-live-head { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.loop-substat { font-size: 12px; color: var(--muted); }
+.loop-substat .mono { font-family: var(--mono); }
+.loop-pulse { width: 9px; height: 9px; border-radius: 999px; background: var(--accent); animation: loop-pulse 1.8s ease-out infinite; }
+@keyframes loop-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); } 70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+/* --- running: the live volant --- */
+.loop-steer { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.loop-steer-row { display: flex; align-items: center; gap: 12px; }
+
+/* --- finished --- */
+.loop-done { align-items: center; text-align: center; gap: 12px; padding: 6px 0 2px; }
+.loop-done-badge { width: 52px; height: 52px; border-radius: 999px; display: grid; place-items: center; }
+.loop-done-badge.ok { background: var(--st-merged-bg, var(--accent-soft)); color: var(--st-merged-fg, var(--accent)); }
+.loop-done-badge.warn { background: var(--st-blocked-bg); color: var(--st-blocked-fg); }
+.loop-done-stats { display: flex; gap: 40px; margin: 4px 0 2px; }
+.loop-done-stats > div { display: flex; flex-direction: column; gap: 2px; }
+.loop-stat-n { font: 650 20px var(--sans); color: var(--ink); font-variant-numeric: tabular-nums; }
+.loop-stat-l { font-size: 11px; color: var(--faint); }
+.loop-done .loop-cta { align-self: stretch; text-decoration: none; }
+
+@media (max-width: 560px) {
+  .loop-cards { grid-template-columns: 1fr; }
+  .loop-done-stats { gap: 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loop-card, .loop-ring-arc, .loop-draft { transition: none; }
+  .loop-fields { animation: none; }
+  .loop-pulse { animation: none; }
+}
