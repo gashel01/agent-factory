@@ -54,6 +54,8 @@ DEFAULT_CONTRACT = """\
   Touch nothing outside this working directory.
 - Scope is the ticket below, nothing else. No opportunistic refactoring, no dependency
   upgrades that the ticket does not ask for.
+- If the ticket references image files (paths, e.g. a mockup or a screenshot), use the
+  Read tool to VIEW them first — they carry visual context the text alone does not.
 - Work from the ticket's "Files in scope" and the project map above: open those files
   directly and use Grep / targeted Reads (offset+limit) to find what you need. Do NOT
   read large files end-to-end or scan the whole repo — it burns your turn budget for

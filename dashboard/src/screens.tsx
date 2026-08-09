@@ -35,7 +35,7 @@ import { Diff, ReviewComment, ReviewProps } from "./cockpit.js";
 // Module-level id counter for inline review comments (moved here with its only
 // mutation site when app.tsx was split; an imported `let` cannot be reassigned).
 let commentSeq = 0;
-import { Button, Skeleton, toast, useEsc } from "./core.js";
+import { AttachStrip, Button, Skeleton, toast, useAttachments, useEsc } from "./core.js";
 import { DockerStatus } from "./modals.js";
 import { ConfirmButton, Modal, Select, sendAnswer, sendControl } from "./widgets.js";
 import { NewWorkModal } from "./work.js";
@@ -219,13 +219,15 @@ export function AppBar(
 export function SupervisorDock({ onExpand }: { onExpand: () => void }): JSX.Element {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const att = useAttachments();
   const send = async (): Promise<void> => {
     const text = msg.trim();
-    if (!text || busy) return;
+    if ((!text && !att.items.length) || busy) return;
     setBusy(true);
     try {
-      await postJSON("/api/chat", { message: text });
+      await postJSON("/api/chat", { message: text + att.refs() });
       setMsg("");
+      att.clear();
       onExpand(); // reveal the reply in the rail thread (pushed over SSE)
     } catch (err) {
       toast(String(err), true);
@@ -234,16 +236,19 @@ export function SupervisorDock({ onExpand }: { onExpand: () => void }): JSX.Elem
     }
   };
   return (
-    <div className="sup-dock">
-      <button className="sup-dock-open" title="Open the supervisor" aria-label="Open the supervisor" onClick={onExpand}>
-        <MessageCircle size={16} />
-      </button>
-      <input className="sup-dock-input" value={msg} placeholder="Tell the supervisor what to do next…"
-        onChange={(e) => setMsg(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
-      <button className="sup-dock-send" disabled={!msg.trim() || busy} onClick={() => void send()} aria-label="Send to the supervisor">
-        <ArrowUp size={16} />
-      </button>
+    <div className="sup-dock-wrap" onDrop={att.drop} onDragOver={(e) => e.preventDefault()}>
+      <AttachStrip items={att.items} onRemove={att.remove} />
+      <div className="sup-dock">
+        <button className="sup-dock-open" title="Open the supervisor" aria-label="Open the supervisor" onClick={onExpand}>
+          <MessageCircle size={16} />
+        </button>
+        <input className="sup-dock-input" value={msg} placeholder="Tell the supervisor (paste an image too)…"
+          onChange={(e) => setMsg(e.target.value)} onPaste={att.paste}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+        <button className="sup-dock-send" disabled={(!msg.trim() && !att.items.length) || busy} onClick={() => void send()} aria-label="Send to the supervisor">
+          <ArrowUp size={16} />
+        </button>
+      </div>
     </div>
   );
 }
