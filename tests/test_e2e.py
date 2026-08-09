@@ -191,6 +191,24 @@ def test_agent_without_commit_fails_after_retries(tmp_path, repo):
     assert "no commits" in retries[0]["reason"]
 
 
+def test_maxturns_continues_instead_of_burning_a_retry(tmp_path, repo):
+    # An agent that runs out of turn budget mid-task (error_max_turns) is NOT a
+    # failure: the dispatcher resumes its session to continue. It must land DONE,
+    # emit a "continued" event, and NOT consume a retry (max_retries=0 proves it —
+    # a retry-based path would fail immediately).
+    backlog = tmp_path / "backlog"
+    write_ticket(backlog, "001", repo, body="STUB:MAXTURNS\n", max_retries=0)
+
+    counts = run_dispatcher(make_config(), backlog, tmp_path / "run")
+
+    assert counts == {"DONE": 1}
+    events = list(EventLog.replay(tmp_path / "run" / "events.jsonl"))
+    kinds = [e["event"] for e in events]
+    assert "continued" in kinds          # it resumed to finish
+    assert "retry" not in kinds          # without spending a retry
+    assert "merged" in kinds
+
+
 def test_explicit_noop_is_done_not_failed(tmp_path, repo):
     # A ticket whose change already exists: the agent declares an explicit no-op
     # (done + "noop": true) and commits nothing. This must land as DONE (not fail on

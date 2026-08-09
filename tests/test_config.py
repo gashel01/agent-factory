@@ -16,6 +16,12 @@ def _write_config(tmp_path, body: str):
     return load_config(path)
 
 
+def test_max_continuations_default_and_parse(tmp_path):
+    assert load_config(None).max_continuations == 2  # default
+    cfg = _write_config(tmp_path, "concurrency:\n  max_continuations: 4\n")
+    assert cfg.max_continuations == 4
+
+
 def test_effort_is_parsed_and_normalized(tmp_path):
     cfg = _write_config(tmp_path, "agent:\n  effort: HIGH\n")
     assert cfg.agent.effort == "high"

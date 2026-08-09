@@ -57,6 +57,23 @@ def test_string_files_hint_is_wrapped_not_split_into_chars(tmp_path, repo):
     assert len(written) == 1
 
 
+def test_write_drafts_carries_model_and_bumped_turn_budget(tmp_path, repo):
+    # Cost lever 1: the planner may assign a cheap model to a trivial ticket; it
+    # must survive into the ticket file. Cost lever 2: the turn budget defaults to
+    # 65 (not 50) so complex tickets finish in one pass instead of error+resume.
+    tickets = [
+        {"id": "001", "title": "trivial", "files_hint": ["a.txt"], "model": "haiku",
+         "depends_on": [], "verify": [], "priority": 1, "timeout_min": 15, "body": "x"},
+        {"id": "002", "title": "hard", "files_hint": ["b.txt"],
+         "depends_on": [], "verify": [], "priority": 1, "timeout_min": 15, "body": "y"},
+    ]
+    write_drafts(tickets, tmp_path / "backlog", repo)
+    a, b = load_backlog(tmp_path / "backlog", "main")
+    assert a.model == "haiku"          # cheap tier assigned by the planner
+    assert b.model is None             # omitted -> run default (stronger) model
+    assert a.budget.max_turns == 65 and b.budget.max_turns == 65
+
+
 def test_non_numeric_planner_priority_raises_plan_error(tmp_path, repo):
     tickets = [{"id": "001", "title": "T", "priority": "high", "body": "x"}]
     with pytest.raises(PlanError, match="non-numeric priority"):

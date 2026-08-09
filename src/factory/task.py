@@ -45,7 +45,12 @@ IN_FLIGHT = frozenset(
 @dataclass(frozen=True)
 class Budget:
     timeout_min: int = 30
-    max_turns: int = 50
+    # Turn budget for one agent pass. 65 (not 50) because complex tickets were
+    # consistently stopping one short of the finish at 50, forcing a whole extra
+    # resume pass (re-loading context = wasted tokens); a bit more headroom lets
+    # them land in a single pass. A ticket that still runs out is resumed to
+    # continue (see the dispatcher's "maxturns" handling), not failed.
+    max_turns: int = 65
 
 
 @dataclass
@@ -81,6 +86,10 @@ class Task:
     # Optional per-ticket reasoning-effort override; None = the run-wide effort.
     effort: str | None = None
     attempts: int = 0
+    # Times the agent ran out of its turn budget and was RESUMED to continue. Not
+    # a failure and not counted against max_retries — capped separately so a truly
+    # stuck ticket can't loop forever (see Config.max_continuations).
+    continuations: int = 0
     failure_notes: list[str] = field(default_factory=list)
     # Session id of the previous attempt, set by the dispatcher when a retry can
     # RESUME it (worktree parked, work still on disk). A resumed agent keeps its
@@ -205,7 +214,7 @@ def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int 
         max_retries=_int(meta.get("max_retries"), default_max_retries, "max_retries"),
         budget=Budget(
             timeout_min=_int(budget_raw.get("timeout_min"), 30, "budget.timeout_min"),
-            max_turns=_int(budget_raw.get("max_turns"), 50, "budget.max_turns"),
+            max_turns=_int(budget_raw.get("max_turns"), 65, "budget.max_turns"),
         ),
         verify_commands=_str_tuple("verify"),
         skip_verify=bool(meta.get("skip_verify", False)),

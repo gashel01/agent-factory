@@ -123,6 +123,16 @@ def main() -> int:
         print(json.dumps({"type": "result", "num_turns": 1, "result": json.dumps(contract)}))
         return 0
 
+    if "STUB:MAXTURNS" in prompt:
+        # Mimic the real CLI hitting --max-turns: a result record carrying the
+        # max-turns subtype AND a non-zero exit, with a session id to resume. The
+        # resume branch at the top then finishes the ticket, proving the dispatcher
+        # CONTINUES (resumes) instead of failing and burning a retry.
+        print(json.dumps({"type": "result", "subtype": "error_max_turns",
+                          "num_turns": 65, "session_id": "stub-maxturns-session",
+                          "result": "ran out of turns before finishing"}))
+        return 1
+
     if "Ticket ID:" not in prompt:
         # Short prompt without any contract: a resumed supervisor exchange.
         answer = {"status": "done", "reply": f"resumed: {prompt.strip()[:60]}", "actions": []}
