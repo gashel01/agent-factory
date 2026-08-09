@@ -244,8 +244,10 @@ export function useRunActive(tick: number): boolean {
     let alive = true;
     const poll = async (): Promise<void> => {
       try {
-        const s = await fetchJSON<{ run: { state: string } }>("/api/status");
-        if (alive) setActive(s.run.state === "running");
+        const s = await fetchJSON<{ run: { state: string }; loop?: { state: string } }>("/api/status");
+        // An autopilot loop runs via the "loop" job, not "run" — count it as active
+        // too, so the header doesn't say "stopped" while the loop is working.
+        if (alive) setActive(s.run.state === "running" || s.loop?.state === "running");
       } catch { /* keep last */ }
     };
     void poll();

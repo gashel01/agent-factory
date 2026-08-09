@@ -315,9 +315,19 @@ export function layerNodes(nodes: DepNode[]): DepNode[][] {
 export function DepGraphModal({ stateOf, onClose }: { stateOf: (id: string) => TaskState | undefined; onClose: () => void }): JSX.Element {
   const [nodes, setNodes] = useState<DepNode[] | null>(null);
   useEffect(() => {
-    void fetchJSON<{ tickets: Array<{ content: string }> }>("/api/backlog")
-      .then((r) => setNodes(r.tickets.map((t) => parseTicketDeps(t.content))))
-      .catch(() => setNodes([]));
+    // Merge the workspace backlog with the active loop's backlog, so the graph
+    // covers an autopilot run's tickets too (they live in the loop's own backlog).
+    const pull = (p: string) => fetchJSON<{ tickets: Array<{ content: string }> }>(p)
+      .then((r) => r.tickets).catch(() => []);
+    void Promise.all([pull("/api/backlog"), pull("/api/loop/backlog")]).then(([a, b]) => {
+      const seen = new Set<string>();
+      const merged: DepNode[] = [];
+      for (const t of [...a, ...b]) {
+        const n = parseTicketDeps(t.content);
+        if (!seen.has(n.id)) { seen.add(n.id); merged.push(n); }
+      }
+      setNodes(merged);
+    }).catch(() => setNodes([]));
   }, []);
   if (nodes === null) return <Modal title="Ticket dependencies" onClose={onClose} wide><Skeleton lines={4} /></Modal>;
   if (nodes.length === 0) return <Modal title="Ticket dependencies" onClose={onClose} wide><p className="hint">No pending tickets — the graph shows the current backlog (merged tickets are archived).</p></Modal>;
