@@ -2,7 +2,9 @@
 /** Agent Factory dashboard — React app. Mounts into #app. */
 
 import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, JSX, ReactNode } from "react";
+import type {
+  ClipboardEvent as ReactClipboardEvent, CSSProperties, DragEvent as ReactDragEvent, JSX, ReactNode,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import type {
@@ -441,3 +443,91 @@ export function StatusPill({ state, live }: { state: TaskState; live?: boolean }
   );
 }
 
+
+/* --------------------------------- image attachments --------------------------------- */
+
+export interface Attachment { path: string; name: string; thumb: string }
+
+/**
+ * Paste/drop/pick images into any composer. Each image is uploaded to
+ * /api/attachments (saved under the workspace) and its ABSOLUTE path is handed
+ * back via refs() — the consumer appends refs() to the outgoing text so the agent
+ * can Read the file and see it. clear() after sending.
+ */
+export function useAttachments(): {
+  items: Attachment[];
+  paste: (e: ReactClipboardEvent) => void;
+  drop: (e: ReactDragEvent) => void;
+  pick: (files: FileList | null) => void;
+  remove: (path: string) => void;
+  clear: () => void;
+  refs: () => string;
+} {
+  const [items, setItems] = useState<Attachment[]>([]);
+  const upload = useCallback((file: File): void => {
+    if (!file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const thumb = String(reader.result);
+      void postJSON<{ path?: string; name?: string }>("/api/attachments", { dataUrl: thumb, name: file.name })
+        .then((r) => { if (r.path) setItems((xs) => [...xs, { path: r.path!, name: r.name || file.name, thumb }]); })
+        .catch((e) => toast(String(e), true));
+    };
+    reader.readAsDataURL(file);
+  }, []);
+  const paste = useCallback((e: ReactClipboardEvent): void => {
+    const imgs = [...(e.clipboardData?.items ?? [])].filter((it) => it.type.startsWith("image/"));
+    if (!imgs.length) return;
+    e.preventDefault();
+    for (const it of imgs) { const f = it.getAsFile(); if (f) upload(f); }
+  }, [upload]);
+  const drop = useCallback((e: ReactDragEvent): void => {
+    const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+    if (!files.length) return;
+    e.preventDefault();
+    files.forEach(upload);
+  }, [upload]);
+  const pick = useCallback((files: FileList | null): void => {
+    [...(files ?? [])].forEach(upload);
+  }, [upload]);
+  const remove = useCallback((path: string): void => setItems((xs) => xs.filter((x) => x.path !== path)), []);
+  const clear = useCallback((): void => setItems([]), []);
+  const refs = useCallback(
+    (): string => items.map((x) => `\n\n[Attached image — Read this file to view it: ${x.path}]`).join(""),
+    [items],
+  );
+  return { items, paste, drop, pick, remove, clear, refs };
+}
+
+/** The thumbnail strip under a composer; each image has a remove (×) button. */
+export function AttachStrip(
+  { items, onRemove }: { items: Attachment[]; onRemove: (path: string) => void },
+): JSX.Element | null {
+  if (!items.length) return null;
+  return (
+    <div className="attach-strip">
+      {items.map((a) => (
+        <div key={a.path} className="attach-thumb" title={a.name}>
+          <img src={a.thumb} alt={a.name} />
+          <button type="button" className="attach-x" aria-label={`Remove ${a.name}`} onClick={() => onRemove(a.path)}>
+            <X size={11} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A small "attach image" button that opens a file picker. */
+export function AttachButton({ onPick }: { onPick: (files: FileList | null) => void }): JSX.Element {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <button type="button" className="attach-btn" title="Attach an image" onClick={() => ref.current?.click()}>
+        <Upload size={13} /> Image
+      </button>
+      <input ref={ref} type="file" accept="image/*" multiple hidden
+        onChange={(e) => { onPick(e.target.files); e.target.value = ""; }} />
+    </>
+  );
+}

@@ -31,7 +31,7 @@ import {
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
 import { BoardTicket } from "./board.js";
-import { Button, WorkspaceInfo, toast, useManagedInterval } from "./core.js";
+import { AttachStrip, Button, WorkspaceInfo, toast, useAttachments, useManagedInterval } from "./core.js";
 import { describe } from "./modals.js";
 import { ConfirmButton, Modal, Select, sendControl } from "./widgets.js";
 
@@ -490,6 +490,7 @@ export function NewWorkModal(
   const [completing, setCompleting] = useState(false);
   // "From a goal" tab.
   const [goal, setGoal] = useState(initialGoal ?? "");
+  const att = useAttachments();
   const [planning, setPlanning] = useState(false);
   const [planOut, setPlanOut] = useState("");
   const [planStart, setPlanStart] = useState(0);
@@ -626,8 +627,9 @@ export function NewWorkModal(
     if (!(await ensureIsolatedWs())) return;
     const useRepo = (repoOverride ?? repo).trim();
     setRepoPath(useRepo);
-    try { await postJSON("/api/plan", { goal, repo: useRepo, ask, clarifications }); }
+    try { await postJSON("/api/plan", { goal: goal + att.refs(), repo: useRepo, ask, clarifications }); }
     catch (err) { toast(String(err), true); return; }
+    att.clear();
     setPlanOut(""); setPlanStart(Date.now());
     followPlan(ask);
   };
@@ -726,8 +728,10 @@ export function NewWorkModal(
       ) : (
         <div className="work-form">
           <label className="work-label">What do you want done?</label>
-          <textarea className="input work-goal" placeholder="One or two sentences. The planner explores the repo and drafts the tickets."
-            value={goal} onChange={(e) => setGoal(e.target.value)} />
+          <textarea className="input work-goal" placeholder="One or two sentences (paste an image too). The planner explores the repo and drafts the tickets."
+            value={goal} onChange={(e) => setGoal(e.target.value)}
+            onPaste={att.paste} onDrop={att.drop} onDragOver={(e) => e.preventDefault()} />
+          <AttachStrip items={att.items} onRemove={att.remove} />
           <label className={`plan-mode-toggle${askMode ? " on" : ""}`} title="The planner explores your repo, then asks a few high-leverage questions so the plan matches what you actually want.">
             <input type="checkbox" className="switch" checked={askMode} disabled={planning || !!questions}
               onChange={(e) => setAskMode(e.target.checked)} />
@@ -828,9 +832,10 @@ export function EditTicketModal(
 ): JSX.Element {
   const [title, setTitle] = useState(ticket.title === "(untitled)" ? "" : ticket.title);
   const [body, setBody] = useState(ticketBody(ticket.content));
+  const att = useAttachments();
   const save = async (): Promise<void> => {
     if (!title.trim()) { toast("Give the ticket a title.", true); return; }
-    await onSave(withTitleAndBody(ticket.content, title.trim(), body));
+    await onSave(withTitleAndBody(ticket.content, title.trim(), body + att.refs()));
     onClose();
   };
   return (
@@ -840,7 +845,9 @@ export function EditTicketModal(
         <input className="input" autoFocus value={title} onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(); } }} />
         <label className="work-label">Details</label>
-        <textarea className="input addticket-notes" value={body} onChange={(e) => setBody(e.target.value)} />
+        <textarea className="input addticket-notes" value={body} onChange={(e) => setBody(e.target.value)}
+          onPaste={att.paste} onDrop={att.drop} onDragOver={(e) => e.preventDefault()} />
+        <AttachStrip items={att.items} onRemove={att.remove} />
         <div className="addticket-actions">
           <span className="hint">{ticket.assignee === "human"
             ? "Your ticket — the AI won't touch it."

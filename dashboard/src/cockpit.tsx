@@ -30,7 +30,7 @@ import {
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
-import { Button, toast, useManagedInterval } from "./core.js";
+import { AttachStrip, Button, toast, useAttachments, useManagedInterval } from "./core.js";
 import { NetInfo, Onboarding } from "./screens.js";
 import { ConfirmButton, Modal, Select } from "./widgets.js";
 
@@ -1011,6 +1011,7 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
   const [creating, setCreating] = useState(false); // force the create form after a finished loop
   const [mode, setMode] = useState("explicit"); // explicit | supervisor | self | backlog
   const [objective, setObjective] = useState("");
+  const att = useAttachments();
   const [accept, setAccept] = useState("");
   const [budget, setBudget] = useState("10");
   const [maxIter, setMaxIter] = useState("5");
@@ -1076,10 +1077,10 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
     setStarting(true);
     try {
       const r = await postJSON<{ ok?: boolean; error?: string }>("/api/loop/start", {
-        mode, objective, accept, repo,
+        mode, objective: objective + att.refs(), accept, repo,
         budget: Number(budget), maxIterations: Number(maxIter),
       });
-      if (r.ok) { toast("Autopilot started."); setCreating(false); await refresh(); }
+      if (r.ok) { att.clear(); toast("Autopilot started."); setCreating(false); await refresh(); }
       else toast(r.error || "could not start the loop", true);
     } catch (e) { toast(String(e), true); }
     finally { setStarting(false); }
@@ -1205,10 +1206,12 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
                   placeholder={mode === "supervisor"
                     ? "Describe the mission — the supervisor breaks it into a concrete step each round."
                     : "What should the autopilot achieve? Be specific about what “done” looks like."}
-                  value={objective} onChange={(e) => setObjective(e.target.value)} />
+                  value={objective} onChange={(e) => setObjective(e.target.value)}
+                  onPaste={att.paste} onDrop={att.drop} onDragOver={(e) => e.preventDefault()} />
                 <button type="button" className="loop-draft" disabled={!repo || drafting} onClick={() => void draft()}>
                   <Sparkles size={13} /> {drafting ? "Reading the repo…" : "Draft with AI"}
                 </button>
+                <AttachStrip items={att.items} onRemove={att.remove} />
               </>
             )}
             {mode === "explicit" && (

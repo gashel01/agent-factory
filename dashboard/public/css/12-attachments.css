@@ -1,0 +1,10 @@
+/* ------------------------------- image attachments ------------------------------- */
+.sup-dock-wrap { display: flex; flex-direction: column; gap: 6px; }
+.attach-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; }
+.attach-thumb { position: relative; width: 52px; height: 52px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); background: var(--plane); flex: 0 0 auto; }
+.attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-x { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; display: grid; place-items: center; cursor: pointer; opacity: 0; transition: opacity .12s; }
+.attach-thumb:hover .attach-x, .attach-x:focus-visible { opacity: 1; }
+.attach-btn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border2); background: transparent; color: var(--muted); font: 500 12px var(--sans); padding: 5px 10px; border-radius: var(--radius-sm); cursor: pointer; }
+.attach-btn:hover { background: var(--plane); color: var(--ink-2); }
+@media (prefers-reduced-motion: reduce) { .attach-x { transition: none; } }

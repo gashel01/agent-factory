@@ -117,7 +117,9 @@ SUPERVISOR_CONTRACT = """\
 # Supervisor contract — Agent Factory
 
 You are the SUPERVISOR of an agent factory. The operator talks to you from a
-dashboard. Your working directory is the factory WORKSPACE:
+dashboard. If their message references image files (paths, e.g. a screenshot or
+mockup), use the Read tool to VIEW them before answering. Your working directory
+is the factory WORKSPACE:
 
 - `runs/<newest>/events.jsonl` — the run's ground truth (states, failures,
   reviews, retries, merges). The newest directory under `runs/` is the

@@ -2,6 +2,7 @@
  * lifecycle: SSE events, operator control, task logs, config, status, doctor, the
  * supervisor chat, analytics, ticket drafting/review, plan, run, and the backlog. */
 
+import { createHash } from "node:crypto";
 import {
   appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
@@ -563,6 +564,28 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
       const draft = extractDraft(raw);
       if (!draft) throw new Error("the model did not return a usable objective — try again");
       json(res, 200, { ok: true, ...draft });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/attachments" && req.method === "POST") {
+    // A pasted/dropped image. Saved under the workspace so a direct-execution
+    // agent can Read it (the prompt carries its absolute path); the client
+    // inserts the reference into the message/goal/ticket text.
+    try {
+      const { dataUrl, name } = JSON.parse(await readBody(req)) as { dataUrl?: string; name?: string };
+      const m = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)$/.exec((dataUrl ?? "").trim());
+      if (!m) throw new Error("expected a base64 image data URL");
+      const buf = Buffer.from(m[2]!, "base64");
+      if (buf.length > 12 * 1024 * 1024) throw new Error("image too large (max 12 MB)");
+      const ext = m[1] === "jpeg" ? "jpg" : m[1]!;
+      const dir = join(ws.workdir, "attachments");
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, `${createHash("sha1").update(buf).digest("hex").slice(0, 10)}.${ext}`);
+      writeFileSync(file, buf);
+      json(res, 200, { path: file, name: name || basename(file) });
     } catch (err) {
       json(res, 400, { ok: false, error: String(err) });
     }
