@@ -50,7 +50,8 @@ export type ModalState =
   | { type: "removed" }
   | { type: "answer"; taskId: string; title: string; question: string; context: BlockedContext | null }
   | { type: "lesson"; draft: { text: string; ticketId: string } }
-  | { type: "runguard" }
+  | { type: "runestimate"; tickets: number }
+  | { type: "diagnostics"; taskId: string; title: string }
   | { type: "appearance" }
   | { type: "diff"; taskId: string; title: string; diff: { repo: string; from: string; to: string } }
   | { type: "review"; taskId: string }
@@ -393,8 +394,9 @@ export const COLUMNS: Array<{ key: string; title: string; states: TaskState[]; t
 
 /** Inline actions for a card, mirroring the prototype's per-status button set. */
 export function CardActions(
-  { t, live, onLog, onAnswer, onLesson, onDiff }:
-  { t: TaskModel; live: boolean; onLog: () => void; onAnswer: () => void; onLesson: () => void; onDiff: () => void },
+  { t, live, onLog, onAnswer, onLesson, onDiff, onDiagnose }:
+  { t: TaskModel; live: boolean; onLog: () => void; onAnswer: () => void; onLesson: () => void;
+    onDiff: () => void; onDiagnose?: () => void },
 ): JSX.Element {
   const attention = t.state === "FAILED" || t.state === "BLOCKED";
   return (
@@ -421,6 +423,14 @@ export function CardActions(
       {t.state === "QUEUED" && live && (
         <ConfirmButton label="Cancel" confirm="Remove before it runs?" plain className="act danger"
           onConfirm={() => void sendControl("kill", t.id)} />
+      )}
+      {/* Only a FAILED ticket has something to post-mortem — a blocked one is
+          waiting on the operator, not broken. */}
+      {t.state === "FAILED" && onDiagnose && (
+        <button className="act ghost dx-why" onClick={onDiagnose}
+          title="Read the failure: what happened, what proves it, and what to do next">
+          <CircleHelp size={13} /> Why did it fail?
+        </button>
       )}
       {attention && (
         <button className="act ghost" onClick={onLesson} title="Record what went wrong as a lesson for next time">Save lesson</button>
@@ -464,8 +474,9 @@ export function CardMeasures({ t, now }: { t: TaskModel; now: number }): JSX.Ele
 }
 
 export function KanbanCard(
-  { t, live, now, onLog, onAnswer, onLesson, onDiff, onDelete }:
-  { t: TaskModel; live: boolean; now: number; onLog: () => void; onAnswer: () => void; onLesson: () => void; onDiff: () => void; onDelete?: () => void },
+  { t, live, now, onLog, onAnswer, onLesson, onDiff, onDelete, onDiagnose }:
+  { t: TaskModel; live: boolean; now: number; onLog: () => void; onAnswer: () => void; onLesson: () => void;
+    onDiff: () => void; onDelete?: () => void; onDiagnose?: () => void },
 ): JSX.Element {
   const attention = t.state === "FAILED" || t.state === "BLOCKED";
   const running = t.state === "RUNNING";
@@ -491,7 +502,8 @@ export function KanbanCard(
       </div>
       {attention && t.note && <div className="kcard-note"><span className="flag"><Flag size={12} /></span><span>{t.note}</span></div>}
       <CardMeasures t={t} now={now} />
-      <CardActions t={t} live={live} onLog={onLog} onAnswer={onAnswer} onLesson={onLesson} onDiff={onDiff} />
+      <CardActions t={t} live={live} onLog={onLog} onAnswer={onAnswer} onLesson={onLesson} onDiff={onDiff}
+        onDiagnose={onDiagnose} />
     </div>
   );
 }
@@ -638,10 +650,11 @@ export const MANUAL_COL: Record<string, string> = { todo: "queued", doing: "work
 export const COL_STATUS: Record<string, string> = { queued: "todo", working: "doing", approval: "review", done: "done" };
 
 export function Kanban(
-  { tasks, live, now, onLog, onAnswer, onLesson, onDiff, focus, pending, manual,
+  { tasks, live, now, onLog, onAnswer, onLesson, onDiff, onDiagnose, focus, pending, manual,
     onAddTicket, onEditTicket, onRemoveTicket, onRemoveTask, onMoveManual, onSetAssignee, onSetHold, onReviewManual }:
   { tasks: TaskModel[]; live: boolean; now: number; onLog: (t: TaskModel) => void;
-    onAnswer: (t: TaskModel) => void; onLesson: (t: TaskModel) => void; onDiff: (t: TaskModel) => void; focus?: boolean;
+    onAnswer: (t: TaskModel) => void; onLesson: (t: TaskModel) => void; onDiff: (t: TaskModel) => void;
+    onDiagnose?: (t: TaskModel) => void; focus?: boolean;
     pending: BoardTicket[]; manual: BoardTicket[]; onAddTicket: () => void; onEditTicket: (bt: BoardTicket) => void;
     onRemoveTicket: (bt: BoardTicket) => void; onRemoveTask: (id: string) => void; onMoveManual: (bt: BoardTicket, status: string) => void;
     onSetAssignee: (bt: BoardTicket, toHuman: boolean) => void; onSetHold: (bt: BoardTicket, on: boolean) => void;
@@ -685,7 +698,8 @@ export function Kanban(
   );
   const taskCard = (t: TaskModel) => (
     <KanbanCard key={t.id} t={t} live={live} now={now} onDelete={() => onRemoveTask(t.id)}
-      onLog={() => onLog(t)} onAnswer={() => onAnswer(t)} onLesson={() => onLesson(t)} onDiff={() => onDiff(t)} />
+      onLog={() => onLog(t)} onAnswer={() => onAnswer(t)} onLesson={() => onLesson(t)} onDiff={() => onDiff(t)}
+      onDiagnose={onDiagnose ? () => onDiagnose(t) : undefined} />
   );
 
   // The Up-next body: the Add affordance, then running QUEUED cards, AI drafts and
