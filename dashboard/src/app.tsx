@@ -30,7 +30,7 @@ import {
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
 import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, HotspotsPanel, IntegrationBanner, Kanban, ModalState, RERUNNABLE, RemovedModal, Screen, SyncNote, headline, parseTicketDeps } from "./board.js";
-import { CockpitModal, PreviewModal, PullRequestsModal, RepoModal } from "./cockpit.js";
+import { AutopilotModal, CockpitModal, PreviewModal, PullRequestsModal, RepoModal } from "./cockpit.js";
 import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useCompanion, useEventStream, useNotifyPref, useNow, useRunActive, useStateAlerts } from "./core.js";
 import { DiagnosticsModal, DocsModal, LogModal, Row, RunEstimateModal, SettingsModal, describe } from "./modals.js";
 import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, SupervisorDock, useTheme } from "./screens.js";
@@ -421,6 +421,7 @@ function App(): JSX.Element {
           <button className="board-tool" title="Run, build, verify and install this project — whatever its stack" onClick={() => setModal({ type: "cockpit" })}><Play size={13} /> Cockpit</button>
           <button className="board-tool" title="Browse files, branches and history" onClick={() => setModal({ type: "repo" })}><GitBranch size={13} /> Repo</button>
           <button className="board-tool" title="Open pull requests — merge or close them here" onClick={() => setModal({ type: "prs" })}><GitMerge size={13} /> PRs</button>
+          <button className="board-tool" title="Autopilot — run toward an objective under a budget cap" onClick={() => setModal({ type: "autopilot" })}><InfinityIcon size={13} /> Autopilot</button>
           {hasDeps && (
             <button className="board-tool" title="Ticket dependency graph" onClick={() => setModal({ type: "depgraph" })}><GitMerge size={13} /> Deps</button>
           )}
@@ -473,6 +474,7 @@ function App(): JSX.Element {
       )}
       {modal?.type === "repo" && <RepoModal onClose={() => setModal(null)} />}
       {modal?.type === "prs" && <PullRequestsModal ws={ws} onClose={() => setModal(null)} />}
+      {modal?.type === "autopilot" && <AutopilotModal ws={ws} onClose={() => setModal(null)} />}
       {modal?.type === "preview" && <PreviewModal onClose={() => setModal(null)} onFiles={() => setModal({ type: "repo" })} />}
       {modal?.type === "cockpit" && <CockpitModal onClose={() => setModal(null)} />}
       {modal?.type === "removed" && (

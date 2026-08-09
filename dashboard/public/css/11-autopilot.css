@@ -1,0 +1,14 @@
+/* ------------------------------- autopilot loop ------------------------------- */
+.loop-form, .loop-live, .loop-done { display: flex; flex-direction: column; gap: 10px; }
+.loop-headline { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--ink); }
+.loop-obj { color: var(--muted); font-size: 12.5px; margin: 0; }
+.loop-note { color: var(--faint); font-size: 11.5px; margin: 2px 0; }
+.loop-ai { display: flex; align-items: center; gap: 10px; }
+.loop-caps { display: flex; gap: 14px; }
+.loop-caps > div { flex: 1; }
+.loop-caps .input { width: 100%; }
+.loop-gauge { height: 10px; border-radius: 999px; background: var(--plane); border: 1px solid var(--border); overflow: hidden; }
+.loop-gauge-fill { height: 100%; background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #e0574a)); transition: width .4s ease; }
+.loop-meta { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.loop-meta .mono { font-family: var(--mono); }
+textarea.input { resize: vertical; font: inherit; }

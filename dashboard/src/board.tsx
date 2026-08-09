@@ -46,6 +46,7 @@ export type ModalState =
   | { type: "editticket"; ticket: BoardTicket }
   | { type: "repo" }
   | { type: "prs" }
+  | { type: "autopilot" }
   | { type: "preview" }
   | { type: "cockpit" }
   | { type: "removed" }

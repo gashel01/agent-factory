@@ -989,3 +989,160 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
     </Modal>
   );
 }
+
+/* --------------------------------- autopilot loop --------------------------------- */
+
+interface LoopState {
+  state: string; // idle | running | done | error
+  name?: string; objective?: string; integ?: string; base?: string;
+  budget?: number; maxIterations?: number; iteration?: number; spent?: number;
+  stop?: string; accepted?: boolean; pr?: string;
+}
+
+/**
+ * The opt-in autopilot loop: give it an objective + an executable acceptance
+ * check, and it plans->runs on an integration branch (main untouched) under a
+ * hard budget cap, opening a single PR at the end. Three states — create / live /
+ * finished — driven by GET /api/loop. Never lets you start without a cap.
+ */
+export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => void }): JSX.Element {
+  const [repo, setRepo] = useState("");
+  const [loop, setLoop] = useState<LoopState | null>(null);
+  const [creating, setCreating] = useState(false); // force the create form after a finished loop
+  const [objective, setObjective] = useState("");
+  const [accept, setAccept] = useState("");
+  const [budget, setBudget] = useState("10");
+  const [maxIter, setMaxIter] = useState("5");
+  const [drafting, setDrafting] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const every = useManagedInterval();
+
+  const refresh = async (): Promise<LoopState | null> => {
+    try {
+      const l = await fetchJSON<LoopState>(`/api/loop?ws=${encodeURIComponent(ws)}`);
+      setLoop(l);
+      return l;
+    } catch { return null; }
+  };
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      let r = repoPath();
+      if (!r) {
+        try {
+          const list = await fetchJSON<{ workspaces?: Array<{ name: string; repo: string | null }> }>(
+            "/api/workspaces",
+          );
+          r = (list.workspaces ?? []).find((w) => w.name === ws)?.repo ?? "";
+        } catch { /* */ }
+      }
+      if (live) setRepo(r);
+      await refresh();
+    })();
+    return () => { live = false; };
+  }, [ws]);
+
+  // Poll while a loop is live so the gauge and iteration keep up.
+  useEffect(() => {
+    every((stop) => { if (loop?.state !== "running") stop(); else void refresh(); }, 2500);
+  }, [loop?.state]);
+
+  const draft = async (): Promise<void> => {
+    setDrafting(true);
+    try {
+      const r = await postJSON<{ ok?: boolean; objective?: string; accept?: string; error?: string }>(
+        "/api/loop/draft", { repo });
+      if (r.ok) { setObjective(r.objective ?? ""); setAccept(r.accept ?? ""); }
+      else toast(r.error || "could not draft an objective", true);
+    } catch (e) { toast(String(e), true); }
+    finally { setDrafting(false); }
+  };
+
+  const start = async (): Promise<void> => {
+    setStarting(true);
+    try {
+      const r = await postJSON<{ ok?: boolean; error?: string }>("/api/loop/start", {
+        objective, accept, repo,
+        budget: Number(budget), maxIterations: Number(maxIter),
+      });
+      if (r.ok) { toast("Autopilot started."); setCreating(false); await refresh(); }
+      else toast(r.error || "could not start the loop", true);
+    } catch (e) { toast(String(e), true); }
+    finally { setStarting(false); }
+  };
+
+  const stop = async (): Promise<void> => {
+    try { await postJSON("/api/loop/stop", {}); toast("Autopilot stopped."); await refresh(); }
+    catch (e) { toast(String(e), true); }
+  };
+
+  const running = loop?.state === "running";
+  const finished = !running && !creating && !!loop?.stop;
+
+  return (
+    <Modal title="Autopilot" onClose={onClose} wide>
+      {running ? (
+        <div className="loop-live">
+          <div className="loop-headline"><InfinityIcon size={15} /> Running — iteration {loop?.iteration ?? "…"}</div>
+          <p className="loop-obj">{loop?.objective}</p>
+          <div className="loop-gauge">
+            <div className="loop-gauge-fill"
+              style={{ width: `${Math.min(100, Math.round(((loop?.spent ?? 0) / (loop?.budget || 1)) * 100))}%` }} />
+          </div>
+          <div className="loop-meta">
+            <span>${(loop?.spent ?? 0).toFixed(2)} / ${(loop?.budget ?? 0).toFixed(2)}</span>
+            <span className="mono">{loop?.integ}</span>
+          </div>
+          <p className="loop-note">Merges land on the integration branch — <strong>main is untouched</strong>. A PR opens when it finishes.</p>
+          <ConfirmButton label="Stop autopilot" confirm="Stop now?" onConfirm={stop} />
+        </div>
+      ) : finished ? (
+        <div className="loop-done">
+          <div className="loop-headline">
+            {loop?.stop === "success" ? <Check size={15} /> : <Square size={15} />} Stopped: {loop?.stop}
+          </div>
+          <div className="loop-meta">
+            <span>spent ${(loop?.spent ?? 0).toFixed(2)}</span>
+            <span>objective met: {loop?.accepted ? "yes" : "no"}</span>
+          </div>
+          {loop?.pr
+            ? <p className="loop-note">Test the branch, then merge the PR from the <strong>PRs</strong> panel: <a href={loop.pr} target="_blank" rel="noreferrer">{loop.pr}</a></p>
+            : <p className="loop-note">Work is on <span className="mono">{loop?.integ}</span> — test it, then merge into {loop?.base ?? "main"}.</p>}
+          <Button kind="btn" variant="primary" onClick={() => { setCreating(true); setLoop({ state: "idle" }); }}>Start a new loop</Button>
+        </div>
+      ) : (
+        <div className="loop-form">
+          <label className="work-label">Objective</label>
+          <textarea className="input" rows={4} placeholder="What should the autopilot achieve?"
+            value={objective} onChange={(e) => setObjective(e.target.value)} />
+          <div className="loop-ai">
+            <Button kind="btn" pending={drafting} disabled={!repo || drafting} onClick={draft}>
+              <Bot size={13} /> Draft with AI
+            </Button>
+            <span className="loop-note">reads the repo and proposes an objective + acceptance check</span>
+          </div>
+          <label className="work-label">Acceptance command (exits 0 when done)</label>
+          <input className="input mono" placeholder="e.g. npm --prefix dashboard test"
+            value={accept} onChange={(e) => setAccept(e.target.value)} />
+          <div className="loop-caps">
+            <div>
+              <label className="work-label">Budget cap ($)</label>
+              <input className="input" type="number" min="1" value={budget} onChange={(e) => setBudget(e.target.value)} />
+            </div>
+            <div>
+              <label className="work-label">Max iterations</label>
+              <input className="input" type="number" min="1" value={maxIter} onChange={(e) => setMaxIter(e.target.value)} />
+            </div>
+          </div>
+          <p className="loop-note">The loop stops at the cap or when the objective is met. <strong>Main is never touched</strong> — work lands on an integration branch and a PR opens for you to test and merge.</p>
+          <Button kind="btn" variant="primary" pending={starting}
+            disabled={!objective.trim() || !accept.trim() || !(Number(budget) > 0) || !repo || starting}
+            onClick={start}>
+            <Play size={13} /> Start autopilot
+          </Button>
+        </div>
+      )}
+    </Modal>
+  );
+}
