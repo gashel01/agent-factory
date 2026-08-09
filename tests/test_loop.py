@@ -90,6 +90,19 @@ def test_loop_backlog_mode_drains_a_backlog(tmp_path, repo):
     assert len(list((src / "done").glob("*.md"))) == 2   # both merged and archived
 
 
+def test_loop_supervisor_mode_decomposes_then_completes(tmp_path, repo):
+    # Supervisor mode: the decomposer proposes a concrete objective while nothing
+    # has landed, lands a round of work on the integration branch, then declares
+    # the mission complete -> the loop stops (dry). Base stays untouched.
+    spec = LoopSpec(objective="modernize the greeting", mode="supervisor", name="sup",
+                    budget_usd=5.0, max_iterations=4, dry_cap=1)
+    result = asyncio.run(run_loop(make_config(), spec, repo, tmp_path / "runs"))
+    assert result["stop"] == "dry"
+    assert result["base_untouched"] is True
+    landed = int(git(repo, "rev-list", "--count", "main..warden/loop-sup").strip())
+    assert landed >= 1   # a decomposed round really merged onto the branch
+
+
 def test_self_goal_targets_top_hotspot_or_none(tmp_path, repo):
     # Self mode's work-picker: nothing to do on a tiny repo; once a file is big
     # enough to be a hotspot, it becomes the round's split objective.
