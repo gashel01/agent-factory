@@ -32,6 +32,7 @@ import type { LucideIcon } from "./icons.js";
 import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, HotspotsPanel, IntegrationBanner, Kanban, ModalState, RERUNNABLE, RemovedModal, Screen, SyncNote, headline, parseTicketDeps } from "./board.js";
 import { CockpitModal, PreviewModal, RepoModal } from "./cockpit.js";
 import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useCompanion, useEventStream, useNotifyPref, useNow, useRunActive, useStateAlerts } from "./core.js";
+import { DiagnosticsModal } from "./insights-ui.js";
 import { DocsModal, LogModal, Row, SettingsModal, describe } from "./modals.js";
 import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, RunGuardModal, SupervisorDock, useTheme } from "./screens.js";
 import { CommandPalette, ConfirmButton, OverflowMenu, Select, UsageCard, quickRun, sendControl, useBacklog, useHidden } from "./widgets.js";
@@ -137,9 +138,11 @@ function App(): JSX.Element {
   const live = Boolean(model.run) && !model.endedTs && runActive;
   const done = tasks.filter((t) => t.state === "DONE");
   const attention = tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED");
+  const attentionKey = attention.map((t) => t.id).join(",");
   const working = tasks.filter((t) => inFlight(t.state));
   const queued = tasks.filter((t) => t.state === "QUEUED");
   const openLog = (t: TaskModel) => setModal({ type: "log", taskId: t.id, title: t.title });
+  const openDiagnostics = (t: TaskModel) => setModal({ type: "diagnostics", taskId: t.id, title: t.title });
   const openAnswer = (t: TaskModel) =>
     setModal({ type: "answer", taskId: t.id, title: t.title, question: t.note ?? "",
                context: t.blockedContext });
@@ -178,6 +181,13 @@ function App(): JSX.Element {
     if (runnableCount > 0) {
       nav.splice(1, 0, { id: "runagain", group: "Actions", label: `Run again (${runnableCount} ticket${runnableCount > 1 ? "s" : ""})`, run: () => setModal({ type: "runguard" }) });
     }
+    // One entry per stuck ticket rather than a single "explain" verb: the palette
+    // is keyboard-first, and picking the ticket in it beats a second chooser.
+    const explain: CmdItem[] = attention.map((t) => ({
+      id: `explain-${t.id}`, group: "Explain",
+      label: `Why ${t.id} stopped — ${t.title}`,
+      run: () => setModal({ type: "diagnostics", taskId: t.id, title: t.title }),
+    }));
     const toggles: CmdItem[] = [
       { id: "view", group: "Toggle", label: view === "focus" ? "Switch to Kanban view" : "Switch to Focus view", hint: "f", run: () => setView(view === "focus" ? "kanban" : "focus") },
       { id: "theme", group: "Toggle", label: theme.dark ? "Light theme" : "Dark theme", run: theme.toggle },
@@ -190,8 +200,9 @@ function App(): JSX.Element {
     const wsCmds: CmdItem[] = workspaces
       .filter((w) => w.name !== ws)
       .map((w) => ({ id: `ws-${w.name}`, group: "Switch project", label: w.name, run: () => switchWs(w.name) }));
-    return [...nav, ...toggles, ...screens, ...wsCmds];
-  }, [view, theme.dark, notify.on, runnableCount, workspaces, ws]);
+    return [...nav, ...explain, ...toggles, ...screens, ...wsCmds];
+    // `attention` is a fresh array every render, so the memo keys off its ids.
+  }, [view, theme.dark, notify.on, runnableCount, workspaces, ws, attentionKey]);
 
   // Board search (C5): filter what the Kanban shows without touching the header
   // synthesis, which always reflects the whole run.
@@ -454,7 +465,8 @@ function App(): JSX.Element {
         </div>
       ) : (
         <Kanban tasks={shownTasks} live={live} now={now} onLog={openLog}
-          onAnswer={openAnswer} onLesson={openLesson} onDiff={openDiff} focus={view === "focus"}
+          onAnswer={openAnswer} onLesson={openLesson} onDiff={openDiff} onExplain={openDiagnostics}
+          focus={view === "focus"}
           pending={pending} manual={manual} onAddTicket={() => setModal({ type: "newwork", tab: "one" })}
           onEditTicket={(bt) => setModal({ type: "editticket", ticket: bt })}
           onRemoveTicket={removeTicket} onRemoveTask={removeTask}
@@ -481,7 +493,12 @@ function App(): JSX.Element {
         <RunGuardModal runnable={willRun} budgetUsd={model.budgetUsd}
           avgCost={done.length > 0 && spent > 0 ? spent / done.length : null}
           onClose={() => setModal(null)}
-          onConfirm={async () => { await quickRun(); setModal(null); }}
+          // The chosen profile and the estimate it was priced from ride along, so
+          // the run is launched under the terms the operator actually approved.
+          onConfirm={async (choice) => {
+            await quickRun(choice ? { profile: choice.profile, forecast: choice.forecast } : {});
+            setModal(null);
+          }}
           onSettings={() => setModal({ type: "settings" })} />
       )}
       {modal?.type === "diff" && (
@@ -519,7 +536,21 @@ function App(): JSX.Element {
             const t = model.tasks.get(modal.taskId);
             if (t?.diff) setModal({ type: "diff", taskId: modal.taskId, title: modal.title, diff: t.diff });
           }}
+          onExplain={() => setModal({ type: "diagnostics", taskId: modal.taskId, title: modal.title })}
           onClose={() => setModal(null)} />
+      )}
+      {modal?.type === "diagnostics" && (
+        <DiagnosticsModal taskId={modal.taskId} title={modal.title}
+          onClose={() => setModal(null)}
+          onEditTicket={() => {
+            // The fix is in the ticket's own wording — take the operator straight
+            // to it. With no backlog file behind the task (already archived, or a
+            // run-only task), say so instead of silently doing nothing.
+            const bt = boardTickets.find((b) => b.id === modal.taskId);
+            if (bt) setModal({ type: "editticket", ticket: bt });
+            else toast(`No backlog ticket found for ${modal.taskId} — it may already be archived.`, true);
+          }}
+          onSettings={() => setModal({ type: "settings" })} />
       )}
       <Toaster />
       </div>

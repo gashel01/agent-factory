@@ -630,9 +630,12 @@ export async function sendAnswer(taskId: string, text: string): Promise<void> {
   } catch (err) { toast(`Could not send the answer: ${String(err)}`, true); }
 }
 
-export async function quickRun(): Promise<void> {
+/** Launch a run. The optional body carries the operator's pre-launch choices
+ *  (cost profile + the estimate it was based on); with none, the run replays on
+ *  the saved config exactly as before. */
+export async function quickRun(body: Record<string, unknown> = {}): Promise<void> {
   try {
-    await postJSON("/api/run", {});
+    await postJSON("/api/run", body);
     toast("New run starting — remaining tickets replay with the current config.");
   } catch (err) { toast(String(err), true); }
 }

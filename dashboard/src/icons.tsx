@@ -15,24 +15,24 @@ import type { JSX } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine, ArrowUpRight,
-  Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
-  CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
+  Ban, Bell, BellOff, BookOpen, Bot, Brain, Calculator, Check, ChevronDown, ChevronRight, Circle,
+  CircleCheckBig, CircleDot, CircleHelp, CircleX, Clock, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
-  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Globe, Hand, Infinity as InfinityIcon,
+  Folder, FolderOpen, FolderPlus, Gauge, GitBranch, GitMerge, Globe, Hand, Infinity as InfinityIcon,
   Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
-  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
-  Terminal, Timer, Trash2, TrendingDown, TriangleAlert, Undo2, Upload, X,
+  Pause, Pencil, Play, Plus, RotateCw, Rocket, Scale, Search, Send, ShieldCheck, Smartphone, Sparkles, Square,
+  Stethoscope, Target, Terminal, Timer, Trash2, TrendingDown, TrendingUp, TriangleAlert, Undo2, Upload, Wrench, X,
 } from "lucide-react";
 
 export {
   ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine, ArrowUpRight,
-  Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
-  CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
+  Ban, Bell, BellOff, BookOpen, Bot, Brain, Calculator, Check, ChevronDown, ChevronRight, Circle,
+  CircleCheckBig, CircleDot, CircleHelp, CircleX, Clock, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
-  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, Globe, Hand, InfinityIcon,
+  Folder, FolderOpen, FolderPlus, Gauge, GitBranch, GitMerge, Globe, Hand, InfinityIcon,
   Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
-  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
-  Terminal, Timer, Trash2, TrendingDown, TriangleAlert, Undo2, Upload, X,
+  Pause, Pencil, Play, Plus, RotateCw, Rocket, Scale, Search, Send, ShieldCheck, Smartphone, Sparkles, Square,
+  Stethoscope, Target, Terminal, Timer, Trash2, TrendingDown, TrendingUp, TriangleAlert, Undo2, Upload, Wrench, X,
 };
 export type { LucideIcon };
 

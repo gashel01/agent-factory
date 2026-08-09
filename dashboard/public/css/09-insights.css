@@ -1,0 +1,166 @@
+/* =========================================================================
+   Insight surfaces — failure diagnostics + pre-launch cost forecast.
+
+   No new design tokens: everything borrows the status families (--st-*),
+   the surface tiers (--surface/--plane/--border) and the shadow tiers, so
+   both panels inherit light/dark for free from the palettes in 00-base.css.
+   ========================================================================= */
+
+/* ------------------------------ card affordance ------------------------------ */
+
+/* Explain sits among the card actions but must not compete with the primary
+   retry: same shape, quieter weight, and the failure family's own ink so the
+   board shows at a glance that a stuck ticket can be explained. */
+.act.explain {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  background: var(--st-failed-bg); color: var(--st-failed-fg); border-color: var(--st-failed-bd);
+}
+
+/* -------------------------------- diagnostics -------------------------------- */
+
+.diag-sub { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+.diag { display: flex; flex-direction: column; gap: 14px; }
+
+.diag-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.diag-cat {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border);
+  font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .04em;
+}
+.diag-cat.fam-upnext    { color: var(--st-upnext-fg);    background: var(--st-upnext-bg);    border-color: var(--st-upnext-bd); }
+.diag-cat.fam-working   { color: var(--st-working-fg);   background: var(--st-working-bg);   border-color: var(--st-working-bd); }
+.diag-cat.fam-checking  { color: var(--st-checking-fg);  background: var(--st-checking-bg);  border-color: var(--st-checking-bd); }
+.diag-cat.fam-reviewing { color: var(--st-reviewing-fg); background: var(--st-reviewing-bg); border-color: var(--st-reviewing-bd); }
+.diag-cat.fam-merging   { color: var(--st-merging-fg);   background: var(--st-merging-bg);   border-color: var(--st-merging-bd); }
+.diag-cat.fam-blocked   { color: var(--st-blocked-fg);   background: var(--st-blocked-bg);   border-color: var(--st-blocked-bd); }
+.diag-cat.fam-failed    { color: var(--st-failed-fg);    background: var(--st-failed-bg);    border-color: var(--st-failed-bd); }
+
+.diag-conf { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.diag-conf-bar {
+  display: inline-block; width: 54px; height: 4px; border-radius: 999px;
+  background: color-mix(in oklch, var(--ink) 12%, transparent); overflow: hidden;
+}
+.diag-conf-bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+
+.diag-headline { margin: 0; font-size: 16px; line-height: 1.35; color: var(--ink); }
+.diag-detail { margin: 0; color: var(--ink-2); line-height: 1.55; }
+
+.diag-sec { display: flex; flex-direction: column; gap: 8px; }
+.diag-h {
+  display: flex; align-items: center; gap: 6px; margin: 4px 0 0;
+  font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+}
+
+/* Timeline: the elapsed gutter is a fixed mono column so the steps line up as a
+   readable clock, not a ragged left edge. */
+.diag-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.diag-step { display: grid; grid-template-columns: 62px 1fr; gap: 12px; padding: 7px 0; }
+.diag-step + .diag-step { border-top: 1px solid var(--border); }
+.diag-at {
+  font: 12px var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--faint); text-align: right; padding-top: 1px;
+}
+.diag-step-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.diag-step-label { font-weight: 600; color: var(--ink); }
+.diag-step-detail { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.diag-evidence { display: flex; flex-direction: column; gap: 8px; }
+.diag-ev { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--plane); }
+.diag-ev-src {
+  padding: 5px 10px; border-bottom: 1px solid var(--border);
+  font: 11px var(--mono); color: var(--faint); background: var(--surface);
+}
+.diag-ev-pre {
+  margin: 0; padding: 10px; max-height: 220px; overflow: auto;
+  font: 12px/1.5 var(--mono); color: var(--ink-2); white-space: pre-wrap; word-break: break-word;
+}
+
+/* Recommendations read as a ranked list: the action on the left, the reason
+   beside it, so the operator can skim actions alone and stop at the first. */
+.diag-fixes { display: flex; flex-direction: column; gap: 8px; }
+.diag-fix { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.diag-fix .btn { flex: 0 0 auto; }
+.diag-fix-why { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.diag-fix-note {
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  border: 1px dashed var(--border2); background: var(--plane);
+}
+.diag-fix-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ink); }
+
+/* --------------------------------- forecast --------------------------------- */
+
+.fc {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--plane);
+}
+.fc-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.fc-h {
+  display: flex; align-items: center; gap: 6px; margin: 0;
+  font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+}
+/* Whether the number is grounded in history or guessed is part of the number's
+   meaning, so it sits with the heading rather than in a footnote. */
+.fc-basis {
+  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border2);
+  background: var(--surface); color: var(--faint); font-size: 11px;
+}
+
+.fc-profiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.fc-profile {
+  display: flex; flex-direction: column; gap: 4px; text-align: left; cursor: pointer;
+  padding: 10px; border: 1px solid var(--border2); border-radius: var(--radius-sm);
+  background: var(--surface); font: 400 12px var(--sans); color: var(--ink-2);
+  transition: border-color .15s, box-shadow .15s;
+}
+.fc-profile:hover { border-color: var(--accent); }
+.fc-profile.on { border-color: var(--accent); box-shadow: var(--shadow-md); }
+.fc-profile-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.fc-profile-name { font-weight: 600; color: var(--ink); font-size: 13px; }
+.fc-profile-total { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+.fc-profile-range { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--faint); font-size: 11px; }
+.fc-profile-desc { color: var(--muted); line-height: 1.45; }
+
+/* The breakdown can run to dozens of tickets — cap it and scroll rather than
+   pushing the confirm button off the modal. */
+.fc-table-scroll { max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.fc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.fc-table th, .fc-table td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+.fc-table thead th {
+  position: sticky; top: 0; z-index: 1; background: var(--plane); color: var(--muted);
+  font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .04em;
+}
+.fc-table tbody tr:last-child td, .fc-table tbody tr:last-child th { border-bottom: 0; }
+.fc-ticket { font-weight: 400; }
+.fc-ticket-id { font-family: var(--mono); color: var(--ink); }
+.fc-ticket-title { display: block; color: var(--muted); font-size: 11px; }
+.fc-mono { font-family: var(--mono); color: var(--ink-2); }
+.fc-num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.fc-table tfoot th { text-align: right; color: var(--muted); background: var(--plane); border-bottom: 0; }
+.fc-table tfoot td { font-weight: 600; background: var(--plane); border-bottom: 0; }
+
+.fc-assume { font-size: 12px; color: var(--muted); }
+.fc-assume summary { cursor: pointer; color: var(--ink-2); }
+.fc-assume ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; line-height: 1.5; }
+
+/* ---------------------------- predicted vs actual ---------------------------- */
+
+.fa { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+.fa-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.fa-head .an-h { display: flex; align-items: center; gap: 6px; }
+.fa-profile { color: var(--faint); font-size: 11px; }
+/* Three tiles here, not the four the analytics grid assumes. */
+.fa .an-tiles { grid-template-columns: repeat(3, 1fr); }
+.fa-delta .an-fig { display: inline-flex; align-items: center; gap: 5px; }
+/* Over the estimate reads as a warning, under it as a win — the same red/green
+   the board already uses for failed/merged. */
+.fa-over { color: var(--st-failed-fg); }
+.fa-under { color: var(--st-merged-fg); }
+.fa-table .an-row { grid-template-columns: 1.4fr 0.9fr 0.9fr 0.8fr; }
+.fa-table .fa-over, .fa-table .fa-under { text-align: right; }
+
+@media (max-width: 720px) {
+  .fc-profiles { grid-template-columns: 1fr; }
+  .fa .an-tiles { grid-template-columns: 1fr; }
+  .diag-step { grid-template-columns: 48px 1fr; gap: 8px; }
+}

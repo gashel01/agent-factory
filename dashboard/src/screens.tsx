@@ -36,6 +36,7 @@ import { Diff, ReviewComment, ReviewProps } from "./cockpit.js";
 // mutation site when app.tsx was split; an imported `let` cannot be reassigned).
 let commentSeq = 0;
 import { Button, Skeleton, toast, useEsc } from "./core.js";
+import { ForecastPanel, ProfileKey, useForecasts } from "./insights-ui.js";
 import { DockerStatus } from "./modals.js";
 import { ConfirmButton, Modal, Select, sendAnswer, sendControl } from "./widgets.js";
 import { NewWorkModal } from "./work.js";
@@ -741,15 +742,25 @@ export function ReviewModal({ task, onClose }: { task: TaskModel; onClose: () =>
   );
 }
 
+/** What the operator settled on before launching: the cost profile, and the
+ *  estimate it was priced from (passed back verbatim so the server can record
+ *  what was promised and reconcile it afterwards). */
+export interface RunChoice { profile: ProfileKey; forecast: unknown }
+
 /** Pre-run guard rail (B7): what will run, the budget in force, and a cost
  *  estimate from past runs — so a re-run never burns credits by surprise. */
 export function RunGuardModal(
   { runnable, budgetUsd, avgCost, onConfirm, onClose, onSettings }:
   { runnable: number; budgetUsd: number | null; avgCost: number | null;
-    onConfirm: () => void | Promise<void>; onClose: () => void; onSettings: () => void },
+    onConfirm: (choice: RunChoice | null) => void | Promise<void>; onClose: () => void; onSettings: () => void },
 ): JSX.Element {
   const estimate = avgCost !== null ? avgCost * runnable : null;
   const noCap = budgetUsd === null || budgetUsd <= 0;
+  // The per-profile estimate. Until it answers (or if it never does) the guard
+  // falls back to the historical average below — it must never block the launch.
+  const { forecasts } = useForecasts();
+  const [profile, setProfile] = useState<ProfileKey>("standard");
+  const chosen = forecasts?.find((f) => f.profile === profile) ?? forecasts?.[0] ?? null;
   // The guard is about the NEXT run, so read the current setting (not the last
   // run's mode) — a toggle saved but not yet run must still warn.
   const [apiMode, setApiMode] = useState(false);
@@ -795,9 +806,15 @@ export function RunGuardModal(
             </div>
           )
         )}
-        {estimate !== null
-          ? <p className="work-hint">Your past runs averaged <b>{fmtUsd(avgCost!)}</b> per merged ticket — so roughly <b>{fmtUsd(estimate)}</b> for this run. A rough guide, not a quote.</p>
-          : <p className="work-hint">No cost history yet, so I can't estimate this one.</p>}
+        {/* The detailed forecast supersedes the one-line historical average; the
+            average stays as the fallback when no forecast is available. */}
+        {forecasts === null ? <Skeleton lines={3} />
+          : forecasts.length > 0
+            ? <ForecastPanel forecasts={forecasts} profile={chosen?.profile ?? profile}
+                onProfile={setProfile} budgetUsd={budgetUsd} onSettings={onSettings} />
+            : estimate !== null
+              ? <p className="work-hint">Your past runs averaged <b>{fmtUsd(avgCost!)}</b> per merged ticket — so roughly <b>{fmtUsd(estimate)}</b> for this run. A rough guide, not a quote.</p>
+              : <p className="work-hint">No cost history yet, so I can't estimate this one.</p>}
         <div className={`run-guard-budget${noCap ? " warn" : ""}`}>
           {noCap
             ? <>No budget cap — this run can spend without a limit. <button className="btn link" onClick={onSettings}>Set a cap</button></>
@@ -806,7 +823,10 @@ export function RunGuardModal(
       </div>
       <div className="panel-foot spread modal-foot">
         <button className="btn ghost" onClick={onClose}>Cancel</button>
-        <Button kind="btn" variant="primary" autoPending onClick={onConfirm}><Play size={14} /> Start run</Button>
+        <Button kind="btn" variant="primary" autoPending
+          onClick={() => onConfirm(chosen ? { profile: chosen.profile, forecast: chosen.raw } : null)}>
+          <Play size={14} /> Start run{chosen ? ` · ${fmtUsd(chosen.totalUsd)}` : ""}
+        </Button>
       </div>
     </Modal>
   );

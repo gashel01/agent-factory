@@ -27,7 +27,7 @@ import {
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
   GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
   MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
-  ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
+  ShieldCheck, Smartphone, Sparkles, Square, Stethoscope, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
 import { Skeleton, StatusPill, WorkspaceInfo, toast, useEsc, useManagedInterval } from "./core.js";
@@ -173,9 +173,10 @@ export function ModalMeasures({ t, now }: { t: TaskModel; now: number }): JSX.El
 }
 
 export function LogModal(
-  { taskId, title, ws, live, getTask, now, onAnswer, onDiff, onClose }:
+  { taskId, title, ws, live, getTask, now, onAnswer, onDiff, onExplain, onClose }:
   { taskId: string; title: string; ws: string; live: boolean;
-    getTask: () => TaskModel | undefined; now: number; onAnswer: () => void; onDiff: () => void; onClose: () => void },
+    getTask: () => TaskModel | undefined; now: number; onAnswer: () => void; onDiff: () => void;
+    onExplain: () => void; onClose: () => void },
 ): JSX.Element {
   const [raw, setRaw] = useState<string | null>(null);
   const [rawMode, setRawMode] = useState(false);
@@ -287,6 +288,14 @@ export function LogModal(
                   Cancel
                 </button>
               </>
+            )}
+            {/* Offered next to the retry buttons: the operator is looking at the
+                raw log precisely because they don't know why it stopped. */}
+            {attention && (
+              <button className="btn ghost" onClick={onExplain}
+                title="Read what went wrong and what to do about it">
+                <Stethoscope size={14} /> Explain the failure
+              </button>
             )}
             {attention && !(t?.state === "BLOCKED" && live) && (live
               ? <button className="btn primary" onClick={() => void sendControl("retry", taskId)}>Try again</button>
