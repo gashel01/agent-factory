@@ -17,7 +17,7 @@
 }
 .companion-resize:hover { background: var(--accent-soft); }
 .companion-resize:active { background: var(--accent); }
-.companion-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 15px; border-bottom: 1px solid var(--border); }
+.companion-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 15px; border-bottom: 1px solid var(--border); min-height: var(--header-h); box-sizing: border-box; }
 .companion-title { font: 700 14px/1 var(--sans); color: var(--ink); }
 .companion-x { background: none; border: none; cursor: pointer; font: 400 18px/1 var(--sans); color: var(--muted); padding: 2px 8px; border-radius: 6px; }
 .companion-x:hover { background: var(--bg); color: var(--ink); }

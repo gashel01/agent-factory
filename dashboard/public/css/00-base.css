@@ -4,6 +4,9 @@
    tabular mono for every number. Light + dark via prefers-color-scheme.
    ========================================================================= */
 :root {
+  /* Shared header height so the top bar and the Supervisor header end on the
+     same line (both are border-box + flex-centered). */
+  --header-h: 63px;
   --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Consolas, monospace;
 
@@ -165,7 +168,7 @@ button.brand-logo { cursor: pointer; }
 /* Airy header: sits on the same ground as the board (no distinct lighter bar),
    matching the mockup — one calm surface, separated only by a hairline. */
 .cockpit-head { flex: 0 0 auto; z-index: 30; background: transparent; border-bottom: 1px solid var(--border); }
-.cockpit-row1 { display: flex; align-items: center; gap: 13px; padding: 14px 22px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.cockpit-row1 { display: flex; align-items: center; gap: 13px; padding: 14px 22px; border-bottom: 1px solid var(--border); flex-wrap: wrap; min-height: var(--header-h); }
 /* Header CTAs are rounded pills (mode badge + New work), like the mockup. */
 .cockpit-row1 .hbtn.accent { border-radius: 999px; padding: 8px 16px; }
 .cockpit-row2 { display: flex; align-items: center; gap: 20px; padding: 14px 22px; flex-wrap: wrap; }
