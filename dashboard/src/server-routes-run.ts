@@ -15,7 +15,7 @@ import {
 import { agentVersion } from "./server-usage.js";
 import { summarize } from "./diagnostics.js";
 import {
-  buildForecasts, diagnoseTask, isSafeId, pickRun, readPendingForecast, readRunForecast,
+  analyzeErrorPatterns, buildForecasts, diagnoseTask, isSafeId, pickRun, readPendingForecast, readRunForecast,
   reconcileRun, savePendingForecast,
 } from "./insights.js";
 import {
@@ -249,10 +249,12 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
       : [];
     const series = names.map((run) => {
       const s = summarizeRun(runsDir, run);
+      const patterns = analyzeErrorPatterns(runsDir, run);
       return {
         run, ts: s.updatedTs, spend: s.spend, tokens: s.tokens,
         merged: s.counts.merged, needs: s.counts.needs, total: s.total,
         mode: s.mode,
+        error_counts: patterns.errorCounts,
       };
     });
     json(res, 200, { series });

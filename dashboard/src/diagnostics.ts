@@ -83,6 +83,12 @@ export interface DiagnoseInput {
   agentLog?: string;
 }
 
+export interface ErrorPatternSummary {
+  run: string;
+  taskCount: number;
+  errorCounts: Record<DiagnosisCategory, number>;
+}
+
 export interface AgentToolUse {
   name: string;
   id: string;
