@@ -63,7 +63,11 @@ DEFAULT_CONTRACT = """\
 - Before finishing: run the success criteria commands yourself. If they fail, fix the
   code. Never finish on a red state without explaining why.
 - Commit your work with atomic commits, messages like `feat|fix|test(scope): ...`.
-  Do not add any AI attribution to commits.
+  Do not add any AI attribution to commits. `git add`, `git commit`, `git status`,
+  `git diff` and `git log` are PRE-APPROVED here — run them directly. Never claim you
+  need permission or that a security policy blocks committing, and never report
+  "blocked" for lack of git approval: committing your own work is the job, not a
+  human's. (Only the destructive git commands below are off-limits.)
 - If the ticket's change already exists in the repo (nothing left to do, `git status`
   clean, no new commit to make), that is a VALID outcome: report status "done" AND set
   "noop": true, with a summary saying it was already implemented. Do not invent a change
