@@ -3,19 +3,20 @@
    fixed bands, the board is the sole scroll region (columns scroll internally),
    the technical timeline docks as a collapsible drawer at the bottom. This is
    what makes the column headers reliably sticky and kills the double page-scroll. */
+:root { --companion-width: 340px; }
 .cockpit-shell { display: flex; align-items: stretch; height: 100dvh; overflow: hidden; }
 .cockpit-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
 .companion {
   position: relative; top: 0; height: 100vh; overflow: hidden;
   display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border);
-  flex: 0 0 auto; width: 340px;
+  flex: 0 0 var(--companion-width);
 }
-.rail-resize {
-  position: absolute; left: 0; top: 0; bottom: 0; width: 5px; cursor: col-resize;
+.companion-resize {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 4px; cursor: col-resize;
   background: transparent; transition: background .15s; z-index: 10;
 }
-.rail-resize:hover { background: var(--accent); }
-.rail-resize:active { background: var(--accent); }
+.companion-resize:hover { background: var(--accent-soft); }
+.companion-resize:active { background: var(--accent); }
 .companion-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 15px; border-bottom: 1px solid var(--border); }
 .companion-title { font: 700 14px/1 var(--sans); color: var(--ink); }
 .companion-x { background: none; border: none; cursor: pointer; font: 400 18px/1 var(--sans); color: var(--muted); padding: 2px 8px; border-radius: 6px; }
