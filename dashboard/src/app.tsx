@@ -525,7 +525,10 @@ function App(): JSX.Element {
         onSendToAi={(review) => handToAiWithFeedback(modal.file, review)} />}
       {modal?.type === "cmdk" && <CommandPalette commands={commands} onClose={() => setModal(null)} />}
       {modal?.type === "depgraph" && (
-        <DepGraphModal stateOf={(id) => model.tasks.get(id)?.state} onClose={() => setModal(null)} />
+        <DepGraphModal
+          stateOf={(id) => model.tasks.get(id)?.state}
+          liveNodes={live ? allTasks.map((t) => ({ id: t.id, title: t.title, deps: t.deps })) : null}
+          onClose={() => setModal(null)} />
       )}
       {modal?.type === "answer" && (
         <AnswerModal taskId={modal.taskId} title={modal.title} question={modal.question}

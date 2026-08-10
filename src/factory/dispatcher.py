@@ -390,7 +390,8 @@ class Dispatcher:
             budget_usd=self.cfg.budget_usd,
             mode=self.cfg.execution_mode,
             tasks=[
-                {"id": t.id, "title": t.title, "model": t.model, "effort": t.effort}
+                {"id": t.id, "title": t.title, "model": t.model, "effort": t.effort,
+                 "depends_on": list(t.depends_on)}
                 for t in self.tasks
             ],
         )

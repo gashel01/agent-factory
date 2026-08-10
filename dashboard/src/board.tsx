@@ -312,23 +312,36 @@ export function layerNodes(nodes: DepNode[]): DepNode[][] {
   return layers;
 }
 
-export function DepGraphModal({ stateOf, onClose }: { stateOf: (id: string) => TaskState | undefined; onClose: () => void }): JSX.Element {
-  const [nodes, setNodes] = useState<DepNode[] | null>(null);
+export function DepGraphModal(
+  { stateOf, liveNodes, onClose }:
+  { stateOf: (id: string) => TaskState | undefined; liveNodes?: DepNode[] | null; onClose: () => void },
+): JSX.Element {
+  // While a run is active, `liveNodes` is the FROZEN graph the scheduler is
+  // actually enforcing (from the run's run_start event) — show that, not a live
+  // re-read of the backlog folder, which drifts as the loop regenerates tickets
+  // and merged ones are archived. Off-run, fall back to the backlog view.
+  const useLive = Array.isArray(liveNodes) && liveNodes.length > 0;
+  const [fetched, setFetched] = useState<DepNode[] | null>(null);
   useEffect(() => {
+    if (useLive) { setFetched(null); return; }
+    let alive = true;
     // Merge the workspace backlog with the active loop's backlog, so the graph
     // covers an autopilot run's tickets too (they live in the loop's own backlog).
     const pull = (p: string) => fetchJSON<{ tickets: Array<{ content: string }> }>(p)
       .then((r) => r.tickets).catch(() => []);
     void Promise.all([pull("/api/backlog"), pull("/api/loop/backlog")]).then(([a, b]) => {
+      if (!alive) return;
       const seen = new Set<string>();
       const merged: DepNode[] = [];
       for (const t of [...a, ...b]) {
         const n = parseTicketDeps(t.content);
         if (!seen.has(n.id)) { seen.add(n.id); merged.push(n); }
       }
-      setNodes(merged);
-    }).catch(() => setNodes([]));
-  }, []);
+      setFetched(merged);
+    }).catch(() => { if (alive) setFetched([]); });
+    return () => { alive = false; };
+  }, [useLive]);
+  const nodes = useLive ? liveNodes! : fetched;
   if (nodes === null) return <Modal title="Ticket dependencies" onClose={onClose} wide><Skeleton lines={4} /></Modal>;
   if (nodes.length === 0) return <Modal title="Ticket dependencies" onClose={onClose} wide><p className="hint">No pending tickets — the graph shows the current backlog (merged tickets are archived).</p></Modal>;
 
@@ -344,7 +357,7 @@ export function DepGraphModal({ stateOf, onClose }: { stateOf: (id: string) => T
   };
   return (
     <Modal title="Ticket dependencies" onClose={onClose} wide>
-      <p className="hint dep-legend">Arrows point from a ticket to what it depends on. Columns are the execution order (leftmost runs first).</p>
+      <p className="hint dep-legend">Arrows point from a ticket to what it depends on. Columns are the execution order (leftmost runs first).{useLive ? " Showing the running plan the scheduler is enforcing — it won't shift while this run is live." : ""}</p>
       <div className="depgraph-scroll">
         <svg className="depgraph" width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
           <defs>
