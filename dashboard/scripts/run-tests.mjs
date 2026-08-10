@@ -38,6 +38,11 @@ for (const name of names) {
       bundle: true,
       platform: "node",
       format: "esm",
+      // Leave every node_modules package to Node's own resolver. react-dom/server
+      // and lucide-react are CJS and call require() at runtime, which an esbuild
+      // ESM bundle can't shim ("Dynamic require of react"). Node imports them fine.
+      // Only bundle our own src (relative imports); pure-module tests are unaffected.
+      packages: "external",
       sourcemap: "inline",
       logLevel: "silent",
     });

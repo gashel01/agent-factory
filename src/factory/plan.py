@@ -64,8 +64,11 @@ Rules for a good decomposition:
   body, in backticks, as a contract to honour — never let two tickets invent the
   same interface independently.
 - Every ticket needs an EXECUTABLE success criterion: a shell command that
-  exits 0 on success (a test command, ideally). If the repo has no test setup,
-  make ticket 001 "set up the test harness" and let the others depend on it.
+  exits 0 on success. PREFER the repo's own test runner (`npm test`, `pytest`)
+  over a bare `build`/`tsc` — a build proves the code compiles, a test proves it
+  WORKS. Include the build too if you like, but never let "it compiles" be the
+  only gate. If the repo has no test setup, make ticket 001 "set up the test
+  harness" and let the others depend on it.
 - verify commands run through the PLATFORM's default shell — on Windows that is
   cmd.exe, which has NO grep/test/sed/cat/ls. Never use POSIX-only utilities or
   pipe into one. A verify's success is its EXIT CODE, so the runner alone is the
