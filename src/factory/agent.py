@@ -61,7 +61,10 @@ DEFAULT_CONTRACT = """\
   read large files end-to-end or scan the whole repo — it burns your turn budget for
   little gain. Explore beyond the listed files only when the task genuinely requires it.
 - Before finishing: run the success criteria commands yourself. If they fail, fix the
-  code. Never finish on a red state without explaining why.
+  code. Never finish on a red state without explaining why. These verification
+  commands (typecheck, build, tests, linters) are PRE-APPROVED — run them directly.
+  Never claim you need permission or approval to run them, and never report "blocked"
+  because you were "awaiting approval" to verify: verifying your own work is the job.
 - Commit your work with atomic commits, messages like `feat|fix|test(scope): ...`.
   Do not add any AI attribution to commits. `git add`, `git commit`, `git status`,
   `git diff` and `git log` are PRE-APPROVED here — run them directly. Never claim you
