@@ -30,7 +30,7 @@ import {
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
-import { Diff, ReviewComment, ReviewProps } from "./cockpit.js";
+import { Diff, ReviewComment, ReviewProps } from "./diff-view.js";
 
 // Module-level id counter for inline review comments (moved here with its only
 // mutation site when app.tsx was split; an imported `let` cannot be reassigned).
