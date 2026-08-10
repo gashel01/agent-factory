@@ -4,8 +4,8 @@ import type { BlockedContext } from "./types.js";
 import { fetchJSON } from "./api.js";
 import { fmtUsd, parseSettings } from "./model.js";
 import { Key, Lock, Play, TriangleAlert } from "./icons.js";
-import { toast } from "./core.js";
-import { Button, ConfirmButton, Modal, sendAnswer } from "./widgets.js";
+import { Button, toast } from "./core.js";
+import { ConfirmButton, Modal, sendAnswer } from "./widgets.js";
 import { DockerStatus } from "./modals.js";
 
 export const DESTRUCTIVE_HINT = /\b(reset\s+--hard|--force|force-with-lease|git\s+rebase|git\s+clean|filter-branch|checkout\s+--)\b/i;
