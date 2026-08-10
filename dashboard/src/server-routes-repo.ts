@@ -67,16 +67,20 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       );
       if (build.code !== 0) throw new Error("build failed: " + build.output.slice(-800));
       if (restart) {
-        // Detached respawn: a throwaway node process waits for us to exit (freeing
-        // the port), then starts a fresh server. Client assets are already live on
-        // reload; a restart is only needed for server-side changes.
+        // Detached respawn. Instead of a fixed timer (which races the old server's
+        // port release → EADDRINUSE → no server), poll the port and start the new
+        // server the instant it frees. Retries the probe for ~15s, then starts
+        // best-effort so a stuck exit never leaves us permanently down.
         const relaunch =
-          `setTimeout(()=>{require("child_process").spawn(process.execPath,` +
-          `["dist/server.js","--port","${opts.port}","--host","${opts.host}"],` +
-          `{cwd:${JSON.stringify(dashDir)},detached:true,stdio:"ignore"}).unref()},2500)`;
+          `const net=require("net"),cp=require("child_process");let n=0;` +
+          `const start=()=>cp.spawn(process.execPath,["dist/server.js","--port","${opts.port}","--host","${opts.host}"],` +
+          `{cwd:${JSON.stringify(dashDir)},detached:true,stdio:"ignore"}).unref();` +
+          `const tick=()=>{const s=net.connect(${opts.port},"127.0.0.1");` +
+          `s.once("connect",()=>{s.destroy();(++n<60)?setTimeout(tick,250):start();});` +
+          `s.once("error",()=>{s.destroy();start();});};setTimeout(tick,300);`;
         spawn(process.execPath, ["-e", relaunch], { detached: true, stdio: "ignore" }).unref();
-        json(res, 200, { ok: true, restarting: true });
-        setTimeout(() => process.exit(0), 800);
+        json(res, 200, { ok: true, restarting: true, log: build.output.slice(-400) });
+        setTimeout(() => process.exit(0), 600);
         return true;
       }
       json(res, 200, { ok: true, restarting: false, log: build.output.slice(-400) });
