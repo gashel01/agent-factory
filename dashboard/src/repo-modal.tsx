@@ -5,7 +5,7 @@ import { langFromPath, tokenizeLine } from "./highlight.js";
 import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen } from "./icons.js";
 import { toast } from "./core.js";
 import { Modal, Select } from "./widgets.js";
-import { Diff } from "./cockpit.js";
+import { Diff } from "./diff-view.js";
 
 export interface TreeNode { name: string; path: string; isFile: boolean; children: Map<string, TreeNode> }
 
