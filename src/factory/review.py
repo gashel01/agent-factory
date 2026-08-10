@@ -42,6 +42,14 @@ Reject if — and only if — one of these holds:
 3. An obvious bug a careful reader can spot (logic error, broken edge case).
 4. The success criteria were gamed: tests weakened or deleted, assertions
    loosened, verification circumvented instead of satisfied.
+5. It compiles but would NOT WORK at runtime — trace the wiring ACROSS files,
+   because typecheck/build passing does not prove the feature functions. Reject
+   a `className` with no matching CSS rule, a CSS class/variable the code never
+   sets or uses, an event listener attached in a way that never fires (e.g. an
+   effect gated on a ref, which a ref change does not re-run), a handler wired to
+   the wrong element, or a value read from a source nothing writes. When a
+   feature spans files, confirm the shared names (classes, CSS vars, exports)
+   actually match on both sides.
 
 Style preferences, naming taste, or "I would have done it differently" are
 NOT reject reasons. When genuinely uncertain, approve — the deterministic

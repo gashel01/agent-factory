@@ -5,6 +5,8 @@
   "description": "Live dashboard for agent-factory runs — tails events.jsonl over SSE. Zero runtime dependencies.",
   "type": "module",
   "scripts": {
+    "check:styles": "node scripts/check-styles.mjs",
+    "prebuild": "node scripts/check-styles.mjs",
     "build": "esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.js && esbuild src/app.tsx --bundle --format=iife --outfile=dist/client.js --loader:.tsx=tsx --minify --define:process.env.NODE_ENV='\"production\"'",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-tests.mjs",

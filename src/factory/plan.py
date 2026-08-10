@@ -52,6 +52,17 @@ Rules for a good decomposition:
   ticket B's work (e.g. A adds a component AND wires it into the same App file
   B was going to edit), they are ONE ticket — merge them. A ticket whose work a
   prior ticket already did has nothing to commit and fails the verify gate.
+- A component's BEHAVIOUR and its STYLES are ONE ticket — never split "add the
+  logic" from "add the CSS" into separate tickets. The class names, CSS variables
+  and element structure they share are an implicit contract, and two isolated
+  agents WILL diverge on it (one renders `class="rail-resize"`, the other styles
+  `.companion-resize`, both pass typecheck/build, and the feature is silently
+  dead). Disjoint FILES do not make coupled work safe to split.
+- When a split genuinely spans files with a shared interface (a class name, a CSS
+  variable, an exported symbol, a function signature), the dependent ticket MUST
+  (a) list the other in depends_on, and (b) restate the EXACT shared names in its
+  body, in backticks, as a contract to honour — never let two tickets invent the
+  same interface independently.
 - Every ticket needs an EXECUTABLE success criterion: a shell command that
   exits 0 on success (a test command, ideally). If the repo has no test setup,
   make ticket 001 "set up the test harness" and let the others depend on it.
