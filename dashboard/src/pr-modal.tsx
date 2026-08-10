@@ -30,6 +30,10 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
   const [busy, setBusy] = useState<number | null>(null);
   const [newBranch, setNewBranch] = useState("");
   const [bBusy, setBBusy] = useState<string | null>(null); // branch name being acted on, or "__new__"
+  const [prHead, setPrHead] = useState("");
+  const [prBase, setPrBase] = useState("main");
+  const [prTitle, setPrTitle] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const load = async (r: string): Promise<void> => {
     try {
@@ -104,6 +108,23 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
     } catch (e) { toast(String(e), true); } finally { setBBusy(null); }
   };
 
+  // Default the PR head to the branch you're on, so opening a PR for the work you
+  // just finished is one click. Only seeds it once (don't fight a manual pick).
+  useEffect(() => { setPrHead((h) => h || branches.current); }, [branches.current]);
+  const createPr = async (): Promise<void> => {
+    const head = prHead.trim(), base = prBase.trim() || "main", title = prTitle.trim();
+    if (!head || !title || head === base || creating) return;
+    setCreating(true);
+    try {
+      const r = await postJSON<{ ok?: boolean; url?: string; error?: string }>(
+        "/api/prs/create", { repo, head, base, title },
+      );
+      if (r.ok) { toast(`PR opened: ${r.url ?? "done"}`); setPrTitle(""); await load(repo); }
+      else toast(r.error || "couldn't open the PR", true);
+    } catch (e) { toast(String(e), true); }
+    finally { setCreating(false); }
+  };
+
   const mergeable = (m: string): { text: string; cls: string } =>
     m === "MERGEABLE" ? { text: "ready", cls: "ok" }
       : m === "CONFLICTING" ? { text: "conflicts", cls: "bad" }
@@ -145,6 +166,29 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
           })}
         </ul>
       )}
+      <div className="pr-new">
+        <div className="pr-new-head"><GitMerge size={12} /> Open a pull request</div>
+        <div className="pr-new-row">
+          <select className="branch-input pr-new-head-sel" value={prHead} aria-label="Head branch"
+            disabled={creating} onChange={(e) => setPrHead(e.currentTarget.value)}>
+            {(branches.list.length ? branches.list : [branches.current]).filter(Boolean).map((b) => (
+              <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+          <span className="pr-new-arrow">→</span>
+          <input className="branch-input pr-new-base" value={prBase} aria-label="Base branch" placeholder="main"
+            disabled={creating} onChange={(e) => setPrBase(e.currentTarget.value.replace(/[^\w./-]/g, ""))} />
+        </div>
+        <div className="pr-new-row">
+          <input className="branch-input pr-new-title" value={prTitle} placeholder="Pull request title…"
+            aria-label="Pull request title" disabled={creating}
+            onChange={(e) => setPrTitle(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void createPr(); }} />
+          <Button kind="btn" variant="primary" pending={creating}
+            disabled={!prHead.trim() || !prTitle.trim() || prHead === prBase.trim() || creating}
+            onClick={createPr}><Plus size={13} /> Open PR</Button>
+        </div>
+      </div>
       <div className="pr-branches">
         <div className="pr-branches-head"><GitBranch size={12} /> Branches</div>
         <div className="branch-new">

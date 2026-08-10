@@ -299,6 +299,36 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
     return true;
   }
 
+  if (url.pathname === "/api/prs/create" && req.method === "POST") {
+    try {
+      const { repo: repoIn, head, base, title, body } = JSON.parse(await readBody(req)) as
+        { repo?: string; head?: string; base?: string; title?: string; body?: string };
+      const repo = resolve(repoIn ?? "");
+      if (!repo || !existsSync(join(repo, ".git"))) throw new Error("bad repo");
+      const nameRe = /^[\w./-]+$/;
+      if (!head || !nameRe.test(head)) throw new Error("bad head branch");
+      const baseBranch = base && nameRe.test(base) ? base : "main";
+      if (head === baseBranch) throw new Error("head and base branches must differ");
+      if (!title || !title.trim()) throw new Error("a title is required");
+      // A PR needs the branch on the remote: push it (upstream-tracking) first,
+      // then open the PR. force-with-lease so re-opening after new commits is safe
+      // without clobbering someone else's push.
+      const push = await runCmd("git", ["push", "--force-with-lease", "-u", "origin", head], repo);
+      if (push.code !== 0) throw new Error("push failed: " + (push.output.trim() || "git push error"));
+      const result = await runCmd(
+        "gh",
+        ["pr", "create", "--head", head, "--base", baseBranch, "--title", title.trim(),
+         "--body", (body ?? "").trim()],
+        repo,
+      );
+      if (result.code !== 0) throw new Error(result.output.trim() || "gh pr create failed");
+      json(res, 200, { ok: true, url: result.output.trim() });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
+
   if ((url.pathname === "/api/prs/merge" || url.pathname === "/api/prs/close")
       && req.method === "POST") {
     try {

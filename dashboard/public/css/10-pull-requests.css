@@ -13,6 +13,15 @@
 .pr-mergeable.bad { background: var(--st-failed-bg, #fde8e6); color: var(--st-failed-fg, #b3261e); }
 .pr-mergeable.warn { background: var(--st-blocked-bg); color: var(--st-blocked-fg); }
 .pr-actions { display: flex; gap: 8px; margin-top: 10px; }
+/* Open-a-PR form — Warden creating PRs itself (gh pr create), same surface that
+   lists and merges them, so the whole PR loop lives in the UI. */
+.pr-new { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.pr-new-head { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.pr-new-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.pr-new-arrow { color: var(--faint); font-family: var(--mono); flex: 0 0 auto; }
+.pr-new-head-sel { flex: 1 1 0; min-width: 0; }
+.pr-new-base { flex: 0 0 130px; }
+.pr-new-title { flex: 1 1 auto; min-width: 0; }
 .pr-branches { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .pr-branches-head { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .pr-branches ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
