@@ -235,11 +235,11 @@ export function RunChapter(
 }
 
 export function CompanionRail(
-  { obs, feed, onClose, now, currentRun, live, needsYou, onAnswer, onReview, onPlan }:
+  { obs, feed, onClose, now, currentRun, live, needsYou, onAnswer, onReview, onPlan, railWidth, onRailWidth }:
   {
     obs: Observation[]; feed: FactoryEvent[]; onClose: () => void; now: number; currentRun: string | null; live: boolean;
     needsYou: TaskModel[]; onAnswer: (t: TaskModel) => void; onReview: (t: TaskModel) => void;
-    onPlan: (goal: string) => void;
+    onPlan: (goal: string) => void; railWidth: number; onRailWidth: (width: number) => void;
   },
 ): JSX.Element {
   const [showAll, setShowAll] = useState(false);
@@ -250,6 +250,10 @@ export function CompanionRail(
   const pollChat = useManagedInterval();
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedBottom = useRef(true);
+  const railRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
 
   // The rail reads like a chat: everything the supervisor says (chat replies AND
   // proactive briefings) lives in the timeline — oldest at the top, newest at the
@@ -275,6 +279,36 @@ export function CompanionRail(
     if (el && pinnedBottom.current) el.scrollTop = el.scrollHeight;
   }, [obs.length, thinking, progress, raw, feed.length]);
 
+  const onMouseDown = (e: React.MouseEvent<HTMLDivElement>): void => {
+    isDraggingRef.current = true;
+    startXRef.current = e.clientX;
+    startWidthRef.current = railWidth;
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent): void => {
+      if (!isDraggingRef.current) return;
+      const delta = e.clientX - startXRef.current;
+      const newWidth = startWidthRef.current - delta;
+      onRailWidth(newWidth);
+    };
+
+    const handleMouseUp = (): void => {
+      isDraggingRef.current = false;
+    };
+
+    if (isDraggingRef.current) {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [railWidth, onRailWidth]);
+
   const send = async (): Promise<void> => {
     const text = msg.trim();
     if (!text || thinking) return;
@@ -295,7 +329,8 @@ export function CompanionRail(
   };
 
   return (
-    <aside className="companion">
+    <aside className="companion" ref={railRef} style={{ width: `${railWidth}px` }}>
+      <div className="rail-resize" onMouseDown={onMouseDown} />
       <div className="companion-head">
         <span className="companion-title">Supervisor</span>
         <button className="companion-x" onClick={onClose} title="Hide" aria-label="Hide supervisor">›</button>

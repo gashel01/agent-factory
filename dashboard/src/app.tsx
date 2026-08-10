@@ -86,6 +86,17 @@ function App(): JSX.Element {
     setRailOpenState(v);
     try { localStorage.setItem("factory.rail", v ? "1" : "0"); } catch { /* */ }
   };
+  const [railWidth, setRailWidthState] = useState(() => {
+    try {
+      const saved = localStorage.getItem("factory.railWidth");
+      return saved ? Math.max(280, Math.min(600, Number(saved))) : 340;
+    } catch { return 340; }
+  });
+  const setRailWidth = (w: number): void => {
+    const clamped = Math.max(280, Math.min(600, w));
+    setRailWidthState(clamped);
+    try { localStorage.setItem("factory.railWidth", String(clamped)); } catch { /* */ }
+  };
   // Desktop ping on an attention-level observation (failure, blocked, budget)
   // when the tab is backgrounded. Same OS tag as the board alerts, so they
   // collapse instead of double-notifying.
@@ -567,7 +578,7 @@ function App(): JSX.Element {
       </div>
       {railOpen
         ? <CompanionRail obs={companion.obs} feed={model.feed} onClose={() => setRailOpen(false)} now={now}
-            currentRun={model.run} live={live}
+            currentRun={model.run} live={live} railWidth={railWidth} onRailWidth={setRailWidth}
             needsYou={tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED" || t.state === "AWAITING_APPROVAL")}
             onAnswer={openAnswer} onReview={openDiff}
             onPlan={(goal) => { setRailOpen(false); setModal({ type: "newwork", tab: "goal", goal }); }} />
