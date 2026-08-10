@@ -149,6 +149,22 @@ def _norm(hint: str) -> str:
     return hint.replace("\\", "/").strip("/").lower() + "/"
 
 
+# POSIX-only tools that break a verify command on Windows cmd.exe.
+_POSIX_ONLY = ("grep", "sed", "awk", "head", "tail", "wc", "cut", "tr", "cat", "ls", "test", "xargs")
+
+
+def portable_verify(cmd: str) -> str:
+    """Make a verify command portable: its success is its EXIT CODE, so if it pipes
+    into a POSIX-only tool (absent on Windows cmd.exe) drop the pipe tail — the base
+    command's exit code is the real signal. Applied to EVERY ticket at load time, so
+    a hand-written or older ticket (`npm run build | grep -q 'built'`) self-heals,
+    not only ones the planner just wrote."""
+    if any(re.search(rf"\|\s*{tool}\b", cmd) for tool in _POSIX_ONLY):
+        base = cmd.split("|", 1)[0]
+        return re.sub(r"\s*2>&1\s*$", "", base).strip()
+    return cmd
+
+
 def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int = 2) -> Task:
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---"):
@@ -216,7 +232,7 @@ def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int 
             timeout_min=_int(budget_raw.get("timeout_min"), 30, "budget.timeout_min"),
             max_turns=_int(budget_raw.get("max_turns"), 65, "budget.max_turns"),
         ),
-        verify_commands=_str_tuple("verify"),
+        verify_commands=tuple(portable_verify(c) for c in _str_tuple("verify")),
         skip_verify=bool(meta.get("skip_verify", False)),
         skip_review=bool(meta.get("skip_review", False)),
         assignee=("human" if str(meta.get("assignee", "")).strip().lower() == "human" else "ai"),

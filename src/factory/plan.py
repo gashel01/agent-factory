@@ -25,7 +25,7 @@ from .agent import (
 )
 from .config import Config
 from .hotspots import brief_for_planner, scan_hotspots
-from .task import archived_ids
+from .task import archived_ids, portable_verify
 
 #: Exploration only — the planner must not be able to modify the repo.
 PLANNER_TOOLS = ("Read", "Glob", "Grep")
@@ -301,22 +301,6 @@ def _as_list(value: object) -> list[str]:
     return [str(value)]
 
 
-# POSIX-only tools that break a verify command on Windows cmd.exe. The prompt
-# forbids them, but the model still slips them in (e.g. `npm run build | grep -q
-# 'built'`), so this is the deterministic backstop.
-_POSIX_ONLY = ("grep", "sed", "awk", "head", "tail", "wc", "cut", "tr", "cat", "ls", "test", "xargs")
-
-
-def _portable_verify(cmd: str) -> str:
-    """A verify's success is its EXIT CODE. If the command pipes into a POSIX-only
-    tool (which cmd.exe lacks), drop the pipe tail — the base command's exit code
-    is the real signal (`npm run build 2>&1 | grep -q 'built'` -> `npm run build`)."""
-    if any(re.search(rf"\|\s*{tool}\b", cmd) for tool in _POSIX_ONLY):
-        base = cmd.split("|", 1)[0]
-        return re.sub(r"\s*2>&1\s*$", "", base).strip()
-    return cmd
-
-
 def _plan_int(value: object, default: int, field: str) -> int:
     try:
         return int(value if value is not None else default)
@@ -349,7 +333,7 @@ def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
                 "timeout_min": _plan_int(t.get("timeout_min"), 30, "timeout_min"),
                 "max_turns": 65,
             },
-            "verify": [_portable_verify(c) for c in _as_list(t.get("verify"))],
+            "verify": [portable_verify(c) for c in _as_list(t.get("verify"))],
         }
         lines = ["---"]
         lines.append(f'id: "{front["id"]}"')
