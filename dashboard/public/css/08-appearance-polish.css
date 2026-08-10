@@ -846,3 +846,8 @@ body { background: var(--bg); }
 .hotspots-meta { color: var(--faint); white-space: nowrap; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .hotspots-split { flex: 0 0 auto; border: 1px solid var(--st-blocked-bd); background: var(--surface); color: var(--st-blocked-fg); font: 600 11px var(--sans); padding: 4px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
 .hotspots-split:hover { background: color-mix(in srgb, var(--st-blocked-fg) 10%, var(--surface)); }
+/* Live state: a ticket is already carving this file up — status, not a button. */
+.hotspots-split.is-splitting { display: inline-flex; align-items: center; gap: 6px; cursor: default;
+  border-color: var(--st-working-bd); background: var(--st-working-bg); color: var(--st-working-fg); }
+.hotspots-split.is-splitting::before { content: ""; width: 6px; height: 6px; border-radius: 999px;
+  background: currentColor; animation: livepulse 1.3s ease-in-out infinite; }
