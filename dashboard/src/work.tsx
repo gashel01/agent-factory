@@ -251,9 +251,6 @@ export function CompanionRail(
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedBottom = useRef(true);
   const railRef = useRef<HTMLDivElement>(null);
-  const isDraggingRef = useRef(false);
-  const startXRef = useRef(0);
-  const startWidthRef = useRef(0);
 
   // The rail reads like a chat: everything the supervisor says (chat replies AND
   // proactive briefings) lives in the timeline — oldest at the top, newest at the
@@ -279,35 +276,24 @@ export function CompanionRail(
     if (el && pinnedBottom.current) el.scrollTop = el.scrollHeight;
   }, [obs.length, thinking, progress, raw, feed.length]);
 
+  // Attach the drag listeners on mousedown itself — NOT inside an effect gated on
+  // a ref (a ref change doesn't re-run the effect, so the old version never armed
+  // them). Closures capture the start point; the rail is on the RIGHT, so dragging
+  // its left edge leftward widens it.
   const onMouseDown = (e: React.MouseEvent<HTMLDivElement>): void => {
-    isDraggingRef.current = true;
-    startXRef.current = e.clientX;
-    startWidthRef.current = railWidth;
     e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = railWidth;
+    const onMove = (ev: MouseEvent): void => onRailWidth(startWidth - (ev.clientX - startX));
+    const onUp = (): void => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.userSelect = "none"; // no text selection while dragging
   };
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent): void => {
-      if (!isDraggingRef.current) return;
-      const delta = e.clientX - startXRef.current;
-      const newWidth = startWidthRef.current - delta;
-      onRailWidth(newWidth);
-    };
-
-    const handleMouseUp = (): void => {
-      isDraggingRef.current = false;
-    };
-
-    if (isDraggingRef.current) {
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
-    }
-
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [railWidth, onRailWidth]);
 
   const send = async (): Promise<void> => {
     const text = msg.trim();
@@ -329,8 +315,9 @@ export function CompanionRail(
   };
 
   return (
-    <aside className="companion" ref={railRef} style={{ width: `${railWidth}px` }}>
-      <div className="rail-resize" onMouseDown={onMouseDown} />
+    <aside className="companion" ref={railRef}
+      style={{ "--companion-width": `${railWidth}px` } as React.CSSProperties}>
+      <div className="companion-resize" onMouseDown={onMouseDown} />
       <div className="companion-head">
         <span className="companion-title">Supervisor</span>
         <button className="companion-x" onClick={onClose} title="Hide" aria-label="Hide supervisor">›</button>
