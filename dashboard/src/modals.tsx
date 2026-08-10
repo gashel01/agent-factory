@@ -988,6 +988,8 @@ export function RunEstimateModal(
   const [apiMode, setApiMode] = useState(false);
   const [sandbox, setSandbox] = useState(false);
   const [dockerReady, setDockerReady] = useState<boolean | null>(null);
+  const [project, setProject] = useState<"node" | "python" | "other">("other");
+  const [setupCmds, setSetupCmds] = useState("");
   // Delivery target. Default: merge into the configured base (unchanged behaviour).
   // Opt in to a fresh integration branch — the factory creates + checks it out, so
   // a big refactor lands as ONE PR with the base untouched, no CLI, no branch sprawl.
@@ -1009,6 +1011,8 @@ export function RunEstimateModal(
         const s = parseSettings(r.content);
         setApiMode(s.executionMode === "api");
         setSandbox(s.isolation === "sandbox");
+        setProject(s.project);
+        setSetupCmds(s.setupCommands);
       })
       .catch(() => { /* offline */ });
   }, []);
@@ -1024,6 +1028,12 @@ export function RunEstimateModal(
   const overCap = sel !== null && !noCap && (sel.highUsd ?? sel.usd) > budgetUsd!;
   const conf = pct(sel?.confidence ?? null);
   const fallback = avgCost !== null ? avgCost * tickets : null;
+  // Environment check: a node/python project whose setup installs nothing means
+  // each agent's fresh worktree has no deps, so verify dies with "command not
+  // found" (the flaky class that bit us). Warn before spending, not after.
+  const needsInstall =
+    (project === "node" && !/\b(install|ci)\b/.test(setupCmds)) ||
+    (project === "python" && !/uv sync|pip install/.test(setupCmds));
 
   const base = deliverNew && branch.trim() ? branch.trim() : undefined;
   const start = async (): Promise<void> => {
@@ -1123,6 +1133,12 @@ export function RunEstimateModal(
           </p>
         )}
 
+        {needsInstall && (
+          <div className="run-guard-budget warn">
+            <TriangleAlert size={14} /> <b>No dependency install in setup</b> — agents work in fresh worktrees, so verify may fail with “command not found”. Add <code>{project === "python" ? "uv sync" : "npm install"}</code> to setup.
+            <button className="btn link" onClick={onSettings}>Fix in Settings</button>
+          </div>
+        )}
         {apiMode && (
           <div className="run-guard-budget warn">
             <Key size={14} /> <b>API mode</b> — this run bills real dollars to your <code>ANTHROPIC_API_KEY</code>.

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { JSX } from "react";
 import { fetchJSON, postJSON, repoPath } from "./api.js";
 import { toast } from "./core.js";
-import { ExternalLink, GitBranch, GitMerge, Plus, Trash2 } from "./icons.js";
+import { ExternalLink, GitBranch, GitMerge, Plus, RotateCw, Trash2 } from "./icons.js";
 import { ConfirmButton, Modal } from "./widgets.js";
 import { Button } from "./core.js";
 
@@ -107,6 +107,17 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
       if (r.ok) { toast(`Created ${name}.`); setNewBranch(""); await load(repo); } else toast(r.error || "couldn't create", true);
     } catch (e) { toast(String(e), true); } finally { setBBusy(null); }
   };
+  // Deploy the current branch onto the running Warden (rebuild + restart). The
+  // server restarts mid-response, so the POST is expected to error — we reload
+  // after a beat to pick up the fresh instance. Warden developing Warden.
+  const deploy = async (): Promise<void> => {
+    if (bBusy) return;
+    setBBusy("__deploy__");
+    toast(`Deploying ${branches.current} — rebuilding & restarting…`);
+    try { await postJSON("/api/deploy", { branch: branches.current, restart: true }); }
+    catch { /* connection drops as the server restarts — expected */ }
+    setTimeout(() => { try { location.reload(); } catch { /* */ } }, 6000);
+  };
 
   // Default the PR head to the branch you're on, so opening a PR for the work you
   // just finished is one click. Only seeds it once (don't fight a manual pick).
@@ -189,6 +200,15 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
             onClick={createPr}><Plus size={13} /> Open PR</Button>
         </div>
       </div>
+      {branches.current && (
+        <div className="pr-deploy">
+          <div className="pr-deploy-text">
+            <b>Deploy to Warden</b> — rebuild <code>{branches.current}</code> and restart the running instance.
+          </div>
+          <ConfirmButton label={<><RotateCw size={13} /> Deploy</>} confirm="Rebuild + restart?"
+            onConfirm={deploy} />
+        </div>
+      )}
       <div className="pr-branches">
         <div className="pr-branches-head"><GitBranch size={12} /> Branches</div>
         <div className="branch-new">

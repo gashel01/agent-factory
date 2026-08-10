@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-import { json, readBody, runCmd } from "./server-core.js";
+import { json, readBody, runCmd, runShell } from "./server-core.js";
 import { BOOTSTRAP_GITIGNORE } from "./server-preview.js";
 import type { RouteCtx } from "./server-routes.js";
 
@@ -30,7 +30,52 @@ function ghJson(args: string[], cwd: string): Promise<{ ok: boolean; data: unkno
 }
 
 export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
-  const { req, res, url, registry } = ctx;
+  const { req, res, url, registry, opts } = ctx;
+
+  // Deploy: put a branch of Warden's OWN source live on the running instance —
+  // checkout + rebuild, optionally restarting to pick up server-side changes.
+  // Closes the "Warden develops Warden" loop without dropping to a terminal.
+  if (url.pathname === "/api/deploy" && req.method === "POST") {
+    try {
+      const { branch, restart } = JSON.parse(await readBody(req)) as
+        { branch?: string; restart?: boolean };
+      const dashDir = process.cwd();          // server is launched from dashboard/
+      const repoRoot = resolve(dashDir, "..");
+      if (!existsSync(join(repoRoot, ".git")) || !existsSync(join(dashDir, "package.json"))) {
+        throw new Error("deploy only works when Warden runs from its own source tree");
+      }
+      if (branch && !/^[\w./-]+$/.test(branch)) throw new Error("bad branch name");
+      const dirty = (await runCmd("git", ["status", "--porcelain"], repoRoot)).output.trim();
+      if (branch && dirty) {
+        throw new Error("uncommitted changes in the source tree — commit or stash before deploying a branch");
+      }
+      if (branch) {
+        const co = await runCmd("git", ["checkout", branch], repoRoot);
+        if (co.code !== 0) throw new Error("checkout failed: " + (co.output.trim() || branch));
+      }
+      const build = await runShell(
+        "npm install --prefer-offline --no-audit --no-fund && npm run build", dashDir,
+      );
+      if (build.code !== 0) throw new Error("build failed: " + build.output.slice(-800));
+      if (restart) {
+        // Detached respawn: a throwaway node process waits for us to exit (freeing
+        // the port), then starts a fresh server. Client assets are already live on
+        // reload; a restart is only needed for server-side changes.
+        const relaunch =
+          `setTimeout(()=>{require("child_process").spawn(process.execPath,` +
+          `["dist/server.js","--port","${opts.port}","--host","${opts.host}"],` +
+          `{cwd:${JSON.stringify(dashDir)},detached:true,stdio:"ignore"}).unref()},2500)`;
+        spawn(process.execPath, ["-e", relaunch], { detached: true, stdio: "ignore" }).unref();
+        json(res, 200, { ok: true, restarting: true });
+        setTimeout(() => process.exit(0), 800);
+        return true;
+      }
+      json(res, 200, { ok: true, restarting: false, log: build.output.slice(-400) });
+    } catch (err) {
+      json(res, 400, { ok: false, error: String(err) });
+    }
+    return true;
+  }
 
   if (url.pathname === "/api/repo/init" && req.method === "POST") {
     try {

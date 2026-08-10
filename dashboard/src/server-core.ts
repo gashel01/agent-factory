@@ -667,6 +667,21 @@ export function runCmd(cmd: string, args: string[], cwd: string): Promise<{ code
 }
 
 
+/** Run one TRUSTED shell command line to completion (shell:true). For our own
+ *  build steps — `npm` is a `.cmd` shim on Windows that plain spawn can't resolve,
+ *  and chained `a && b` needs a shell. Never pass user text here. */
+export function runShell(command: string, cwd: string): Promise<{ code: number; output: string }> {
+  return new Promise((resolvePromise) => {
+    const child = spawn(command, { cwd, shell: true, windowsHide: true });
+    let output = "";
+    child.stdout?.on("data", (chunk) => (output += chunk));
+    child.stderr?.on("data", (chunk) => (output += chunk));
+    child.on("error", (err) => resolvePromise({ code: -1, output: String(err) }));
+    child.on("close", (code) => resolvePromise({ code: code ?? -1, output }));
+  });
+}
+
+
 /* ------------------------------- capsule engine -------------------------------
  * Generic, app-agnostic runner for a project's capsule.json. The factory knows
  * phases/runners/surfaces; the capsule carries the app-specific commands as DATA.

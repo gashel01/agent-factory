@@ -22,6 +22,11 @@
 .pr-new-head-sel { flex: 1 1 0; min-width: 0; }
 .pr-new-base { flex: 0 0 130px; }
 .pr-new-title { flex: 1 1 auto; min-width: 0; }
+/* Deploy: put a branch of Warden's own source live on the running instance. */
+.pr-deploy { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;
+  display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.pr-deploy-text { font-size: 12.5px; color: var(--muted); min-width: 0; }
+.pr-deploy-text code { font-size: 11.5px; }
 .pr-branches { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .pr-branches-head { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .pr-branches ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
