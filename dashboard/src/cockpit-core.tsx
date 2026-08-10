@@ -368,7 +368,7 @@ export function CockpitModal({ onClose }: { onClose: () => void }): JSX.Element 
             </div>
           )}
           <div className="chat-row">
-            <input className="chat-input" value={chatMsg} placeholder="Edit the cockpit in plain English — e.g. "add a lint action" or "dev server is on port 3000""
+            <input className="chat-input" value={chatMsg} placeholder={"Edit the cockpit in plain English — e.g. \"add a lint action\" or \"dev server is on port 3000\""}
               onChange={(e) => setChatMsg(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !chatBusy) void sendChat(); }} disabled={chatBusy} />
             <Button kind="btn" variant="primary" autoPending disabled={chatBusy || !chatMsg.trim()} onClick={sendChat}>
