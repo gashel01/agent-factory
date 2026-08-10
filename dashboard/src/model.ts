@@ -33,6 +33,7 @@ export interface TaskModel {
   liveTurns: number;   // C6: current attempt's turn count while running (0 when idle)
   liveTokens: number;  // C6: current attempt's token estimate while running
   diff: { repo: string; from: string; to: string } | null;
+  deps: string[];  // frozen depends_on from the run's run_start event (empty on pre-0.2 logs)
   model: string | null;
   effort: string | null;
   prUrl: string | null;
@@ -91,7 +92,7 @@ function task(model: Model, id: string): TaskModel {
     entry = {
       id, title: id, state: "QUEUED", turns: null, wallS: null, note: "",
       retries: 0, runningSince: null, finishedAt: null, costUsd: 0, tokens: 0,
-      liveTurns: 0, liveTokens: 0, diff: null,
+      liveTurns: 0, liveTokens: 0, diff: null, deps: [],
       model: null, effort: null, prUrl: null, blockedContext: null, checkpoints: [],
     };
     model.tasks.set(id, entry);
@@ -143,6 +144,7 @@ export function reduce(model: Model, event: FactoryEvent): Model {
           entry.title = t.title;
           if (t.model) entry.model = t.model;
           if (t.effort) entry.effort = t.effort;
+          if (Array.isArray(t.depends_on)) entry.deps = t.depends_on;
         }
       }
       break;

@@ -24,7 +24,7 @@ export interface RunStartEvent extends BaseEvent {
   slots: number;
   budget_usd?: number | null;
   mode?: string; // "subscription" | "api"; absent on older logs
-  tasks: Array<{ id: string; title: string; model?: string | null; effort?: string | null } | string>; // string form: pre-0.2 logs
+  tasks: Array<{ id: string; title: string; model?: string | null; effort?: string | null; depends_on?: string[] } | string>; // string form: pre-0.2 logs
 }
 
 export interface StateEvent extends BaseEvent {
