@@ -124,11 +124,28 @@
 .chart-tip-l { font-size: 10px; color: var(--muted); }
 .an-table { margin-top: 12px; display: flex; flex-direction: column; gap: 2px; }
 .an-row { display: grid; grid-template-columns: 1.4fr 0.7fr 0.7fr 1.2fr; gap: 14px; padding: 6px 10px; border-radius: 5px; font: 12px/1.3 var(--mono); }
+.an-table-errors .an-row-errors { grid-template-columns: 1.2fr 0.6fr 0.6fr 0.8fr 1.2fr; }
 .an-row:nth-child(odd) { background: var(--plane); }
 .an-run { color: var(--ink); }
 .an-spend { color: var(--accent); text-align: right; }
 .an-tok { color: var(--muted); text-align: right; }
 .an-merged { color: var(--st-merged-fg); text-align: right; }
+.an-chart-block { margin-top: 12px; }
+.an-chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.an-peak { font-size: 11px; color: var(--muted); }
+.an-intro { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.an-when { color: var(--ink); }
+.an-result { font-size: 12px; }
+.an-result .ok { color: var(--st-merged-fg); }
+.an-result .none { color: var(--muted); }
+.an-result .warn { color: var(--warn); }
+.an-table .an-head { font-weight: 700; }
+.an-insights { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--plane); }
+.an-insight-item { display: flex; flex-direction: column; gap: 4px; }
+.an-insight-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.an-insight-value { font-size: 12px; color: var(--ink); line-height: 1.4; }
+.an-insight-list { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--ink); line-height: 1.5; }
+.an-insight-list li { margin-bottom: 4px; }
 
 /* dependency graph (D7) */
 .dep-legend { margin: 0 0 12px; }

@@ -174,7 +174,7 @@ export function RunSummary(
 
 /* ------------------------------ cost analytics (D8) ------------------------------ */
 
-export interface RunPoint { run: string; ts: string | null; spend: number; tokens: number; merged: number; needs: number; total: number; mode?: "subscription" | "api" }
+export interface RunPoint { run: string; ts: string | null; spend: number; tokens: number; merged: number; needs: number; total: number; mode?: "subscription" | "api"; error_counts?: Record<string, number> }
 
 /** A dependency-free SVG bar chart, theme-aware via currentColor + CSS vars.
  *  A bar reveals its value + run on hover (desktop) or tap (mobile). */
@@ -233,6 +233,39 @@ export function AnalyticsModal({ onClose }: { onClose: () => void }): JSX.Elemen
   const peakTokens = Math.max(0, ...runs.map((r) => r.tokens));
   const costCaption = runs.every((r) => r.mode !== "api") ? "estimated · not billed"
     : runs.every((r) => r.mode === "api") ? "billed to your API key" : "estimated · some billed";
+
+  // Aggregate error counts across all runs
+  const allErrorCounts: Record<string, number> = {};
+  for (const run of runs) {
+    if (run.error_counts) {
+      for (const [category, count] of Object.entries(run.error_counts)) {
+        allErrorCounts[category] = (allErrorCounts[category] ?? 0) + count;
+      }
+    }
+  }
+  const totalErrors = Object.values(allErrorCounts).reduce((a, b) => a + b, 0);
+  const topErrorCategories = Object.entries(allErrorCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5);
+  const costliestErrors = Object.entries(allErrorCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+
+  // Find most failing model (from top error categories)
+  const failingModels = new Map<string, number>();
+  for (const run of runs) {
+    if (run.error_counts && Object.values(run.error_counts).some(c => c > 0)) {
+      const maxError = Object.entries(run.error_counts).reduce((a, [cat, cnt]) => cnt > a[1] ? [cat, cnt] : a, ["", 0] as [string, number]);
+      if (maxError[0]) {
+        failingModels.set(maxError[0], (failingModels.get(maxError[0]) ?? 0) + 1);
+      }
+    }
+  }
+  const topFailingCategory = failingModels.size > 0
+    ? [...failingModels.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ""
+    : "";
+  const topFailingCount = failingModels.get(topFailingCategory) ?? 0;
+
   return (
     <Modal title="Cost & activity over time" onClose={onClose} wide>
       {series === null ? <Skeleton lines={4} />
@@ -255,24 +288,104 @@ export function AnalyticsModal({ onClose }: { onClose: () => void }): JSX.Elemen
               <BarChart data={runs.map((r) => ({ label: humanRun(r), value: r.tokens, hint: fmtTokens(r.tokens) }))} fmt={fmtTokens} />
             </div>
 
-            <div className="an-table">
-              <div className="an-row an-head">
-                <span>Run</span><span>Cost</span><span>Tokens</span><span>Result</span>
+            {totalErrors > 0 && (
+              <div className="an-chart-block">
+                <div className="an-chart-head"><h4 className="an-h">Error patterns</h4><span className="an-peak">{totalErrors} total errors</span></div>
+                <BarChart data={topErrorCategories.map(([cat, count]) => ({
+                  label: cat.replace(/_/g, " "),
+                  value: count,
+                  hint: `${count} error${count > 1 ? "s" : ""} (${Math.round(count / totalErrors * 100)}%)`,
+                }))} fmt={(n) => String(n)} height={140} />
               </div>
-              {[...runs].reverse().map((r) => (
-                <div key={r.run} className="an-row">
-                  <span className="an-when">{humanRun(r)}</span>
-                  <span className="an-spend">{fmtUsd(r.spend)}</span>
-                  <span className="an-tok">{fmtTokens(r.tokens)}</span>
-                  <span className="an-result">
-                    {r.merged > 0
-                      ? <span className="ok">{r.merged} shipped</span>
-                      : <span className="none">nothing shipped</span>}
-                    {r.needs > 0 && <span className="warn"> · {r.needs} need you</span>}
-                  </span>
+            )}
+
+            {totalErrors > 0 && (
+              <div className="an-table an-table-errors">
+                <div className="an-row an-head">
+                  <span>Run</span><span>Cost</span><span>Tokens</span><span>Errors</span><span>Result</span>
                 </div>
-              ))}
-            </div>
+                {[...runs].reverse().map((r) => {
+                  const runErrors = r.error_counts ? Object.values(r.error_counts).reduce((a, b) => a + b, 0) : 0;
+                  return (
+                    <div key={r.run} className="an-row an-row-errors">
+                      <span className="an-when">{humanRun(r)}</span>
+                      <span className="an-spend">{fmtUsd(r.spend)}</span>
+                      <span className="an-tok">{fmtTokens(r.tokens)}</span>
+                      <span className="an-result">{runErrors > 0 ? `${runErrors} error${runErrors > 1 ? "s" : ""}` : "none"}</span>
+                      <span className="an-result">
+                        {r.merged > 0
+                          ? <span className="ok">{r.merged} shipped</span>
+                          : <span className="none">nothing shipped</span>}
+                        {r.needs > 0 && <span className="warn"> · {r.needs} need you</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {totalErrors === 0 && (
+              <div className="an-table">
+                <div className="an-row an-head">
+                  <span>Run</span><span>Cost</span><span>Tokens</span><span>Result</span>
+                </div>
+                {[...runs].reverse().map((r) => (
+                  <div key={r.run} className="an-row">
+                    <span className="an-when">{humanRun(r)}</span>
+                    <span className="an-spend">{fmtUsd(r.spend)}</span>
+                    <span className="an-tok">{fmtTokens(r.tokens)}</span>
+                    <span className="an-result">
+                      {r.merged > 0
+                        ? <span className="ok">{r.merged} shipped</span>
+                        : <span className="none">nothing shipped</span>}
+                      {r.needs > 0 && <span className="warn"> · {r.needs} need you</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {totalErrors > 0 && (
+              <div className="an-insights">
+                <h4 className="an-h">Optimization insights</h4>
+                <div className="an-insight-item">
+                  <span className="an-insight-title">Most common failure:</span>
+                  <span className="an-insight-value">{topFailingCategory.replace(/_/g, " ")} appears in {topFailingCount} run{topFailingCount > 1 ? "s" : ""} · {Math.round(topFailingCount / runs.length * 100)}% of runs</span>
+                </div>
+                {costliestErrors.length > 0 && (
+                  <div className="an-insight-item">
+                    <span className="an-insight-title">Top 3 errors:</span>
+                    <ul className="an-insight-list">
+                      {costliestErrors.map(([cat, count]) => (
+                        <li key={cat}>{cat.replace(/_/g, " ")}: {count} occurrence{count > 1 ? "s" : ""} ({Math.round(count / totalErrors * 100)}% of all errors)</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {topFailingCategory && totalErrors > 0 && (
+                  <div className="an-insight-item">
+                    <span className="an-insight-title">Recommendation:</span>
+                    <span className="an-insight-value">
+                      {topFailingCategory === "verify_failed"
+                        ? "Review verification strategy — verify_failed is the primary blocker"
+                        : topFailingCategory === "agent_error"
+                          ? "Check agent logs for systematic failures — agent_error suggests environmental or configuration issues"
+                          : topFailingCategory === "merge_conflict"
+                            ? "Merge conflicts indicate concurrent branch changes — consider stricter sequencing or rebasing strategy"
+                            : topFailingCategory === "blocked"
+                              ? "Many tasks require manual review — speed up feedback cycles to reduce blocking"
+                              : topFailingCategory === "timeout"
+                                ? "Timeouts suggest resource constraints — consider splitting tasks or increasing limits"
+                                : topFailingCategory === "rate_limit"
+                                  ? "Rate limits are throttling progress — implement exponential backoff or spread requests over time"
+                                  : topFailingCategory === "budget"
+                                    ? "Budget exhausted frequently — increase token/cost limits or optimize token usage"
+                                    : "Review logs for patterns in why tasks are failing"}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
     </Modal>
