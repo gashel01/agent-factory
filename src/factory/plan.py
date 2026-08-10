@@ -77,12 +77,13 @@ Rules for a good decomposition:
   python -c) that exits non-zero on failure.
 - Each body must contain: ## Context, ## Success criteria, ## Out of scope.
 - Budget honestly: timeout_min 10-45 depending on size.
-- Assign each ticket a "model" to control cost. Set "model": "haiku" ONLY for a
-  genuinely trivial, mechanical ticket a cheap model nails first try — a config or
-  copy tweak, a tiny script, setting up a test harness, a small wiring change. OMIT
-  "model" (the run default, a stronger model) for anything logic-heavy, algorithmic,
-  or risky: a cheap model there just fails and retries, costing MORE than it saved.
-  When unsure, omit it. Most tickets should omit it; reach for haiku deliberately.
+- Almost always OMIT "model". The run starts each ticket on the cheapest tier and
+  ESCALATES automatically on failure (haiku → sonnet → opus), so a cheap-first
+  attempt is already the default — you do not need to pre-assign a strong model,
+  and doing so just skips the cheap attempt and spends more. Set "model" only to
+  force a FLOOR on a ticket you know is subtle enough that the cheap attempts would
+  certainly fail (e.g. "opus" for intricate algorithmic work) — a deliberate, rare
+  exception, not the norm.
 
 Also return a "brief": a compact, durable project map (~150-300 words) that a
 FUTURE agent can read INSTEAD of re-exploring the whole repo. Include: what the
