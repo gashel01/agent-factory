@@ -455,6 +455,8 @@ function App(): JSX.Element {
       </div>
       <HotspotsPanel
         ws={ws}
+        tasks={allTasks}
+        live={live}
         onOpenFile={(path) => setModal({ type: "repo", file: path })}
         onSplit={(path) => setModal({
           type: "newwork", tab: "goal", autostart: false,

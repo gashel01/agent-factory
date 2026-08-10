@@ -805,9 +805,24 @@ export interface Hotspot {
  * cost. "Plan a split" pre-fills the goal composer so the operator can hand the
  * split to the AI in one click. Dismissible; silent when the repo is clean.
  */
+/** True when an in-flight ticket is already carving this file up: its title
+ * names the file itself (`cockpit.tsx`) or a sibling split module (`cockpit-…`).
+ * Used to flip the hotspot's call-to-action to a live "Splitting…" status. */
+function beingSplit(path: string, tasks: TaskModel[], live: boolean): boolean {
+  if (!live) return false;
+  const stem = (path.split(/[\\/]/).pop() ?? "").replace(/\.[^.]+$/, "").toLowerCase();
+  if (!stem) return false;
+  return tasks.some((t) => {
+    if (!inFlight(t.state)) return false;
+    const title = t.title.toLowerCase();
+    return title.includes(`${stem}-`) || title.includes(`${stem}.`);
+  });
+}
+
 export function HotspotsPanel(
-  { ws, onSplit, onOpenFile }:
-  { ws: string; onSplit: (path: string) => void; onOpenFile: (path: string) => void },
+  { ws, tasks, live, onSplit, onOpenFile }:
+  { ws: string; tasks: TaskModel[]; live: boolean;
+    onSplit: (path: string) => void; onOpenFile: (path: string) => void },
 ): JSX.Element | null {
   const [spots, setSpots] = useState<Hotspot[] | null>(null);
   const [repo, setRepo] = useState("");
@@ -854,7 +869,9 @@ export function HotspotsPanel(
             <button type="button" className="hotspots-path" title={`Open ${h.path}`}
               onClick={() => { if (repo) setRepoPath(repo); onOpenFile(h.path); }}>{h.path}</button>
             <span className="hotspots-meta">~{Math.round(h.estTokens / 1000)}k tokens · {h.edits} recent edits</span>
-            <button className="hotspots-split" onClick={() => onSplit(h.path)}>Plan a split</button>
+            {beingSplit(h.path, tasks, live)
+              ? <span className="hotspots-split is-splitting" title="A ticket is already splitting this file">Splitting…</span>
+              : <button className="hotspots-split" onClick={() => onSplit(h.path)}>Plan a split</button>}
           </li>
         ))}
       </ul>
