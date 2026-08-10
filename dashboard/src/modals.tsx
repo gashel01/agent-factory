@@ -523,7 +523,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element
               ))}
             </div>
           </Row>
-          <Row label="Coding model" hint="The model every coding agent uses. A ticket can still pin its own.">
+          <Row label="Coding model" hint="The starting model for every coding agent — cheapest is fine: a ticket that fails verify automatically retries on a stronger tier (haiku → sonnet → opus). A ticket can still pin its own.">
             <Select value={s.model} onChange={(v) => set({ model: v })} ariaLabel="Coding model"
               options={modelChoices.map(([value, label]) => ({ value, label }))} />
           </Row>
