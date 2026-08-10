@@ -140,6 +140,13 @@ class Dispatcher:
         self.log.emit("state", task=task.id, **{"from": frm, "to": to})
 
     def _fail(self, task: Task, reason: str) -> None:
+        # Idempotent: a task that already reached a terminal state must not be
+        # failed again. Otherwise a worker cancelled DURING run shutdown (asyncio
+        # cancels every worker, even ones whose task already finished) re-emits a
+        # spurious "killed by the operator" over the real reason — which also hid
+        # the true failure from the "why did it fail?" diagnostic.
+        if self.state[task.id] in (TaskState.DONE, TaskState.FAILED, TaskState.BLOCKED):
+            return
         self.log.emit("failure", task=task.id, reason=reason[:1000])
         self._set_state(task, TaskState.FAILED)
 

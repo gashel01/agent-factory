@@ -748,7 +748,11 @@ export const DX_CATEGORY: Record<string, string> = {
 };
 
 function parseDiagnosis(raw: unknown): Diagnosis {
-  const d = asRec(raw);
+  // The endpoint wraps the diagnosis as {ok, run, task, diagnosis, summary}, so
+  // unwrap it — reading the fields off the envelope gave an all-empty diagnosis
+  // every time, which the modal reported as "no failure was recorded".
+  const top = asRec(raw);
+  const d = asRec(top["diagnosis"] ?? top);
   return {
     category: asStr(d["category"]) || "unknown",
     headline: asStr(d["headline"]),

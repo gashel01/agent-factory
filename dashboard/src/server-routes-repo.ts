@@ -45,6 +45,15 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
         throw new Error("deploy only works when Warden runs from its own source tree");
       }
       if (branch && !/^[\w./-]+$/.test(branch)) throw new Error("bad branch name");
+      // A restart kills any spawned run/loop subprocess, so refuse while one is
+      // live — otherwise a deploy would abort a run mid-flight (surfacing as a
+      // spurious "killed by the operator").
+      const busy = [...registry.workspaces.values()].find(
+        (w) => w.jobs.run.state === "running" || w.jobs.loop.state === "running",
+      );
+      if (restart && busy) {
+        throw new Error(`a run is active on '${busy.name}' — stop it before deploying (a restart would kill it)`);
+      }
       const dirty = (await runCmd("git", ["status", "--porcelain"], repoRoot)).output.trim();
       if (branch && dirty) {
         throw new Error("uncommitted changes in the source tree — commit or stash before deploying a branch");
