@@ -988,6 +988,13 @@ export function RunEstimateModal(
   const [apiMode, setApiMode] = useState(false);
   const [sandbox, setSandbox] = useState(false);
   const [dockerReady, setDockerReady] = useState<boolean | null>(null);
+  // Delivery target. Default: merge into the configured base (unchanged behaviour).
+  // Opt in to a fresh integration branch — the factory creates + checks it out, so
+  // a big refactor lands as ONE PR with the base untouched, no CLI, no branch sprawl.
+  const [deliverNew, setDeliverNew] = useState(false);
+  const [branch, setBranch] = useState(
+    () => "integrate/" + new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-"),
+  );
 
   useEffect(() => {
     let alive = true;
@@ -1018,10 +1025,13 @@ export function RunEstimateModal(
   const conf = pct(sel?.confidence ?? null);
   const fallback = avgCost !== null ? avgCost * tickets : null;
 
+  const base = deliverNew && branch.trim() ? branch.trim() : undefined;
   const start = async (): Promise<void> => {
     try {
-      await postJSON("/api/run", { profile, ...(sel ? { forecast: sel.raw } : {}) });
-      toast(`Run starting on the ${profile} profile — remaining tickets replay with the current config.`);
+      await postJSON("/api/run", { profile, ...(sel ? { forecast: sel.raw } : {}), ...(base ? { base } : {}) });
+      toast(base
+        ? `Run starting on ${base} — delivers as one PR, base untouched.`
+        : `Run starting on the ${profile} profile — remaining tickets replay with the current config.`);
       onClose();
     } catch (err) { toast(String(err), true); }
   };
@@ -1046,6 +1056,23 @@ export function RunEstimateModal(
               </button>
             );
           })}
+        </div>
+
+        <div className="run-deliver">
+          <div className="rd-head">Deliver to</div>
+          <label className={`rd-opt${!deliverNew ? " on" : ""}`}>
+            <input type="radio" name="deliver" checked={!deliverNew} onChange={() => setDeliverNew(false)} />
+            <span><b>The base branch</b> — verified tickets merge straight in.</span>
+          </label>
+          <label className={`rd-opt${deliverNew ? " on" : ""}`}>
+            <input type="radio" name="deliver" checked={deliverNew} onChange={() => setDeliverNew(true)} />
+            <span><b>A new integration branch</b> — base untouched, lands as one PR you open from here.</span>
+          </label>
+          {deliverNew && (
+            <input className="rd-branch" value={branch} aria-label="Integration branch name"
+              placeholder="integrate/…"
+              onChange={(e) => setBranch(e.currentTarget.value.replace(/[^\w./-]/g, ""))} />
+          )}
         </div>
 
         {forecasts === null && <Skeleton lines={3} />}

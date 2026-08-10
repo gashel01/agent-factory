@@ -28,7 +28,7 @@ from .plan import (
 )
 from .supervise import SuperviseError, ask, format_answer, reset
 from .task import TicketError, load_backlog, parse_ticket
-from .worktree import GitError, prune
+from .worktree import GitError, ensure_base_checked_out, prune
 
 
 def _latest_run(runs_dir: Path) -> Path | None:
@@ -57,7 +57,12 @@ def _replay_states(run_dir: Path) -> tuple[dict[str, str], dict]:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    cfg = load_config(args.config).with_overrides(max_slots=args.slots)
+    # --base overrides the delivery target for THIS run only (no factory.yaml edit):
+    # verified tickets merge onto <base> instead of the config's base_branch, so a
+    # batch can be delivered to a fresh integration branch and land as one PR.
+    cfg = load_config(args.config).with_overrides(
+        max_slots=args.slots, base_branch=getattr(args, "base", None)
+    )
     tasks = load_backlog(args.backlog, cfg.base_branch, cfg.default_max_retries)
 
     # A run only launches AI tickets that aren't on hold. Manual tickets belong to
@@ -91,6 +96,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             for a, b in collisions:
                 print(f"  {a} <-> {b}")
         return 0
+
+    # Deliver to the requested base: create the integration branch and check it out
+    # (per repo in the batch) so the merge queue's preflight passes — the operator
+    # never has to switch branches by hand. Guarded against a dirty tree upstream.
+    if getattr(args, "base", None):
+        for repo in {t.repo for t in tasks if t.repo}:
+            ensure_base_checked_out(Path(repo), args.base)
 
     # Absolute, always: worktree paths are handed to `git -C <repo>`, which
     # resolves relative paths against the REPO, not our cwd.
@@ -380,6 +392,9 @@ def main(argv: list[str] | None = None) -> int:
     p_run = sub.add_parser("run", parents=[common], help="execute the backlog")
     p_run.add_argument("--slots", type=int, default=None,
                        help="max parallel agents (overrides factory.yaml; no hard ceiling)")
+    p_run.add_argument("--base", default=None,
+                       help="deliver onto this branch for THIS run (created + checked "
+                            "out if missing); e.g. a fresh integration branch")
     p_run.add_argument("--dry-run", action="store_true",
                        help="parse tickets, show schedule and collisions, launch nothing")
     p_run.set_defaults(func=cmd_run)

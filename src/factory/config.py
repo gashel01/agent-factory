@@ -182,8 +182,15 @@ class Config:
     ratelimit: RateLimitConfig = field(default_factory=RateLimitConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
 
-    def with_overrides(self, *, max_slots: int | None = None) -> Config:
-        return replace(self, max_slots=max_slots) if max_slots else self
+    def with_overrides(
+        self, *, max_slots: int | None = None, base_branch: str | None = None
+    ) -> Config:
+        changes: dict[str, object] = {}
+        if max_slots:
+            changes["max_slots"] = max_slots
+        if base_branch:
+            changes["base_branch"] = base_branch
+        return replace(self, **changes) if changes else self
 
 
 def _validate_effort(value: object) -> str | None:

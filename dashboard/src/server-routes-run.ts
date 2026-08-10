@@ -403,8 +403,8 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
 
   if (url.pathname === "/api/run" && req.method === "POST") {
     try {
-      const { slots, profile, forecast } = JSON.parse(await readBody(req)) as
-        { slots?: number; profile?: string; forecast?: unknown };
+      const { slots, profile, forecast, base } = JSON.parse(await readBody(req)) as
+        { slots?: number; profile?: string; forecast?: unknown; base?: string };
       if (ws.jobs.run.state === "running") throw new Error("a run is already in progress");
       // A launch from the estimate panel carries the estimate the operator
       // accepted. Persist it BEFORE spawning: the dispatcher names the run, so
@@ -416,6 +416,11 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
       }
       const args = ["run"];
       if (slots && Number.isFinite(slots) && slots > 0) args.push("--slots", String(slots));
+      // Per-run delivery target: the factory creates + checks out this branch, so a
+      // batch lands on a fresh integration branch (one PR) without a factory.yaml edit.
+      if (typeof base === "string" && base.trim() && /^[\w./-]+$/.test(base.trim())) {
+        args.push("--base", base.trim());
+      }
       // The run reads project lessons from its own workdir; the shared global
       // lessons live outside it, so hand their path over explicitly.
       spawnJob(ws, "run", opts.factory, args, { FACTORY_GLOBAL_MEMORY: globalMemFile });

@@ -138,6 +138,28 @@ def push_branch(repo: Path, branch: str) -> None:
     git(repo, "push", "--force-with-lease", "-u", "origin", branch)
 
 
+def ensure_base_checked_out(repo: Path, branch: str) -> None:
+    """Make <branch> the checked-out base of <repo>, creating it from the current
+    HEAD if it does not exist. Lets a run target a fresh integration branch without
+    the operator ever touching git — but never clobbers uncommitted work: a dirty
+    tree raises with an actionable message instead of switching under it."""
+    if current_branch(repo) == branch:
+        return
+    if not is_clean(repo):
+        raise GitError(
+            ("switch",),
+            f"{repo} has uncommitted changes — commit or stash them before "
+            f"delivering to '{branch}', or deliver onto the current branch instead.",
+        )
+    exists = git(
+        repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False
+    ).returncode == 0
+    if exists:
+        git(repo, "switch", branch)
+    else:
+        git(repo, "switch", "-c", branch)
+
+
 def preflight(repo: Path, base_branch: str) -> None:
     """Fail fast, with an actionable message, before any agent is spawned."""
     if not (repo / ".git").exists():
