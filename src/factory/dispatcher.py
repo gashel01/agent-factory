@@ -389,6 +389,7 @@ class Dispatcher:
             slots=self.cfg.max_slots,
             budget_usd=self.cfg.budget_usd,
             mode=self.cfg.execution_mode,
+            pr=self.cfg.pr.enabled,
             tasks=[
                 {"id": t.id, "title": t.title, "model": t.model, "effort": t.effort,
                  "depends_on": list(t.depends_on)}

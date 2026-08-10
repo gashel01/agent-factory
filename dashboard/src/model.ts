@@ -60,6 +60,7 @@ export interface Model {
   integration: { running: boolean; results: Array<{ repo: string; ok: boolean; failures: string[] }> };
   sync: { ahead: number; behind: number; pulled: boolean } | null;
   mode: "subscription" | "api";
+  prMode: boolean | null;  // this run's delivery: true = a PR per ticket, false = merged to base. null on pre-0.2 logs
   planLimit: { status: string; resetsAt: number | null; window: string } | null;
 }
 
@@ -82,6 +83,7 @@ export function freshModel(run: string): Model {
     integration: { running: false, results: [] },
     sync: null,
     mode: "subscription",
+    prMode: null,
     planLimit: null,
   };
 }
@@ -137,6 +139,7 @@ export function reduce(model: Model, event: FactoryEvent): Model {
       model.startedTs = e.ts;
       model.budgetUsd = e.budget_usd ?? null;
       model.mode = e.mode === "api" ? "api" : "subscription";
+      if (typeof e.pr === "boolean") model.prMode = e.pr;
       for (const t of e.tasks) {
         const id = typeof t === "string" ? t : t.id;
         const entry = task(model, id);

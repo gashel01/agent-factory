@@ -253,6 +253,11 @@ body::after {
 .mode-badge { font: 600 12px var(--sans); padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border2); cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
 .mode-badge.mode-subscription { color: var(--st-merged-fg); background: var(--st-merged-bg); border-color: var(--st-merged-bd); }
 .mode-badge.mode-api { color: var(--st-merging-fg); background: var(--st-merging-bg); border-color: var(--st-merging-bd); }
+/* Delivery mode: PR-per-ticket is the one that surprises people (base branch
+   doesn't move until they merge), so give it the attention-amber treatment;
+   integrated (merges to base) stays a calm neutral. */
+.mode-badge.delivery-pr { color: var(--st-blocked-fg); background: var(--st-blocked-bg); border-color: var(--st-blocked-bd); }
+.mode-badge.delivery-integrated { color: var(--muted); background: var(--surface); border-color: var(--border2); }
 .mode-badge:hover { filter: brightness(1.05); }
 /* Which agent CLI is being driven — a quiet, non-interactive chip next to the mode badge. */
 .agent-ver { display: inline-flex; align-items: center; gap: 5px; font: 500 11px/1 var(--mono); color: var(--faint); white-space: nowrap; padding: 0 2px; }
