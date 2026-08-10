@@ -30,7 +30,7 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { diagnose } from "./diagnostics.js";
-import type { Diagnosis } from "./diagnostics.js";
+import type { Diagnosis, DiagnosisCategory, ErrorPatternSummary } from "./diagnostics.js";
 import {
   forecastRun, historyStats, parseTicket, PROFILE_NAMES, PROFILES, reconcile,
 } from "./forecast.js";
@@ -496,4 +496,38 @@ export function reconcileRun(
   const stored = attachForecastToRun(workdir, runsDir, run);
   if (!stored) return null;
   return reconcile(stored.forecast, actualsFor(runsDir, run));
+}
+
+export function analyzeErrorPatterns(runsDir: string, run: string): ErrorPatternSummary {
+  const events = readRunEvents(runsDir, run);
+  const taskIds = new Set<string>();
+  const errorCounts: Record<DiagnosisCategory, number> = {
+    verify_failed: 0,
+    agent_error: 0,
+    blocked: 0,
+    merge_conflict: 0,
+    timeout: 0,
+    rate_limit: 0,
+    budget: 0,
+    stopped: 0,
+    unknown: 0,
+  };
+
+  for (const event of events) {
+    const e = event as unknown as Record<string, unknown>;
+    if (typeof e.task === "string" && e.task) {
+      taskIds.add(e.task);
+    }
+  }
+
+  for (const taskId of taskIds) {
+    const diagnosis = diagnose({ taskId, events, agentLog: "" });
+    errorCounts[diagnosis.category]++;
+  }
+
+  return {
+    run,
+    taskCount: taskIds.size,
+    errorCounts,
+  };
 }
