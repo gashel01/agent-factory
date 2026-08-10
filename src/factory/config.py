@@ -152,6 +152,11 @@ class Config:
     # (distinct from retries, which are for failures). Bounds a genuinely stuck
     # ticket that would otherwise resume forever without finishing.
     max_continuations: int = 2
+    # Model escalation ladder: on a RETRY (a failure, not a resume) a task that is
+    # currently on a tier in this ladder is bumped to the next one up — cheap first,
+    # stronger only when the cheap tier couldn't do it. Empty = retry the same model.
+    # A ticket already on the top tier (or on a model not in the ladder) is left as-is.
+    escalation: tuple[str, ...] = ("haiku", "sonnet", "opus")
     # Cost ceiling for the whole run, in API-equivalent USD (the number the CLI
     # reports per agent). None = no cap. When cumulative spend crosses it, no new
     # agents launch; in-flight ones finish. A visible, adjustable safety net.
@@ -267,6 +272,11 @@ def load_config(path: Path | None) -> Config:
         default_max_retries=_cfg_int(conc.get("max_retries"), 1, "concurrency.max_retries"),
         max_continuations=_cfg_int(
             conc.get("max_continuations"), 2, "concurrency.max_continuations"
+        ),
+        escalation=(
+            tuple(str(m) for m in conc["escalation"])
+            if isinstance(conc.get("escalation"), list)
+            else ("haiku", "sonnet", "opus")
         ),
         budget_usd=(
             _cfg_float(budget["max_usd"], 0.0, "budget.max_usd")

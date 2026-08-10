@@ -139,6 +139,20 @@ class Dispatcher:
         self.state[task.id] = to
         self.log.emit("state", task=task.id, **{"from": frm, "to": to})
 
+    def _escalate_model(self, task: Task) -> None:
+        """On a retry, bump the task up the model ladder — cheap tier first, a
+        stronger one only when the cheap one couldn't do it. Only moves UP along a
+        known ladder: a ticket already on the top tier, or on a model that isn't in
+        the ladder at all, is left untouched (never downgraded)."""
+        tiers = self.cfg.escalation
+        current = task.model or self.cfg.agent.model
+        if not tiers or current not in tiers:
+            return
+        idx = tiers.index(current)
+        if idx + 1 < len(tiers):
+            task.model = tiers[idx + 1]
+            self.log.emit("escalate", task=task.id, **{"from": current, "to": task.model})
+
     def _fail(self, task: Task, reason: str) -> None:
         # Idempotent: a task that already reached a terminal state must not be
         # failed again. Otherwise a worker cancelled DURING run shutdown (asyncio
@@ -168,6 +182,7 @@ class Dispatcher:
         task.attempts += 1
         if task.attempts <= task.max_retries:
             task.failure_notes.append(reason[:500])
+            self._escalate_model(task)
             self.log.emit("retry", task=task.id, attempt=task.attempts, reason=reason[:500])
             self._set_state(task, TaskState.QUEUED)
             return True

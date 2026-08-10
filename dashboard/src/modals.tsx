@@ -43,6 +43,7 @@ export function describe(event: FactoryEvent): string {
     case "agent_result": return `${tag}agent ${e["status"]} (${e["turns"] ?? "?"} turns${e["cost_usd"] ? `, ${fmtUsd(e["cost_usd"] as number)}` : ""})`;
     case "verify": return `${tag}verify ${e["ok"] ? "ok" : "FAILED: " + (e["failures"] as string[]).join("; ")}`;
     case "retry": return `${tag}retry #${e["attempt"]}: ${e["reason"]}`;
+    case "escalate": return `${tag}escalated model ${e["from"]} → ${e["to"]}`;
     case "failure": return `${tag}failed: ${e["reason"]}`;
     case "blocked": return `${tag}blocked: ${e["question"]}`;
     case "answered": return `${tag}answered by the operator — back in the queue`;
