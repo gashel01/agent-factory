@@ -3,7 +3,7 @@ import type { JSX } from "react";
 import { parseDiff } from "./model.js";
 import { langFromPath } from "./highlight.js";
 import { ChevronDown } from "./icons.js";
-import { CodeLine } from "./cockpit.js";
+import { CodeLine } from "./repo-modal.js";
 
 /** An operator's note pinned to one diff line (the pépite: it loops back to the
  *  agent as "changes" feedback). */

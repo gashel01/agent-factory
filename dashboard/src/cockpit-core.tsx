@@ -8,7 +8,7 @@ import { NetInfo } from "./screens.js";
 import { Modal } from "./widgets.js";
 import { ConsentCard, capsuleIcon } from "./cockpit-consent.js";
 import { DeviceInstall } from "./cockpit-device.js";
-import { PanelCard } from "./cockpit.js";
+import { PanelCard } from "./cockpit-panel.js";
 
 export function CockpitModal({ onClose }: { onClose: () => void }): JSX.Element {
   const [view, setView] = useState<CapsuleView | null>(null);
