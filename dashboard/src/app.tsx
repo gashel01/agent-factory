@@ -407,7 +407,10 @@ function App(): JSX.Element {
                   </>
                 ) : (
                   <button className="hbtn accent" onClick={() => setModal({ type: "runestimate", tickets: willRun })}>
-                    <Play size={14} /> {model.run ? "Run again" : "Start run"} ({willRun})
+                    {/* "Run again" only when re-executing tickets from the finished
+                        run (runnable > 0). Fresh backlog work — even after a prior
+                        run — is a plain "Run", not a re-run. */}
+                    <Play size={14} /> {runnable > 0 ? "Run again" : "Run"} ({willRun})
                   </button>
                 )}
               </div>
