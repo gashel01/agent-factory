@@ -580,7 +580,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element
           <Row label="Sandboxing" hint="Direct runs agents as normal processes — fast, full access to your machine (the default). Sandbox boxes each agent in a hardened container: only its own copy of the repo is visible, network limited to Anthropic, privileges dropped. For untrusted work or a client demo.">
             <SandboxControl value={s.isolation} onChange={(v) => set({ isolation: v })} />
           </Row>
-          <Row label="Open a pull request" hint="Instead of merging locally, push each verified ticket and open a GitHub PR — review and merge on GitHub. Needs a connected GitHub repo.">
+          <Row label="Delivery: a PR per ticket" hint="OFF (default): each verified ticket merges straight into the base branch — one integrated result lands locally. ON: each verified ticket is pushed to its own branch and opened as a GitHub PR instead — your base branch does NOT move until you merge those PRs yourself, and a batch becomes several separate PRs to review. Needs a connected GitHub repo.">
             <input type="checkbox" className="switch" checked={s.prNative} onChange={(e) => set({ prNative: e.target.checked })} />
           </Row>
           <Row label="Retries per task" hint="How many times a failing ticket is re-attempted. Each retry is a full agent run — keep low for costly tasks.">

@@ -24,7 +24,7 @@ import {
   BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
-  GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
+  GitBranch, GitMerge, GitPullRequest, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
   MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
@@ -353,6 +353,14 @@ function App(): JSX.Element {
             title={model.mode === "api" ? "API mode — real dollars billed. Click to change." : "Subscription mode — draws from your plan, no real charge. Click to change."}>
             {model.mode === "api" ? <><Key size={13} /> API</> : <><InfinityIcon size={14} /> Subscription</>}
           </button>
+          {model.prMode !== null && (
+            <button className={`mode-badge delivery-${model.prMode ? "pr" : "integrated"}`} onClick={() => setModal({ type: "settings" })}
+              title={model.prMode
+                ? "Delivery: one GitHub PR per verified ticket. Nothing lands on your base branch until YOU merge those PRs — merged tickets on the board just mean the PR is open. Click to change."
+                : "Delivery: verified tickets merge straight into the base branch (one integrated result). Click to change."}>
+              {model.prMode ? <><GitPullRequest size={13} /> PRs per ticket</> : <><GitMerge size={13} /> Integrated</>}
+            </button>
+          )}
           <OverflowMenu ariaLabel="More actions" items={[
             { label: "Command palette", hint: "⌘K", onClick: () => setModal({ type: "cmdk" }) },
             { label: "Notifications", hint: notify.on ? "On" : "Off", on: notify.on, onClick: notify.toggle },
