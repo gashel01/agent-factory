@@ -6,9 +6,11 @@ consecutive failures). The base branch (e.g. main) is NEVER touched: tickets
 auto-merge onto `warden/loop-<name>`, and the loop opens a SINGLE pull request
 (integration branch -> base) at the end for the operator to test and merge.
 
-Explicit-objective mode only for now (the objective + acceptance command are given
-by the operator). Other command modes (backlog / supervisor / self) layer on top
-of this same controller later.
+Four work-picking modes share this same guardrailed controller (see `_pick_work`):
+explicit (plan the operator's objective + acceptance into tickets), backlog (drain
+an existing ticket dir, no planning spend), self (auto-split the repo's top
+oversized file each round), and supervisor (an agent proposes the next objective
+from the mission + what has landed).
 
 The whole point of this increment is that the guardrails are PROVABLE without
 spending a token: the e2e tests exercise every stop with the stub agent.
