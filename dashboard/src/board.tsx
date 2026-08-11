@@ -59,6 +59,7 @@ export type ModalState =
   | { type: "review"; taskId: string }
   | { type: "analytics" }
   | { type: "depgraph" }
+  | { type: "coordination" }
   | { type: "cmdk" }
   | { type: "docs" }
   | { type: "aireview"; file: string; title: string }

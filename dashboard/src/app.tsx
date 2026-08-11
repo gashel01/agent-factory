@@ -25,7 +25,7 @@ import {
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
   GitBranch, GitMerge, GitPullRequest, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
-  MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
+  MessageSquare, MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
@@ -33,6 +33,7 @@ import { AiReviewModal, AnalyticsModal, BoardTicket, DepGraphModal, HotspotsPane
 import { AutopilotModal, CockpitModal, PreviewModal, PullRequestsModal, RepoModal } from "./cockpit.js";
 import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useCompanion, useEventStream, useNotifyPref, useNow, useRunActive, useStateAlerts } from "./core.js";
 import { DiagnosticsModal, DocsModal, LogModal, Row, RunEstimateModal, SettingsModal, describe } from "./modals.js";
+import { CoordinationModal } from "./coordination-view.js";
 import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, SupervisorDock, useTheme } from "./screens.js";
 import { CommandPalette, ConfirmButton, OverflowMenu, Select, UsageCard, sendControl, useBacklog, useHidden } from "./widgets.js";
 // The command-palette item type. Aliased because the bare name `Command` is also a
@@ -190,6 +191,7 @@ function App(): JSX.Element {
       { id: "docs", group: "Open", label: "Knowledge base", run: () => setModal({ type: "docs" }) },
       { id: "repo", group: "Open", label: "Repo explorer", run: () => setModal({ type: "repo" }) },
       { id: "deps", group: "Open", label: "Dependency graph", run: () => setModal({ type: "depgraph" }) },
+      { id: "coord", group: "Open", label: "Shared space (agent coordination)", run: () => setModal({ type: "coordination" }) },
       { id: "analytics", group: "Open", label: "Cost analytics", run: () => setModal({ type: "analytics" }) },
       { id: "supervisor", group: "Open", label: "Supervisor", run: () => setRailOpen(true) },
       { id: "preview", group: "Open", label: "View result (preview)", run: () => setModal({ type: "preview" }) },
@@ -470,6 +472,7 @@ function App(): JSX.Element {
           {(hasDeps || autopilot) && (
             <button className="board-tool" title="Ticket dependency graph" onClick={() => setModal({ type: "depgraph" })}><GitMerge size={13} /> Deps</button>
           )}
+          <button className="board-tool" title="The shared space where agents coordinate — who's editing what, symbols they've published, decisions they share" onClick={() => setModal({ type: "coordination" })}><MessageSquare size={13} /> Shared space</button>
           <button className="board-tool" title="This project's docs your agents can read" onClick={() => setModal({ type: "docs" })}><BookOpen size={13} /> Knowledge</button>
           {removed.length > 0 && (
             <button className="board-tool" title="Tickets you removed from the board — restore them here" onClick={() => setModal({ type: "removed" })}><Trash2 size={13} /> Removed ({removed.length})</button>
@@ -559,6 +562,7 @@ function App(): JSX.Element {
           liveNodes={live ? allTasks.map((t) => ({ id: t.id, title: t.title, deps: t.deps })) : null}
           onClose={() => setModal(null)} />
       )}
+      {modal?.type === "coordination" && <CoordinationModal onClose={() => setModal(null)} />}
       {modal?.type === "answer" && (
         <AnswerModal taskId={modal.taskId} title={modal.title} question={modal.question}
           context={modal.context} onClose={() => setModal(null)} />

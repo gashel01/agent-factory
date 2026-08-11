@@ -9,7 +9,7 @@ import {
 import { basename, join, resolve } from "node:path";
 
 import {
-  askOneShot, json, parsePlanQuestions, readBody, runCmd, SAFE_NAME, saveHidden,
+  askOneShot, json, latestRun, parsePlanQuestions, readBody, runCmd, SAFE_NAME, saveHidden,
   spawnJob, summarizeRun, workspaceRepo,
 } from "./server-core.js";
 import { agentVersion } from "./server-usage.js";
@@ -85,6 +85,72 @@ function extractDraft(text: string): { objective: string; accept: string } | nul
 export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
   const { req, res, url, ws, opts, globalMemFile } = ctx;
   const backlogDir = join(ws.workdir, "backlog");
+
+  if (url.pathname === "/api/coordination") {
+    // The shared workspace agents see: who claims/lands which files, the symbols
+    // now defined, and the decisions/notes they've posted. Folded from the run's
+    // append-only coordination.jsonl (mirrors factory.coordination.world_index).
+    const runsDir = ws.tailer.runsDir;
+    const run = latestRun(runsDir);
+    const file = run ? join(runsDir, run, "coordination.jsonl") : "";
+    const events: Array<Record<string, unknown>> = [];
+    if (file && existsSync(file)) {
+      for (const line of readFileSync(file, "utf-8").split("\n")) {
+        const t = line.trim();
+        if (!t) continue;
+        try { events.push(JSON.parse(t)); } catch { /* skip a half-written line */ }
+      }
+    }
+    const claimFiles = new Map<string, string[]>();
+    const landedFiles = new Map<string, string[]>();
+    const ended = new Set<string>();
+    const symbols: Array<{ name: string; file: string; ticket: string }> = [];
+    const symSeen = new Set<string>();
+    const decisions = new Map<string, { value: string; ticket: string }>();
+    const discoveries: Array<{ ticket: string; note: string }> = [];
+    for (const e of events) {
+      const tk = String(e.ticket ?? "");
+      const kind = e.kind;
+      if (kind === "claim") {
+        claimFiles.set(tk, (e.writes as string[] ?? []).map(String));
+      } else if (kind === "landed") {
+        ended.add(tk);
+        landedFiles.set(tk, (e.files as string[] ?? []).map(String));
+        for (const [name, f] of Object.entries((e.symbols as Record<string, string>) ?? {})) {
+          const key = `${name}@${f}`;
+          if (!symSeen.has(key)) { symSeen.add(key); symbols.push({ name: String(name), file: String(f), ticket: tk }); }
+        }
+      } else if (kind === "released") {
+        ended.add(tk);
+      } else if (kind === "decision") {
+        decisions.set(String(e.key ?? ""), { value: String(e.value ?? ""), ticket: tk });
+      } else if (kind === "discovery") {
+        discoveries.push({ ticket: tk, note: String(e.note ?? "") });
+      }
+    }
+    const agents: Array<{ ticket: string; files: string[]; state: string; symbols: string[] }> = [];
+    for (const tk of new Set([...claimFiles.keys(), ...landedFiles.keys()])) {
+      const landed = landedFiles.has(tk);
+      agents.push({
+        ticket: tk,
+        files: landed ? landedFiles.get(tk)! : (claimFiles.get(tk) ?? []),
+        state: landed ? "landed" : (ended.has(tk) ? "released" : "live"),
+        symbols: symbols.filter((s) => s.ticket === tk).map((s) => s.name),
+      });
+    }
+    agents.sort((a, b) => a.ticket.localeCompare(b.ticket));
+    json(res, 200, {
+      run,
+      agents,
+      symbols: symbols.sort((a, b) => a.name.localeCompare(b.name)),
+      decisions: [...decisions.entries()]
+        .filter(([k]) => k)
+        .map(([key, v]) => ({ key, value: v.value, ticket: v.ticket }))
+        .sort((a, b) => a.key.localeCompare(b.key)),
+      discoveries: discoveries.slice(-20),
+    });
+    return true;
+  }
 
   if (url.pathname === "/api/events") {
     res.writeHead(200, {
