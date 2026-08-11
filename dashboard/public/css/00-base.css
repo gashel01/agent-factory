@@ -116,12 +116,16 @@ h1, h2, h3 { letter-spacing: -0.02em; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ------------------------------- page shell + top app bar ------------------------------- */
-.page { max-width: 1160px; margin: 0 auto; padding: 36px 24px 60px; }
-.page.narrow { max-width: 1000px; }
+/* Full-bleed by default so the content lines up under the full-width header
+   (like the board). `.narrow` opts a reading page back into a centred column. */
+.page { padding: 30px 22px 60px; }
+.page.narrow { max-width: 1000px; margin-inline: auto; padding-inline: 24px; }
 
 .appbar { position: sticky; top: 0; z-index: 30; background: var(--surface); border-bottom: 1px solid var(--border); }
-.appbar-inner { max-width: 1160px; margin: 0 auto; display: flex; align-items: center; gap: 16px; padding: 14px 24px; }
-.appbar-inner.narrow { max-width: 1000px; }
+/* Full-bleed like the board header (brand pinned left, actions pinned right via
+   the spacer) rather than a centred column — consistent across screens. */
+.appbar-inner { display: flex; align-items: center; gap: 16px; padding: 14px 22px; min-height: var(--header-h); }
+.appbar-inner.narrow { max-width: none; }
 
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .brand-logo { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(150deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #f1c669)); display: grid; place-items: center; flex: 0 0 auto; box-shadow: var(--shadow-md); border: 0; cursor: default; padding: 0; }
