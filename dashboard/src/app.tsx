@@ -35,7 +35,7 @@ import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useC
 import { DiagnosticsModal, DocsModal, LogModal, Row, RunEstimateModal, SettingsModal, describe } from "./modals.js";
 import { CoordinationModal } from "./coordination-view.js";
 import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, SupervisorDock, useTheme } from "./screens.js";
-import { CommandPalette, ConfirmButton, OverflowMenu, Select, UsageCard, sendControl, useBacklog, useHidden } from "./widgets.js";
+import { CommandPalette, ConfirmButton, OverflowMenu, ProjectSwitcher, Select, UsageCard, sendControl, useBacklog, useHidden } from "./widgets.js";
 // The command-palette item type. Aliased because the bare name `Command` is also a
 // Lucide icon value imported above; in the pre-split monolith the value-import and
 // the interface merged in one file — apart, the type must be pulled in explicitly.
@@ -363,16 +363,13 @@ function App(): JSX.Element {
               <span className="brand-sub">Local execution</span>
             </div>
           </div>
-          <button className="hbtn back-projects" onClick={() => setScreen("projects")} title="Back to all projects">
-            <ArrowLeft size={14} /> All projects
-          </button>
           {workspaces.length > 0 && (
-            <div className="proj-select">
-              <span className="sq" />
-              <Select className="proj-picker" ariaLabel="Switch project" minWidth={200}
-                value={ws} onChange={(v) => { setWs(v); setWsState(v); }}
-                options={workspaces.map((w) => ({ value: w.name, label: w.name }))} />
-            </div>
+            <ProjectSwitcher
+              workspace={ws}
+              workspaces={workspaces}
+              onOpenProjects={() => setScreen("projects")}
+              onSwitchProject={(name) => { setWs(name); setWsState(name); }}
+            />
           )}
           <div className="spacer" />
           <AgentVersionChip />
