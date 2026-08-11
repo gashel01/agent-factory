@@ -586,10 +586,16 @@ export function useFileAttachments(): {
         : Promise.resolve(fileIconSvg(file.name));
 
       thumbPromise.then((thumb) => {
-        void postJSON<{ path?: string; name?: string }>("/api/attachments", {
-          dataUrl: fileContent,
-          name: file.name,
-        })
+        let body: Record<string, string>;
+        if (isImage(file)) {
+          body = { dataUrl: fileContent, name: file.name };
+        } else {
+          const commaIdx = fileContent.indexOf(",");
+          const base64Content = commaIdx >= 0 ? fileContent.substring(commaIdx + 1) : fileContent;
+          body = { content: base64Content, name: file.name };
+        }
+
+        void postJSON<{ path?: string; name?: string }>("/api/attachments", body)
           .then((r) => {
             if (r.path) {
               setItems((xs) => [...xs, { path: r.path!, name: r.name || file.name, thumb }]);
