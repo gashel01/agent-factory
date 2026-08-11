@@ -7,7 +7,7 @@ import { fmtDuration, fmtUsd, parseSettings } from "./model.js";
 import {
   DollarSign, Key, Lock, Play, Timer, TriangleAlert,
 } from "./icons.js";
-import { Button, Skeleton, toast, useManagedInterval } from "./core.js";
+import { Button, Skeleton, toast } from "./core.js";
 import { Modal } from "./widgets.js";
 
 export type RunProfile = "cheap" | "standard" | "thorough";
