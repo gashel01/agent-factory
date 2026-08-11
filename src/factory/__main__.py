@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -345,6 +346,34 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_coord(args: argparse.Namespace) -> int:
+    """Agent-facing: read or append to this run's coordination bus. The bus path is
+    handed to each agent via $FACTORY_COORD_PATH, so a `factory coord` the agent
+    spawns from its own Bash finds the right run. Best-effort by design."""
+    from .coordination import CoordinationBus, whereis
+    path = os.environ.get("FACTORY_COORD_PATH", "")
+    if not path:
+        print("no active coordination bus (FACTORY_COORD_PATH unset)", file=sys.stderr)
+        return 1
+    bus = CoordinationBus(Path(path))
+    ticket = args.ticket or os.environ.get("FACTORY_TICKET_ID", "agent")
+    if args.whereis:
+        print(whereis(bus.events(), args.whereis))  # empty line = unknown
+        return 0
+    if args.decision:
+        key, sep, value = args.decision.partition("=")
+        if not sep:
+            print("--decision needs KEY=VALUE", file=sys.stderr)
+            return 1
+        bus.decision(ticket, key.strip(), value.strip())
+        return 0
+    if args.note:
+        bus.discovery(ticket, args.note.strip())
+        return 0
+    print("use --whereis NAME | --decision KEY=VALUE | --note TEXT", file=sys.stderr)
+    return 1
+
+
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     """PostToolUse hook body: commit the current worktree as an undo checkpoint.
 
@@ -471,6 +500,18 @@ def main(argv: list[str] | None = None) -> int:
 
     p_clean = sub.add_parser("clean", parents=[common], help="prune orphaned worktrees")
     p_clean.set_defaults(func=cmd_clean)
+
+    # Agent-facing: share/query the run's coordination bus (Levels 2-3).
+    p_coord = sub.add_parser("coord",
+                             help="share or query this run's shared workspace (used by agents)")
+    p_coord.add_argument("--ticket", default="", help="ticket id (defaults to $FACTORY_TICKET_ID)")
+    p_coord.add_argument("--whereis", default="", metavar="NAME",
+                         help="print where a symbol/decision lives (empty if unknown)")
+    p_coord.add_argument("--decision", default="", metavar="KEY=VALUE",
+                         help="record a cross-cutting decision for sibling agents")
+    p_coord.add_argument("--note", default="", metavar="TEXT",
+                         help="record a free-form discovery for sibling agents")
+    p_coord.set_defaults(func=cmd_coord)
 
     # Not for humans: the PostToolUse hook Warden injects when agent.checkpoints is on.
     p_checkpoint = sub.add_parser("checkpoint",

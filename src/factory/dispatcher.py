@@ -11,6 +11,7 @@ Design rules (see AGENT_FACTORY.md):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from collections import Counter
@@ -23,6 +24,7 @@ from . import merge as merge_mod
 from . import sandbox as sandbox_mod
 from . import worktree as wt_mod
 from .config import Config
+from .coordination import CoordinationBus, extract_exports, world_view
 from .events import EventLog
 from .memory import LessonStore, record_applications
 from .notify import post_webhook
@@ -101,6 +103,11 @@ class Dispatcher:
         self._spent_usd = 0.0  # cumulative API-equivalent cost across the run
         self._workspace = run_dir.parent.parent
         self._lessons = LessonStore.discover(run_dir)
+        # The coordination bus: the async seam where isolated agents share the
+        # cross-cutting facts a file-collision check can't catch (a shared type's
+        # home, a naming decision). One append-only log per run; agents read a
+        # curated snapshot at start and append via `factory coord`.
+        self._coord = CoordinationBus(run_dir / "coordination.jsonl")
         # Project map (written by the planner): injected into every agent so
         # tickets don't each re-explore the repo. Scoped to each task's repo —
         # a run spanning several repos serves each its own map, and a workspace
@@ -164,7 +171,24 @@ class Dispatcher:
         if self.state[task.id] in (TaskState.DONE, TaskState.FAILED, TaskState.BLOCKED):
             return
         self.log.emit("failure", task=task.id, reason=reason[:1000])
+        # Free this ticket's claim on the bus: a failed ticket must stop telling
+        # siblings "I'm editing these files" (best-effort — never block a failure).
+        with contextlib.suppress(OSError):
+            self._coord.released(task.id)
         self._set_state(task, TaskState.FAILED)
+
+    def _record_landing(self, task: Task, base_sha: str, head_sha: str) -> None:
+        """Fold a merged ticket into the world-model: its files and newly-exported
+        symbols become facts the next agent's snapshot carries. base_sha..head_sha
+        brackets exactly this ticket's work. Best-effort — never affects the run."""
+        if not base_sha or not head_sha:
+            return
+        with contextlib.suppress(OSError):
+            rng = f"{base_sha}..{head_sha}"
+            diff = wt_mod.git(task.repo, "diff", rng, check=False).stdout
+            names = wt_mod.git(task.repo, "diff", "--name-only", rng, check=False).stdout
+            files = [f for f in names.splitlines() if f.strip()]
+            self._coord.landed(task.id, files, extract_exports(diff))
 
     async def _notify(self, message: str) -> None:
         """Fire an external webhook (Slack/Discord/generic), best-effort. A flaky
@@ -634,6 +658,15 @@ class Dispatcher:
                     "lessons", task=task.id, count=len(recall.fact_ids), ids=recall.fact_ids
                 )
                 record_applications(self._workspace, recall.fact_ids)
+
+            # Announce this ticket's intended write-set on the bus (so siblings see
+            # it in flight), then hand it the CURATED snapshot of what the others
+            # have claimed, decided and landed. Best-effort: a bus hiccup must
+            # never sink a run, so it's guarded.
+            coord_text = ""
+            with contextlib.suppress(OSError):
+                self._coord.claim(task.id, list(task.files_hint))
+                coord_text = world_view(self._coord.events(), for_ticket=task.id)
             def _progress(turns: int, tokens: int) -> None:
                 # Live per-agent activity (C6): one event per turn, so the card shows
                 # a growing turn/token count while the agent works, not just at the end.
@@ -644,6 +677,8 @@ class Dispatcher:
                 self._brief_for(task.repo), on_progress=_progress,
                 mode=self.cfg.execution_mode,
                 isolation=self.cfg.isolation,
+                coordination=coord_text,
+                coord_path=self._coord.path,
             )
             u = result.usage
             self._spent_usd += u.cost_usd
@@ -891,6 +926,12 @@ class Dispatcher:
                         base=result.base_sha, commit=result.head_sha,
                         reverified=result.reverified,
                         **({"warning": result.warning} if result.warning else {}),
+                    )
+                    # Record the landing on the bus: its files and newly-exported
+                    # symbols become world-model truth for the next agent (this is
+                    # what stops a sibling redefining a type that now exists).
+                    await asyncio.to_thread(
+                        self._record_landing, task, result.base_sha, result.head_sha
                     )
                     self._merged_repos.add(task.repo)
                     self._set_state(task, TaskState.DONE)

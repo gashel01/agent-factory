@@ -86,3 +86,37 @@ def test_decisions_dedupe_latest_wins_and_whereis():
 
 def test_world_view_empty_when_nothing_relevant():
     assert world_view([], for_ticket="001") == ""
+
+
+def test_cmd_coord_posts_and_queries(tmp_path, monkeypatch, capsys):
+    """The agent-facing `factory coord` CLI: post a decision, query it back. Ticket
+    defaults from $FACTORY_TICKET_ID so the agent never has to pass it."""
+    import argparse
+
+    from factory.__main__ import cmd_coord
+
+    monkeypatch.setenv("FACTORY_COORD_PATH", str(tmp_path / "coord.jsonl"))
+    monkeypatch.setenv("FACTORY_TICKET_ID", "042")
+
+    def ns(**over):
+        base = dict(ticket="", whereis="", decision="", note="")
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    assert cmd_coord(ns(decision="DockerStatus=settings-modal.tsx")) == 0
+    assert cmd_coord(ns(whereis="DockerStatus")) == 0
+    assert "settings-modal.tsx" in capsys.readouterr().out
+
+    events = CoordinationBus(tmp_path / "coord.jsonl").events()
+    assert events[0]["ticket"] == "042"  # defaulted from the env
+    assert events[0]["key"] == "DockerStatus"
+
+
+def test_cmd_coord_without_bus_errors(monkeypatch):
+    import argparse
+
+    from factory.__main__ import cmd_coord
+
+    monkeypatch.delenv("FACTORY_COORD_PATH", raising=False)
+    ns = argparse.Namespace(ticket="", whereis="X", decision="", note="")
+    assert cmd_coord(ns) == 1  # no active bus → non-zero, not a crash

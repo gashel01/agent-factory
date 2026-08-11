@@ -453,6 +453,8 @@ async def run_agent(
     on_progress: Callable[[int, int], None] | None = None,
     mode: str = "subscription",
     isolation: str = "direct",
+    coordination: str = "",
+    coord_path: Path | None = None,
 ) -> AgentResult:
     if task.resume_session:
         # Resumed retry: the session already carries the contract, ticket, brief
@@ -480,8 +482,26 @@ async def run_agent(
                 "\n---\n\n# Lessons from earlier work (apply these before you start)\n\n"
                 f"{lessons}\n"
             )
+        if coordination:
+            # What sibling tickets have claimed, decided and landed. Read it before
+            # creating a shared type or editing a claimed file — this is how you
+            # avoid redefining what a sibling already exported (import it instead).
+            prompt += (
+                "\n---\n\n# Shared workspace — what your sibling agents are doing\n\n"
+                f"{coordination}\n\n"
+                "Before you create a shared type/util, run "
+                "`factory coord --whereis <Name>` to check it doesn't already exist. "
+                "When you make a decision others should follow, record it with "
+                "`factory coord --decision \"<Name>=<where/what>\"`.\n"
+            )
     cmd = build_command(cfg, task)
     env = spawn_env(mode)
+    if coord_path is not None:
+        # Let `factory coord` (spawned by the agent's own Bash) find this run's bus
+        # and know which ticket is posting, without the agent passing either.
+        env = {**(env or dict(os.environ)),
+               "FACTORY_COORD_PATH": str(coord_path),
+               "FACTORY_TICKET_ID": task.id}
     if isolation == "sandbox":
         # Wrap the SAME claude invocation in a hardened container. The box
         # authenticates via the mounted OAuth token, so we never inject the API
