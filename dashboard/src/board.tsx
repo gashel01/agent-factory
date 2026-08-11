@@ -539,9 +539,9 @@ export const COLUMNS: Array<{ key: string; title: string; states: TaskState[]; t
 
 /** Inline actions for a card, mirroring the prototype's per-status button set. */
 export function CardActions(
-  { t, live, onLog, onAnswer, onLesson, onDiff, onDiagnose }:
+  { t, live, onLog, onAnswer, onLesson, onDiff, onDiagnose, onEditTask }:
   { t: TaskModel; live: boolean; onLog: () => void; onAnswer: () => void; onLesson: () => void;
-    onDiff: () => void; onDiagnose?: () => void },
+    onDiff: () => void; onDiagnose?: () => void; onEditTask?: () => void },
 ): JSX.Element {
   const attention = t.state === "FAILED" || t.state === "BLOCKED";
   return (
@@ -552,6 +552,12 @@ export function CardActions(
       {attention && !(t.state === "BLOCKED" && live) && (live
         ? <Button kind="act" variant="primary" autoPending onClick={() => sendControl("retry", t.id)}>Try again</Button>
         : <button className="act primary" onClick={() => void quickRun()}>Run again</button>)}
+      {attention && onEditTask && (
+        <button className="act ghost" onClick={onEditTask}
+          title="Edit this ticket's spec (scope, criteria, out-of-scope) before you retry — e.g. let it touch the CSS">
+          <Pencil size={13} /> Edit
+        </button>
+      )}
       {(t.state === "RUNNING" || t.state === "VERIFYING" || t.state === "REVIEWING") && live && (
         <Button kind="act" variant="danger" autoPending onClick={() => sendControl("kill", t.id)}>Stop</Button>
       )}
@@ -622,9 +628,9 @@ export function CardMeasures({ t, now }: { t: TaskModel; now: number }): JSX.Ele
 }
 
 export function KanbanCard(
-  { t, live, now, onLog, onAnswer, onLesson, onDiff, onDelete, onDiagnose, autopilot }:
+  { t, live, now, onLog, onAnswer, onLesson, onDiff, onDelete, onDiagnose, onEditTask, autopilot }:
   { t: TaskModel; live: boolean; now: number; onLog: () => void; onAnswer: () => void; onLesson: () => void;
-    onDiff: () => void; onDelete?: () => void; onDiagnose?: () => void; autopilot?: boolean },
+    onDiff: () => void; onDelete?: () => void; onDiagnose?: () => void; onEditTask?: () => void; autopilot?: boolean },
 ): JSX.Element {
   const attention = t.state === "FAILED" || t.state === "BLOCKED";
   const running = t.state === "RUNNING";
@@ -652,7 +658,7 @@ export function KanbanCard(
       {attention && t.note && <div className="kcard-note"><span className="flag"><Flag size={12} /></span><span>{t.note}</span></div>}
       <CardMeasures t={t} now={now} />
       <CardActions t={t} live={live} onLog={onLog} onAnswer={onAnswer} onLesson={onLesson} onDiff={onDiff}
-        onDiagnose={onDiagnose} />
+        onDiagnose={onDiagnose} onEditTask={onEditTask} />
     </div>
   );
 }
@@ -799,12 +805,12 @@ export const MANUAL_COL: Record<string, string> = { todo: "queued", doing: "work
 export const COL_STATUS: Record<string, string> = { queued: "todo", working: "doing", approval: "review", done: "done" };
 
 export function Kanban(
-  { tasks, live, now, onLog, onAnswer, onLesson, onDiff, onDiagnose, focus, pending, manual,
+  { tasks, live, now, onLog, onAnswer, onLesson, onDiff, onDiagnose, onEditTask, focus, pending, manual,
     onAddTicket, onEditTicket, onRemoveTicket, onRemoveTask, onMoveManual, onSetAssignee, onSetHold, onReviewManual,
     autopilot }:
   { tasks: TaskModel[]; live: boolean; now: number; onLog: (t: TaskModel) => void;
     onAnswer: (t: TaskModel) => void; onLesson: (t: TaskModel) => void; onDiff: (t: TaskModel) => void;
-    onDiagnose?: (t: TaskModel) => void; focus?: boolean; autopilot?: boolean;
+    onDiagnose?: (t: TaskModel) => void; onEditTask?: (t: TaskModel) => void; focus?: boolean; autopilot?: boolean;
     pending: BoardTicket[]; manual: BoardTicket[]; onAddTicket: () => void; onEditTicket: (bt: BoardTicket) => void;
     onRemoveTicket: (bt: BoardTicket) => void; onRemoveTask: (id: string) => void; onMoveManual: (bt: BoardTicket, status: string) => void;
     onSetAssignee: (bt: BoardTicket, toHuman: boolean) => void; onSetHold: (bt: BoardTicket, on: boolean) => void;
@@ -849,7 +855,8 @@ export function Kanban(
   const taskCard = (t: TaskModel) => (
     <KanbanCard key={t.id} t={t} live={live} now={now} onDelete={() => onRemoveTask(t.id)}
       onLog={() => onLog(t)} onAnswer={() => onAnswer(t)} onLesson={() => onLesson(t)} onDiff={() => onDiff(t)}
-      onDiagnose={onDiagnose ? () => onDiagnose(t) : undefined} autopilot={autopilot} />
+      onDiagnose={onDiagnose ? () => onDiagnose(t) : undefined}
+      onEditTask={onEditTask ? () => onEditTask(t) : undefined} autopilot={autopilot} />
   );
 
   // The Up-next body: the Add affordance, then running QUEUED cards, AI drafts and

@@ -165,6 +165,13 @@ function App(): JSX.Element {
     setModal({ type: "answer", taskId: t.id, title: t.title, question: t.note ?? "",
                context: t.blockedContext });
   const openDiagnose = (t: TaskModel) => setModal({ type: "diagnostics", taskId: t.id, title: t.title });
+  // Re-scope a stuck ticket before retrying: its backlog file still exists, so open
+  // the full editor on it. Saving rewrites the file; the next "Run again" uses it.
+  const openEditTask = (t: TaskModel) => {
+    const bt = boardTickets.find((x) => x.id === t.id);
+    if (bt) setModal({ type: "editticket", ticket: bt });
+    else toast("This ticket's file is gone (merged or removed) — nothing to edit.", true);
+  };
   const openLesson = (t: TaskModel) =>
     setModal({ type: "lesson", draft: { text: t.note ? `${t.note}\n\nLesson: ` : "", ticketId: t.id } });
   const openDiff = (t: TaskModel) => {
@@ -509,6 +516,7 @@ function App(): JSX.Element {
       ) : (
         <Kanban tasks={shownTasks} live={live} now={now} onLog={openLog}
           onAnswer={openAnswer} onLesson={openLesson} onDiff={openDiff} onDiagnose={openDiagnose}
+          onEditTask={openEditTask}
           focus={view === "focus"} autopilot={autopilot}
           pending={pending} manual={manual} onAddTicket={() => setModal({ type: "newwork", tab: "one" })}
           onEditTicket={(bt) => setModal({ type: "editticket", ticket: bt })}
