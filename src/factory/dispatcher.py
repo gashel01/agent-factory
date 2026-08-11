@@ -108,6 +108,9 @@ class Dispatcher:
         # home, a naming decision). One append-only log per run; agents read a
         # curated snapshot at start and append via `factory coord`.
         self._coord = CoordinationBus(run_dir / "coordination.jsonl")
+        # Tickets that recorded a real landing (files/symbols), so a DONE no-op
+        # doesn't overwrite them with an empty landing.
+        self._landed: set[str] = set()
         # Project map (written by the planner): injected into every agent so
         # tickets don't each re-explore the repo. Scoped to each task's repo —
         # a run spanning several repos serves each its own map, and a workspace
@@ -147,6 +150,16 @@ class Dispatcher:
         frm = self.state[task.id]
         self.state[task.id] = to
         self.log.emit("state", task=task.id, **{"from": frm, "to": to})
+        # End the ticket's turn at its files when it reaches a terminal/parked
+        # state, so the shared space stops showing it "editing now". A DONE that
+        # landed already recorded its symbols; a DONE no-op (or PR) marks
+        # done-with-nothing-to-land; a FAILED/BLOCKED one is released. A BLOCKED
+        # ticket re-claims when it resumes. Best-effort — never blocks a transition.
+        with contextlib.suppress(OSError):
+            if to == TaskState.DONE and task.id not in self._landed:
+                self._coord.landed(task.id, [], {})
+            elif to in (TaskState.FAILED, TaskState.BLOCKED):
+                self._coord.released(task.id)
 
     def _escalate_model(self, task: Task) -> None:
         """On a retry, bump the task up the model ladder — cheap tier first, a
@@ -171,10 +184,7 @@ class Dispatcher:
         if self.state[task.id] in (TaskState.DONE, TaskState.FAILED, TaskState.BLOCKED):
             return
         self.log.emit("failure", task=task.id, reason=reason[:1000])
-        # Free this ticket's claim on the bus: a failed ticket must stop telling
-        # siblings "I'm editing these files" (best-effort — never block a failure).
-        with contextlib.suppress(OSError):
-            self._coord.released(task.id)
+        # _set_state(FAILED) frees this ticket's claim on the bus (below).
         self._set_state(task, TaskState.FAILED)
 
     def _record_landing(self, task: Task, base_sha: str, head_sha: str) -> None:
@@ -189,6 +199,7 @@ class Dispatcher:
             names = wt_mod.git(task.repo, "diff", "--name-only", rng, check=False).stdout
             files = [f for f in names.splitlines() if f.strip()]
             self._coord.landed(task.id, files, extract_exports(diff))
+            self._landed.add(task.id)  # so the DONE transition won't blank it
 
     async def _notify(self, message: str) -> None:
         """Fire an external webhook (Slack/Discord/generic), best-effort. A flaky

@@ -490,3 +490,22 @@ def test_budget_stops_the_run(tmp_path, repo):
     results = [e for e in events if e["event"] == "agent_result"]
     assert all(r["cost_usd"] == 1.0 for r in results)
     assert results[-1]["spent_usd"] == 2.0
+
+
+def test_noop_ticket_ends_its_turn_on_the_bus(tmp_path, repo):
+    """A ticket that lands nothing (no-op) must still END its turn on the
+    coordination bus. Otherwise it shows 'editing now' in the shared space forever,
+    out of sync with the board that already marks it done (the #044 bug)."""
+    from factory.coordination import CoordinationBus, world_index
+
+    backlog = tmp_path / "backlog"
+    write_ticket(backlog, "001", repo, body="STUB:NOOP\n",
+                 files_hint="[dashboard/src/work.tsx]")
+
+    counts = run_dispatcher(make_config(), backlog, tmp_path / "run")
+
+    assert counts == {"DONE": 1}
+    events = CoordinationBus(tmp_path / "run" / "coordination.jsonl").events()
+    kinds = [e["kind"] for e in events if e.get("ticket") == "001"]
+    assert "claim" in kinds and "landed" in kinds  # claimed, then ended (not lingering)
+    assert world_index(events)["in_flight"] == {}  # no file left flagged as live
