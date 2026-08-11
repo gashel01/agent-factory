@@ -31,7 +31,7 @@ import {
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
 import { BoardTicket } from "./board.js";
-import { AttachStrip, Button, WorkspaceInfo, toast, useAttachments, useFileAttachments, useManagedInterval } from "./core.js";
+import { AttachButton, AttachStrip, Button, WorkspaceInfo, toast, useAttachments, useFileAttachments, useManagedInterval } from "./core.js";
 import { describe } from "./modals.js";
 import { ConfirmButton, Modal, Select, sendControl } from "./widgets.js";
 
@@ -379,6 +379,7 @@ export function CompanionRail(
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
           onPaste={attachments.paste} />
         <AttachStrip items={attachments.items} onRemove={attachments.remove} />
+        <AttachButton onPick={attachments.pick} />
         <button className="btn primary companion-send" aria-label="Send message" disabled={thinking || !msg.trim() || attachments.uploading > 0}
           onClick={() => void send()}><Send size={16} /></button>
       </div>

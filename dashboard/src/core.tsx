@@ -520,15 +520,15 @@ export function AttachStrip(
   );
 }
 
-/** A small "attach image" button that opens a file picker. */
+/** A small "attach file" button that opens a file picker, accepting all file types. */
 export function AttachButton({ onPick }: { onPick: (files: FileList | null) => void }): JSX.Element {
   const ref = useRef<HTMLInputElement>(null);
   return (
     <>
-      <button type="button" className="attach-btn" title="Attach an image" onClick={() => ref.current?.click()}>
-        <Upload size={13} /> Image
+      <button type="button" className="attach-btn" title="Attach files" onClick={() => ref.current?.click()}>
+        <Upload size={13} /> Attach
       </button>
-      <input ref={ref} type="file" accept="image/*" multiple hidden
+      <input ref={ref} type="file" multiple hidden
         onChange={(e) => { onPick(e.target.files); e.target.value = ""; }} />
     </>
   );
