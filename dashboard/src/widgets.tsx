@@ -30,7 +30,7 @@ import {
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
-import { toast, useEsc, useFocusTrap } from "./core.js";
+import { toast, useEsc, useFocusTrap, type WorkspaceInfo } from "./core.js";
 import { Ticket } from "./work.js";
 
 /* --------------------------------- widgets --------------------------------- */
@@ -628,6 +628,28 @@ export async function sendAnswer(taskId: string, text: string): Promise<void> {
     await postJSON("/api/control", { op: "answer", task: taskId, text });
     toast(`Answer sent — ${taskId} restarts with it.`);
   } catch (err) { toast(`Could not send the answer: ${String(err)}`, true); }
+}
+
+export function ProjectSwitcher(
+  { workspace, workspaces, onOpenProjects, onSwitchProject }:
+  { workspace: string; workspaces: WorkspaceInfo[]; onOpenProjects: () => void; onSwitchProject: (name: string) => void },
+): JSX.Element {
+  const options: SelectOption[] = [
+    { value: "__all_projects__", label: "All Projects" },
+    ...workspaces.map((w) => ({ value: w.name, label: w.name })),
+  ];
+
+  const currentValue = workspaces.some((w) => w.name === workspace) ? workspace : "__all_projects__";
+
+  const handleChange = (value: string): void => {
+    if (value === "__all_projects__") {
+      onOpenProjects();
+    } else {
+      onSwitchProject(value);
+    }
+  };
+
+  return <Select value={currentValue} options={options} onChange={handleChange} className="proj-select" />;
 }
 
 export async function quickRun(): Promise<void> {
