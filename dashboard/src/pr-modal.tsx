@@ -30,10 +30,9 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
   const [busy, setBusy] = useState<number | null>(null);
   const [newBranch, setNewBranch] = useState("");
   const [bBusy, setBBusy] = useState<string | null>(null); // branch name being acted on, or "__new__"
-  const [prHead, setPrHead] = useState("");
-  const [prBase, setPrBase] = useState("main");
   const [prTitle, setPrTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [openingPr, setOpeningPr] = useState<string | null>(null); // branch whose inline PR form is open
 
   const load = async (r: string): Promise<void> => {
     try {
@@ -119,18 +118,24 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
     setTimeout(() => { try { location.reload(); } catch { /* */ } }, 6000);
   };
 
-  // Default the PR head to the branch you're on, so opening a PR for the work you
-  // just finished is one click. Only seeds it once (don't fight a manual pick).
-  useEffect(() => { setPrHead((h) => h || branches.current); }, [branches.current]);
-  const createPr = async (): Promise<void> => {
-    const head = prHead.trim(), base = prBase.trim() || "main", title = prTitle.trim();
-    if (!head || !title || head === base || creating) return;
+  // The trunk every PR targets.
+  const baseBranch = branches.list.includes("main") ? "main"
+    : branches.list.includes("master") ? "master" : "main";
+  // Opening a PR is a per-branch action: click it on a branch row and an inline
+  // title field appears (prefilled from the branch name) — no head/base pickers,
+  // because head IS that branch and base is the trunk. The 99% case, one gesture.
+  const humanTitle = (b: string): string =>
+    b.replace(/^\w+\//, "").replace(/[-_/]+/g, " ").trim().replace(/^\w/, (c) => c.toUpperCase());
+  const beginPr = (b: string): void => { setOpeningPr(b); setPrTitle(humanTitle(b)); };
+  const createPr = async (head: string): Promise<void> => {
+    const title = prTitle.trim();
+    if (!head || !title || creating) return;
     setCreating(true);
     try {
       const r = await postJSON<{ ok?: boolean; url?: string; error?: string }>(
-        "/api/prs/create", { repo, head, base, title },
+        "/api/prs/create", { repo, head, base: baseBranch, title },
       );
-      if (r.ok) { toast(`PR opened: ${r.url ?? "done"}`); setPrTitle(""); await load(repo); }
+      if (r.ok) { toast(`PR opened for ${head}.`); setOpeningPr(null); setPrTitle(""); await load(repo); }
       else toast(r.error || "couldn't open the PR", true);
     } catch (e) { toast(String(e), true); }
     finally { setCreating(false); }
@@ -144,104 +149,91 @@ export function PullRequestsModal({ ws, onClose }: { ws: string; onClose: () => 
   return (
     <Modal title="Pull requests" onClose={onClose} wide>
       {err && <p className="pr-note">{err}</p>}
-      {prs === null ? (
-        <p className="pr-note">Loading…</p>
-      ) : prs.length === 0 ? (
-        !err && <p className="pr-note">No open pull requests. When a run lands in PR mode, they show up here.</p>
-      ) : (
-        <ul className="pr-list">
-          {prs.map((pr) => {
-            const m = mergeable(pr.mergeable);
-            return (
-              <li key={pr.number} className="pr-row">
-                <div className="pr-main">
-                  <a className="pr-num" href={pr.url} target="_blank" rel="noreferrer">
-                    #{pr.number} <ExternalLink size={11} />
-                  </a>
-                  <span className="pr-title">{pr.title}</span>
-                </div>
-                <div className="pr-meta">
-                  <span className="pr-branch"><GitBranch size={11} /> {pr.headRefName} → {pr.baseRefName}</span>
-                  <span className={`pr-mergeable ${m.cls}`}>{pr.isDraft ? "draft" : m.text}</span>
-                </div>
-                <div className="pr-actions">
-                  <Button kind="btn" variant="primary" pending={busy === pr.number}
-                    disabled={pr.isDraft || pr.mergeable === "CONFLICTING" || busy !== null}
-                    onClick={() => act(pr.number, "merge")}>
-                    <GitMerge size={13} /> Merge
-                  </Button>
-                  <ConfirmButton label="Close" confirm="Close PR?" onConfirm={() => act(pr.number, "close")} />
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+
+      {/* The review gate first, but only when there's something to review. */}
+      {prs && prs.length > 0 && (
+        <section className="pr-section">
+          <h4 className="pr-h">Open pull requests <span className="pr-h-sub">— review and merge</span></h4>
+          <ul className="pr-list">
+            {prs.map((pr) => {
+              const m = mergeable(pr.mergeable);
+              return (
+                <li key={pr.number} className="pr-row">
+                  <div className="pr-main">
+                    <a className="pr-num" href={pr.url} target="_blank" rel="noreferrer">#{pr.number} <ExternalLink size={11} /></a>
+                    <span className="pr-title">{pr.title}</span>
+                  </div>
+                  <div className="pr-meta">
+                    <span className="pr-branch"><GitBranch size={11} /> {pr.headRefName} → {pr.baseRefName}</span>
+                    <span className={`pr-mergeable ${m.cls}`}>{pr.isDraft ? "draft" : m.text}</span>
+                  </div>
+                  <div className="pr-actions">
+                    <Button kind="btn" variant="primary" pending={busy === pr.number}
+                      disabled={pr.isDraft || pr.mergeable === "CONFLICTING" || busy !== null}
+                      onClick={() => act(pr.number, "merge")}><GitMerge size={13} /> Merge</Button>
+                    <ConfirmButton label="Close" confirm="Close PR?" onConfirm={() => act(pr.number, "close")} />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
-      <div className="pr-new">
-        <div className="pr-new-head"><GitMerge size={12} /> Open a pull request</div>
-        <div className="pr-new-row">
-          <select className="branch-input pr-new-head-sel" value={prHead} aria-label="Head branch"
-            disabled={creating} onChange={(e) => setPrHead(e.currentTarget.value)}>
-            {(branches.list.length ? branches.list : [branches.current]).filter(Boolean).map((b) => (
-              <option key={b} value={b}>{b}</option>
-            ))}
-          </select>
-          <span className="pr-new-arrow">→</span>
-          <input className="branch-input pr-new-base" value={prBase} aria-label="Base branch" placeholder="main"
-            disabled={creating} onChange={(e) => setPrBase(e.currentTarget.value.replace(/[^\w./-]/g, ""))} />
-        </div>
-        <div className="pr-new-row">
-          <input className="branch-input pr-new-title" value={prTitle} placeholder="Pull request title…"
-            aria-label="Pull request title" disabled={creating}
-            onChange={(e) => setPrTitle(e.currentTarget.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void createPr(); }} />
-          <Button kind="btn" variant="primary" pending={creating}
-            disabled={!prHead.trim() || !prTitle.trim() || prHead === prBase.trim() || creating}
-            onClick={createPr}><Plus size={13} /> Open PR</Button>
-        </div>
-      </div>
-      {branches.current && (
-        <div className="pr-deploy">
-          <div className="pr-deploy-text">
-            <b>Deploy to Warden</b> — rebuild <code>{branches.current}</code> and restart the running instance.
+
+      {/* Branches as the work you can act on — each row says what you can DO with
+          it, rather than a wall of head/base/title fields and a lone deploy button. */}
+      <section className="pr-section">
+        <div className="pr-h-row">
+          <h4 className="pr-h">Branches <span className="pr-h-sub">— open a PR, deploy, or switch</span></h4>
+          <div className="branch-new-inline">
+            <input className="branch-input" placeholder="New branch…" value={newBranch} aria-label="New branch name"
+              onChange={(e) => setNewBranch(e.currentTarget.value.replace(/[^\w./-]/g, ""))}
+              onKeyDown={(e) => { if (e.key === "Enter") void createBranch(); }} />
+            <button className="branch-act" disabled={!newBranch.trim() || bBusy !== null} onClick={createBranch}><Plus size={13} /> New</button>
           </div>
-          <ConfirmButton label={<><RotateCw size={13} /> Deploy</>} confirm="Rebuild + restart?"
-            onConfirm={deploy} />
         </div>
-      )}
-      <div className="pr-branches">
-        <div className="pr-branches-head"><GitBranch size={12} /> Branches</div>
-        <div className="branch-new">
-          <input className="branch-input" placeholder="New branch name…" value={newBranch}
-            aria-label="New branch name"
-            onChange={(e) => setNewBranch(e.currentTarget.value.replace(/[^\w./-]/g, ""))}
-            onKeyDown={(e) => { if (e.key === "Enter") void createBranch(); }} />
-          <Button kind="btn" pending={bBusy === "__new__"} disabled={!newBranch.trim() || bBusy !== null}
-            onClick={createBranch}><Plus size={13} /> Create</Button>
-        </div>
-        {branches.list.length === 0 ? (
-          <span className="pr-note">—</span>
+
+        {prs === null ? (
+          <p className="pr-note">Loading…</p>
+        ) : branches.list.length === 0 ? (
+          <p className="pr-note">No branches yet.</p>
         ) : (
-          <ul className="branch-list">
+          <ul className="branch-rows">
             {branches.list.map((b) => {
               const cur = b === branches.current;
-              const locked = b === "main" || b === "master";
+              const isBase = b === baseBranch;
               return (
-                <li key={b} className={cur ? "cur" : ""}>
-                  <button className="branch-name" disabled={cur || bBusy !== null}
-                    title={cur ? "Current branch" : `Switch to ${b}`} onClick={() => switchTo(b)}>
-                    {b}{cur ? " · current" : ""}
-                  </button>
-                  {!cur && !locked && (
-                    <ConfirmButton label={<Trash2 size={13} />} confirm="Delete?"
-                      plain onConfirm={() => delBranch(b)} />
+                <li key={b} className={`branch-row${cur ? " current" : ""}`}>
+                  <div className="branch-row-main">
+                    <GitBranch size={13} className="branch-ic" />
+                    <span className="branch-nm">{b}</span>
+                    {cur && <span className="branch-tag cur">on it now</span>}
+                    {isBase && <span className="branch-tag base">base</span>}
+                  </div>
+                  {openingPr === b ? (
+                    <div className="branch-pr-form">
+                      <input className="branch-input" autoFocus value={prTitle} placeholder="What does this deliver?"
+                        aria-label="Pull request title" disabled={creating}
+                        onChange={(e) => setPrTitle(e.currentTarget.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") void createPr(b); if (e.key === "Escape") setOpeningPr(null); }} />
+                      <Button kind="btn" variant="primary" pending={creating} disabled={!prTitle.trim() || creating}
+                        onClick={() => createPr(b)}><GitMerge size={13} /> Open PR → {baseBranch}</Button>
+                      <button className="branch-act ghost" onClick={() => setOpeningPr(null)}>Cancel</button>
+                    </div>
+                  ) : (
+                    <div className="branch-actions">
+                      {!isBase && <button className="branch-act" disabled={bBusy !== null} onClick={() => beginPr(b)}><GitMerge size={13} /> Open PR</button>}
+                      {cur && <ConfirmButton className="branch-act" label={<><RotateCw size={13} /> Deploy</>} confirm="Rebuild + restart?" onConfirm={deploy} />}
+                      {!cur && <button className="branch-act" disabled={bBusy !== null} onClick={() => switchTo(b)}>Switch to</button>}
+                      {!cur && !isBase && <ConfirmButton label={<Trash2 size={13} />} confirm="Delete?" plain onConfirm={() => delBranch(b)} />}
+                    </div>
                   )}
                 </li>
               );
             })}
           </ul>
         )}
-      </div>
+      </section>
     </Modal>
   );
 }
