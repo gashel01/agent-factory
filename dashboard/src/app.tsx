@@ -348,6 +348,7 @@ function App(): JSX.Element {
             <button className="brand-logo" title="All projects" onClick={() => setScreen("projects")}><i /></button>
             <div className="brand-txt">
               <span className="brand-name">Warden</span>
+              <span className="brand-sub">Local execution</span>
             </div>
           </div>
           {workspaces.length > 0 && (
