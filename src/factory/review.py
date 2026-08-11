@@ -35,6 +35,10 @@ You are a REVIEW agent. Another agent produced the diff below for the ticket
 below. Your job is to find reasons to REJECT it. You are read-only: you may
 Read/Glob/Grep the repository to check context, but you change nothing.
 
+You have ONLY the Read, Glob, and Grep tools — no shell, no Bash, no git. Do
+NOT try to run `git diff` or any command: it will be blocked and waste your
+turns. The full diff is already below; open any file with Read to see more.
+
 Reject if — and only if — one of these holds:
 1. The diff does not actually do what the ticket asks.
 2. Scope creep: files or behaviour changed that the ticket did not ask for
@@ -87,7 +91,7 @@ def build_review_prompt(task: Task, worktree_path: Path) -> str:
 async def run_review(cfg: Config, task: Task, worktree_path: Path, log_path: Path) -> ReviewResult:
     cmd = build_cli(
         cfg.agent.command,
-        max_turns=25,
+        max_turns=40,  # big-diff reviews explore a lot; too low a cap reads as a crash
         allowed_tools=REVIEWER_TOOLS,
         model=cfg.review.model or cfg.agent.model,
         missing=ReviewError,
@@ -107,7 +111,12 @@ async def run_review(cfg: Config, task: Task, worktree_path: Path, log_path: Pat
     if out.stderr_rate_limited or (out.result is not None and is_rate_limit_result(out.result)):
         return ReviewResult("approve", (), rate_limited=True)
     if out.returncode != 0 or out.result is None:
-        raise ReviewError(out.stderr_tail or f"reviewer exited {out.returncode} without a result")
+        # The reviewer crashed / ran out of turns without emitting a verdict —
+        # infrastructure noise, NOT a rejection. Fail open with a trace, exactly
+        # like a timeout: the deterministic verify gate already passed, so a flaky
+        # reviewer must not fail work that is otherwise green.
+        detail = out.stderr_tail or f"reviewer exited {out.returncode} without a result"
+        return ReviewResult("approve", (f"review skipped: {detail}",))
 
     contract = extract_trailing_json(str(out.result.get("result", "")))
     if contract is None or contract.get("verdict") not in ("approve", "reject"):

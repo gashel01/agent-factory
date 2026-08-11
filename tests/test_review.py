@@ -76,6 +76,28 @@ def test_review_diff_ignores_base_advance(tmp_path, repo):
     assert "sibling.txt" not in prompt          # two-dot would wrongly surface it
 
 
+def test_review_fails_open_when_reviewer_crashes(tmp_path, repo, monkeypatch):
+    """A reviewer that exits without a verdict (crash, blocked tool, max-turns) must
+    fail OPEN — approve with a trace — not fail the ticket. The deterministic verify
+    gate already proved correctness; a flaky reviewer must not sink green work.
+    (This is what sank ticket 040: the reviewer tried a blocked `git diff` and died.)"""
+    import asyncio
+    from types import SimpleNamespace
+    import factory.review as review_mod
+    from factory.task import parse_ticket
+
+    async def fake_stream(*_a, **_k):
+        return SimpleNamespace(returncode=1, result=None, stderr_rate_limited=False,
+                               stderr_tail="reviewer exited without a result")
+    monkeypatch.setattr(review_mod, "stream_headless", fake_stream)
+
+    task = parse_ticket(write_ticket(tmp_path / "backlog", "040", repo), "main")
+    result = asyncio.run(review_mod.run_review(review_config(), task, repo, tmp_path / "rev.log"))
+
+    assert result.verdict == "approve"
+    assert any("review skipped" in r for r in result.reasons)
+
+
 def test_review_disabled_by_default(tmp_path, repo):
     backlog = tmp_path / "backlog"
     write_ticket(backlog, "001", repo, body="STUB:REVIEW_REJECT\n")
