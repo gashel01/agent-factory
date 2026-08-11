@@ -649,7 +649,13 @@ export function ProjectSwitcher(
     }
   };
 
-  return <Select value={currentValue} options={options} onChange={handleChange} className="proj-select" />;
+  return (
+    <div className="proj-select">
+      <span className="sq" />
+      <Select className="proj-picker" ariaLabel="Switch project" minWidth={200}
+        value={currentValue} onChange={handleChange} options={options} />
+    </div>
+  );
 }
 
 export async function quickRun(): Promise<void> {
