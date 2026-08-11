@@ -14,7 +14,7 @@
 import type { JSX } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
-  ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine, ArrowUpRight,
+  ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, ArrowUpRight,
   Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 
 export {
-  ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine, ArrowUpRight,
+  ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, ArrowUpRight,
   Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,

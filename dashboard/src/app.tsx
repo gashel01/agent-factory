@@ -21,7 +21,7 @@ import { qrSvg } from "./qr.js";
 import type { Observation } from "./companion.js";
 import {
   ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine,
-  BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
+  ArrowLeft, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
   GitBranch, GitMerge, GitPullRequest, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
@@ -351,6 +351,9 @@ function App(): JSX.Element {
               <span className="brand-sub">Local execution</span>
             </div>
           </div>
+          <button className="hbtn back-projects" onClick={() => setScreen("projects")} title="Back to all projects">
+            <ArrowLeft size={14} /> All projects
+          </button>
           {workspaces.length > 0 && (
             <div className="proj-select">
               <span className="sq" />

@@ -175,6 +175,9 @@ button.brand-logo { cursor: pointer; }
 .cockpit-row1 { display: flex; align-items: center; gap: 13px; padding: 14px 22px; border-bottom: 1px solid var(--border); flex-wrap: wrap; min-height: var(--header-h); }
 /* Header CTAs are rounded pills (New work / New project), consistent across screens. */
 .cockpit-row1 .hbtn.accent, .appbar-inner .hbtn.accent { border-radius: 999px; padding: 8px 16px; }
+/* Explicit way back to the portfolio from inside a project (the logo does it too). */
+.back-projects { border-radius: 999px; }
+.back-projects svg { opacity: .8; }
 .cockpit-row2 { display: flex; align-items: center; gap: 20px; padding: 14px 22px; flex-wrap: wrap; }
 
 /* Compact header (Appearance → Header): trim row 2 to its essentials — the status
