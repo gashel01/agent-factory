@@ -43,13 +43,24 @@
 .repo-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .repo-tabs { display: flex; gap: 2px; }
 .repo-body { display: grid; grid-template-columns: 260px 1fr; gap: 14px; min-height: 300px; }
+.repo-body.history { grid-template-columns: 380px 1fr; } /* the timeline wants room for lanes + subject */
 .repo-side { max-height: 56vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; border-right: 1px solid var(--border); padding-right: 8px; }
+
+/* --- branch timeline (git graph) --- */
+.graph { display: flex; flex-direction: column; }
+.graph-row { display: flex; align-items: stretch; gap: 8px; text-align: left; background: none; border: none; border-radius: 8px; padding: 0 8px 0 0; cursor: pointer; min-width: 0; }
+.graph-row:hover { background: var(--plane); }
+.graph-row.on { background: var(--accent-soft); }
+.graph-rail { flex: 0 0 auto; display: block; overflow: visible; }
+.graph-text { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; padding: 4px 0; }
+.graph-subject { font-size: 12.5px; color: var(--ink); line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-meta { font: 10.5px/1.3 var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-ref { display: inline-block; font: 600 10px/1.4 var(--sans); padding: 0 6px; border-radius: 999px; margin-right: 5px; vertical-align: 1px;
+  color: var(--accent-ink); background: var(--accent); border: 1px solid transparent; }
+.graph-ref.branch { color: var(--ink-2); background: var(--plane); border-color: var(--border2); }
+.graph-ref.tag { color: color-mix(in srgb, #e0b341 70%, var(--ink)); background: color-mix(in srgb, #e0b341 16%, transparent); border-color: color-mix(in srgb, #e0b341 40%, transparent); }
 .tree-file { text-align: left; font: 12px/1.5 var(--mono); color: var(--ink-2); background: none; border: none; border-radius: 6px; padding: 4px 8px; cursor: pointer; }
 .tree-file:hover { background: var(--plane); color: var(--ink); }
-.commit-row { text-align: left; background: none; border: none; border-radius: 8px; padding: 8px; cursor: pointer; }
-.commit-row:hover { background: var(--plane); }
-.commit-subject { font-size: 13px; color: var(--ink); }
-.commit-meta { font: 11px/1.4 var(--mono); color: var(--muted); margin-top: 2px; }
 .repo-main { max-height: 56vh; overflow: auto; }
 .repo-file-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .file-pre { margin: 0; font: 11.5px/1.55 var(--mono); color: var(--ink-2); white-space: pre; }

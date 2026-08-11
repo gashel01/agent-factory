@@ -95,13 +95,117 @@ export function CodeBlock({ content, path }: { content: string; path: string }):
  *  agent as "changes" feedback). */
 export interface ReviewComment { id: number; file: string; key: string; line: number | null; snippet: string; text: string }
 
+export interface Commit { hash: string; date: string; author: string; subject: string; parents: string[]; refs: string[] }
+
+const LANE_W = 15;
+const ROW_H = 40;
+const DOT_R = 4.5;
+// A calm palette that reads on both themes; lanes cycle through it by column.
+const LANE_COLORS = ["#5b9dff", "#39c5a6", "#e0b341", "#e8776f", "#c07ae0", "#5fb0e8", "#e08b4a", "#57c46f"];
+const laneColor = (i: number): string => LANE_COLORS[((i % LANE_COLORS.length) + LANE_COLORS.length) % LANE_COLORS.length]!;
+
+interface GraphSeg { x1: number; y1: number; x2: number; y2: number; color: string }
+interface GraphRow { commit: Commit; col: number; lanes: number; segs: GraphSeg[]; dotColor: string }
+
+/** Assign each commit a stable lane (column) and pre-compute the railroad
+ *  connectors row-by-row. Commits arrive newest-first in topo order, so a lane
+ *  "holds" a hash from the child that opened it until its parent is reached. */
+export function computeGraph(commits: Commit[]): GraphRow[] {
+  const lanes: (string | null)[] = []; // hash each lane is currently waiting for
+  const cx = (col: number): number => col * LANE_W + LANE_W / 2;
+  const mid = ROW_H / 2;
+  const rows: GraphRow[] = [];
+
+  for (const commit of commits) {
+    const incoming = lanes.slice();
+    let col = incoming.findIndex((h) => h === commit.hash);
+    if (col === -1) {
+      col = lanes.indexOf(null);
+      if (col === -1) { col = lanes.length; lanes.push(null); }
+    }
+    // Every lane that was waiting for this commit has now reached it — free them;
+    // the chosen col is reused below for the first parent's continuing line.
+    for (let i = 0; i < lanes.length; i++) if (lanes[i] === commit.hash) lanes[i] = null;
+
+    const parentCols: number[] = [];
+    commit.parents.forEach((ph, p) => {
+      let pc: number;
+      if (p === 0) { pc = col; }
+      else { pc = lanes.indexOf(ph); if (pc === -1) { pc = lanes.indexOf(null); if (pc === -1) { pc = lanes.length; lanes.push(null); } } }
+      lanes[pc] = ph;
+      parentCols.push(pc);
+    });
+    if (commit.parents.length === 0) lanes[col] = null; // root commit closes its lane
+
+    const outgoing = lanes.slice();
+    const segs: GraphSeg[] = [];
+    // Top half: incoming lanes flow down into their column, bending into `col`
+    // when they were waiting for this very commit (a child meeting its parent).
+    incoming.forEach((h, L) => {
+      if (h == null) return;
+      if (h === commit.hash) segs.push({ x1: cx(L), y1: 0, x2: cx(col), y2: mid, color: laneColor(L) });
+      else segs.push({ x1: cx(L), y1: 0, x2: cx(L), y2: mid, color: laneColor(L) });
+    });
+    // Bottom half: parent edges fan out from this commit; other lanes pass straight.
+    outgoing.forEach((h, L) => {
+      if (h == null) return;
+      if (parentCols.includes(L)) segs.push({ x1: cx(col), y1: mid, x2: cx(L), y2: ROW_H, color: laneColor(L) });
+      else segs.push({ x1: cx(L), y1: mid, x2: cx(L), y2: ROW_H, color: laneColor(L) });
+    });
+
+    rows.push({ commit, col, lanes: Math.max(incoming.length, outgoing.length, col + 1, 1), segs, dotColor: laneColor(col) });
+  }
+  return rows;
+}
+
+/** Clean a git ref decoration into a short label + kind (branch/tag/head). */
+function refLabel(ref: string): { text: string; kind: string } | null {
+  if (ref === "HEAD") return { text: "HEAD", kind: "head" };
+  if (ref.startsWith("HEAD -> ")) return { text: ref.slice(8), kind: "head" };
+  if (ref.startsWith("tag: ")) return { text: ref.slice(5), kind: "tag" };
+  if (ref.startsWith("origin/") || ref.startsWith("remotes/")) return null; // hide remote dupes — keep it calm
+  return { text: ref, kind: "branch" };
+}
+
+/** The branch timeline: a coloured railroad of commits across every branch. */
+export function BranchGraph(
+  { commits, onPick, active }: { commits: Commit[]; onPick: (hash: string) => void; active: string | null },
+): JSX.Element {
+  if (commits.length === 0) return <p className="hint">No commits yet.</p>;
+  const rows = computeGraph(commits);
+  const maxLanes = Math.max(...rows.map((r) => r.lanes), 1);
+  const gw = maxLanes * LANE_W;
+  return (
+    <div className="graph">
+      {rows.map((r) => (
+        <button key={r.commit.hash} className={`graph-row${active === r.commit.hash ? " on" : ""}`} onClick={() => onPick(r.commit.hash)}>
+          <svg className="graph-rail" width={gw} height={ROW_H} viewBox={`0 0 ${gw} ${ROW_H}`} aria-hidden="true">
+            {r.segs.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={2} strokeLinecap="round" />)}
+            <circle cx={r.col * LANE_W + LANE_W / 2} cy={ROW_H / 2} r={DOT_R} fill="var(--surface)" stroke={r.dotColor} strokeWidth={2.5} />
+          </svg>
+          <span className="graph-text">
+            <span className="graph-subject">
+              {r.commit.refs.map(refLabel).filter(Boolean).map((rl, i) => (
+                <span key={i} className={`graph-ref ${rl!.kind}`}>{rl!.text}</span>
+              ))}
+              {r.commit.subject}
+            </span>
+            <span className="graph-meta">{r.commit.hash} · {r.commit.author} · {r.commit.date}</span>
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function RepoModal(
   { onClose, initialFile }: { onClose: () => void; initialFile?: string },
 ): JSX.Element {
   const repo = repoPath();
   const [tab, setTab] = useState<"files" | "history">("files");
   const [files, setFiles] = useState<string[]>([]);
-  const [commits, setCommits] = useState<Array<{ hash: string; date: string; author: string; subject: string }>>([]);
+  const [commits, setCommits] = useState<Commit[]>([]);
+  const [activeCommit, setActiveCommit] = useState<string | null>(null);
   const [branches, setBranches] = useState<{ branches: string[]; current: string }>({ branches: [], current: "" });
   const [mainView, setMainView] = useState<ReactNode>(<p className="hint">Pick a file to preview it, or a commit to see its diff.</p>);
   const [activePath, setActivePath] = useState<string | null>(null);
@@ -114,7 +218,8 @@ export function RepoModal(
     if (initialFile) void openFile(initialFile);
   }, []);
   useEffect(() => {
-    if (tab === "history") void repoGet<{ commits: typeof commits }>("log").then((r) => setCommits(r.commits)).catch(() => {});
+    // all=1 spans every branch so the timeline shows real topology, not one line.
+    if (tab === "history") void repoGet<{ commits: Commit[] }>("log", { all: "1" }).then((r) => setCommits(r.commits)).catch(() => {});
   }, [tab]);
 
   if (!repo) return <Modal title="Repo" onClose={onClose}><p className="hint">Set a repository path in the New work panel first.</p></Modal>;
@@ -133,8 +238,11 @@ export function RepoModal(
     } catch (err) { toast(String(err), true); }
   };
   const openDiff = async (hash: string): Promise<void> => {
-    const { diff } = await repoGet<{ diff: string }>("diff", { commit: hash });
-    setMainView(<><div className="repo-file-bar">Commit {hash}</div><Diff text={diff} /></>);
+    setActiveCommit(hash);
+    try {
+      const { diff } = await repoGet<{ diff: string }>("diff", { commit: hash });
+      setMainView(<><div className="repo-file-bar">Commit {hash}</div><Diff text={diff} /></>);
+    } catch (err) { toast(String(err), true); }
   };
 
   return (
@@ -152,16 +260,11 @@ export function RepoModal(
           <button className={`btn link${tab === "history" ? " on" : ""}`} onClick={() => setTab("history")}>History</button>
         </div>
       </div>
-      <div className="repo-body">
+      <div className={`repo-body${tab === "history" ? " history" : ""}`}>
         <div className="repo-side">
           {tab === "files"
             ? <FileTree paths={files} onOpen={(p) => void openFile(p)} activePath={activePath} />
-            : commits.map((c) => (
-              <button key={c.hash} className="commit-row" onClick={() => void openDiff(c.hash)}>
-                <div className="commit-subject">{c.subject}</div>
-                <div className="commit-meta">{c.hash} · {c.author} · {c.date}</div>
-              </button>
-            ))}
+            : <BranchGraph commits={commits} onPick={(h) => void openDiff(h)} active={activeCommit} />}
         </div>
         <div className="repo-main">{mainView}</div>
       </div>

@@ -34,3 +34,26 @@ test("CompanionRail renders the resize handle and drives --companion-width", asy
   assert.match(html, /--companion-width/, "panel width must be driven by --companion-width");
   assert.match(html, /Supervisor/, "the rail must render its header");
 });
+
+test("computeGraph assigns stable lanes and connects merges", async () => {
+  const { computeGraph, BranchGraph } = await import("../src/repo-modal.js");
+  // A tiny DAG (newest first, topo order): merge M has two parents A and B;
+  // A and B both descend from root R.
+  const commits = [
+    { hash: "M", parents: ["A", "B"], refs: ["HEAD -> main"], author: "x", date: "now", subject: "merge" },
+    { hash: "A", parents: ["R"], refs: [], author: "x", date: "now", subject: "a" },
+    { hash: "B", parents: ["R"], refs: [], author: "x", date: "now", subject: "b" },
+    { hash: "R", parents: [], refs: [], author: "x", date: "now", subject: "root" },
+  ];
+  const rows = computeGraph(commits);
+  assert.equal(rows.length, 4, "one row per commit");
+  assert.equal(rows[0].col, 0, "the merge sits on the primary lane");
+  // B must open a second lane (the merge fans out to two parent columns).
+  assert.ok(rows.some((r: { lanes: number }) => r.lanes >= 2), "a second lane opens for the merge");
+  // The graph renders the railroad + a ref chip without throwing.
+  const html = render(BranchGraph as unknown as ComponentType<Record<string, unknown>>, {
+    commits, onPick: () => {}, active: null,
+  });
+  assert.match(html, /graph-rail/, "each row renders its SVG rail");
+  assert.match(html, /graph-ref/, "branch refs render as chips");
+});

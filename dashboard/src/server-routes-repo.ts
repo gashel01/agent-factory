@@ -218,17 +218,23 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       return true;
     }
     if (url.pathname === "/api/repo/log") {
-      const result = await runCmd(
-        "git",
-        ["log", "--format=%h%x09%ad%x09%an%x09%s", "--date=relative", "-n", "60", ref],
-        repo,
-      );
+      // parents (%p) + ref decorations (%D) let the client draw the branch graph;
+      // all=1 spans every branch in topo order (the timeline view), else the
+      // selected ref's linear history.
+      const all = url.searchParams.get("all") === "1";
+      const args = ["log", "--format=%h%x09%p%x09%ad%x09%an%x09%D%x09%s", "--date=relative", "-n", "120"];
+      if (all) args.push("--all", "--topo-order"); else args.push(ref);
+      const result = await runCmd("git", args, repo);
       const commits = result.output
         .split("\n")
         .filter(Boolean)
         .map((line) => {
-          const [hash, date, author, ...subject] = line.split("\t");
-          return { hash, date, author, subject: subject.join("\t") };
+          const [hash, parents, date, author, refs, ...subject] = line.split("\t");
+          return {
+            hash, date, author, subject: subject.join("\t"),
+            parents: (parents ?? "").split(" ").filter(Boolean),
+            refs: (refs ?? "").split(", ").map((r) => r.trim()).filter(Boolean),
+          };
         });
       json(res, 200, { commits });
       return true;
