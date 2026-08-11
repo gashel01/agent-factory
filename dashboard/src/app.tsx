@@ -144,7 +144,7 @@ function App(): JSX.Element {
     return () => window.removeEventListener("keydown", onKey);
   }, [modal, screen, view]);
 
-  const head = headline(model, runActive);
+  const head = headline(model, runActive, hidden.ids);
   const live = Boolean(model.run) && !model.endedTs && runActive;
   // Autopilot UI (banner, Deps) keys on the loop job actually running, not the
   // per-iteration `live` flag which blips off at each iteration boundary — and
@@ -156,10 +156,14 @@ function App(): JSX.Element {
   // in-flight state with no terminal event. When nothing is actually running
   // they're ghosts — hide them so the board shows no phantom "working" cards.
   const tasks = runActive ? allTasks : allTasks.filter((t) => !inFlight(t.state));
-  const done = tasks.filter((t) => t.state === "DONE");
-  const attention = tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED");
-  const working = tasks.filter((t) => inFlight(t.state));
-  const queued = tasks.filter((t) => t.state === "QUEUED");
+  // Stats + banner count only what's still on the board: a removed ticket must not
+  // keep the "Needs you" tally (or the banner tone) lit. `tasks` stays unfiltered
+  // for the Removed list, which needs exactly the hidden ones.
+  const visibleTasks = tasks.filter((t) => !hidden.ids.has(t.id));
+  const done = visibleTasks.filter((t) => t.state === "DONE");
+  const attention = visibleTasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED");
+  const working = visibleTasks.filter((t) => inFlight(t.state));
+  const queued = visibleTasks.filter((t) => t.state === "QUEUED");
   const openLog = (t: TaskModel) => setModal({ type: "log", taskId: t.id, title: t.title });
   const openAnswer = (t: TaskModel) =>
     setModal({ type: "answer", taskId: t.id, title: t.title, question: t.note ?? "",
@@ -595,7 +599,7 @@ function App(): JSX.Element {
       {railOpen
         ? <CompanionRail obs={companion.obs} feed={model.feed} onClose={() => setRailOpen(false)} now={now}
             currentRun={model.run} live={live} railWidth={railWidth} onRailWidth={setRailWidth}
-            needsYou={tasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED" || t.state === "AWAITING_APPROVAL")}
+            needsYou={visibleTasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED" || t.state === "AWAITING_APPROVAL")}
             onAnswer={openAnswer} onReview={openDiff}
             onPlan={(goal) => { setRailOpen(false); setModal({ type: "newwork", tab: "goal", goal }); }} />
         : <SupervisorDock onExpand={() => setRailOpen(true)} />}

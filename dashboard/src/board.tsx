@@ -65,7 +65,9 @@ export type ModalState =
   | { type: "aireview"; file: string; title: string }
   | { type: "log"; taskId: string; title: string };
 
-export function headline(model: Model, runActive: boolean): { text: string; tone: string } {
+export function headline(
+  model: Model, runActive: boolean, hiddenIds?: ReadonlySet<string>,
+): { text: string; tone: string } {
   if (!model.run) return { text: "No run yet — describe some work to begin.", tone: "warning" };
   if (!model.endedTs && !runActive) {
     return {
@@ -73,7 +75,9 @@ export function headline(model: Model, runActive: boolean): { text: string; tone
       tone: "warning",
     };
   }
-  const tasks = [...model.tasks.values()];
+  // Removed tickets are gone from the operator's view — they must not colour the
+  // banner either (a run is "all done" once the only failure was one you dropped).
+  const tasks = [...model.tasks.values()].filter((t) => !hiddenIds?.has(t.id));
   const failed = tasks.filter((t) => t.state === "FAILED").length;
   const blocked = tasks.filter((t) => t.state === "BLOCKED").length;
   const done = tasks.filter((t) => t.state === "DONE").length;
