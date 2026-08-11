@@ -533,3 +533,98 @@ export function AttachButton({ onPick }: { onPick: (files: FileList | null) => v
     </>
   );
 }
+
+/* --------------------------------- file attachments --------------------------------- */
+
+function isImage(file: File): boolean {
+  return file.type.startsWith("image/");
+}
+
+function getFileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.substring(dot + 1).toUpperCase() : "FILE";
+}
+
+function fileIconSvg(fileName: string): string {
+  const ext = getFileExtension(fileName);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+    <rect width="64" height="64" fill="#e0e0e0" rx="4"/>
+    <rect x="4" y="4" width="56" height="56" fill="#f5f5f5" rx="2"/>
+    <text x="32" y="40" font-size="12" font-weight="bold" text-anchor="middle" fill="#666" font-family="system-ui">
+      ${ext.substring(0, 3)}
+    </text>
+  </svg>`;
+  return `data:image/svg+xml;base64,${btoa(svg)}`;
+}
+
+/**
+ * Paste/drop/pick all files (images and others) into any composer. Images get
+ * thumbnails, other files get extension-based icons. Files are uploaded to
+ * /api/attachments (saved under the workspace) and their ABSOLUTE path is handed
+ * back via refs() — the consumer appends refs() to the outgoing text so the agent
+ * can Read the file. clear() after sending.
+ */
+export function useFileAttachments(): {
+  items: Attachment[];
+  paste: (e: ReactClipboardEvent) => void;
+  drop: (e: ReactDragEvent) => void;
+  pick: (files: FileList | null) => void;
+  remove: (path: string) => void;
+  clear: () => void;
+  refs: () => string;
+} {
+  const [items, setItems] = useState<Attachment[]>([]);
+  const upload = useCallback((file: File): void => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const fileContent = String(reader.result);
+      const thumbPromise = isImage(file)
+        ? Promise.resolve(fileContent)
+        : Promise.resolve(fileIconSvg(file.name));
+
+      thumbPromise.then((thumb) => {
+        void postJSON<{ path?: string; name?: string }>("/api/attachments", {
+          dataUrl: fileContent,
+          name: file.name,
+        })
+          .then((r) => {
+            if (r.path) {
+              setItems((xs) => [...xs, { path: r.path!, name: r.name || file.name, thumb }]);
+            }
+          })
+          .catch((e) => toast(String(e), true));
+      });
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  const paste = useCallback((e: ReactClipboardEvent): void => {
+    const items = [...(e.clipboardData?.items ?? [])].filter((it) => it.kind === "file");
+    if (!items.length) return;
+    e.preventDefault();
+    for (const it of items) {
+      const f = it.getAsFile();
+      if (f) upload(f);
+    }
+  }, [upload]);
+
+  const drop = useCallback((e: ReactDragEvent): void => {
+    const files = [...(e.dataTransfer?.files ?? [])];
+    if (!files.length) return;
+    e.preventDefault();
+    files.forEach(upload);
+  }, [upload]);
+
+  const pick = useCallback((files: FileList | null): void => {
+    [...(files ?? [])].forEach(upload);
+  }, [upload]);
+
+  const remove = useCallback((path: string): void => setItems((xs) => xs.filter((x) => x.path !== path)), []);
+  const clear = useCallback((): void => setItems([]), []);
+  const refs = useCallback(
+    (): string => items.map((x) => `\n\n[Attached file — Read this file to view it: ${x.path}]`).join(""),
+    [items],
+  );
+
+  return { items, paste, drop, pick, remove, clear, refs };
+}
