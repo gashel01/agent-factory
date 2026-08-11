@@ -22,7 +22,7 @@ import { qrSvg } from "./qr.js";
 import type { Observation } from "./companion.js";
 import {
   ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine,
-  BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
+  BookOpen, Bot, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
   GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
@@ -634,26 +634,19 @@ export function ProjectSwitcher(
   { workspace, workspaces, onOpenProjects, onSwitchProject }:
   { workspace: string; workspaces: WorkspaceInfo[]; onOpenProjects: () => void; onSwitchProject: (name: string) => void },
 ): JSX.Element {
-  const options: SelectOption[] = [
-    { value: "__all_projects__", label: "All Projects" },
-    ...workspaces.map((w) => ({ value: w.name, label: w.name })),
-  ];
-
-  const currentValue = workspaces.some((w) => w.name === workspace) ? workspace : "__all_projects__";
-
-  const handleChange = (value: string): void => {
-    if (value === "__all_projects__") {
-      onOpenProjects();
-    } else {
-      onSwitchProject(value);
-    }
-  };
-
+  // One box, two affordances: a chevron that goes back to all projects, and the
+  // switcher for THIS project's siblings. The back is a distinct control (not an
+  // option buried in the dropdown), but it lives in the same box as the selector.
   return (
     <div className="proj-select">
+      <button className="proj-back" onClick={onOpenProjects} title="Back to all projects" aria-label="Back to all projects">
+        <ChevronLeft size={16} />
+      </button>
+      <span className="proj-div" aria-hidden="true" />
       <span className="sq" />
-      <Select className="proj-picker" ariaLabel="Switch project" minWidth={200}
-        value={currentValue} onChange={handleChange} options={options} />
+      <Select className="proj-picker" ariaLabel="Switch project" minWidth={150}
+        value={workspace} onChange={onSwitchProject}
+        options={workspaces.map((w) => ({ value: w.name, label: w.name }))} />
     </div>
   );
 }
