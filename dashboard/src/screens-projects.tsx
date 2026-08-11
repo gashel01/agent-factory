@@ -11,6 +11,7 @@ import { NewWorkModal } from "./work.js";
 import { toast, Skeleton } from "./core.js";
 import { PageHead, StatTile, SegBar } from "./screens-layout.js";
 import { AppBar, AppearanceModal } from "./screens.js";
+import type { HeaderMenu } from "./screens.js";
 
 export interface PortfolioProject {
   name: string; workdir: string; currentRun: string | null; running: boolean;
@@ -299,8 +300,8 @@ export function PhoneCard({ theme }: { theme: Appearance }): JSX.Element | null 
 }
 
 export function ProjectsScreen(
-  { theme, onOpen, onMemory }:
-  { theme: Appearance; onOpen: (name: string) => void; onMemory: () => void },
+  { theme, onOpen, onMemory, menu }:
+  { theme: Appearance; onOpen: (name: string) => void; onMemory: () => void; menu: HeaderMenu },
 ): JSX.Element {
   const { projects, reload } = usePortfolio();
   const [showNew, setShowNew] = useState(false);
@@ -314,7 +315,7 @@ export function ProjectsScreen(
 
   return (
     <>
-      <AppBar active="projects" newLabel="New project" theme={theme} onProjects={() => {}} onMemory={onMemory} onNew={() => setShowNew(true)} onAppearance={() => setShowAppearance(true)} />
+      <AppBar active="projects" newLabel="New project" theme={theme} onProjects={() => {}} onMemory={onMemory} onNew={() => setShowNew(true)} onAppearance={() => setShowAppearance(true)} menu={menu} />
       <div className="page">
         {list.length > 0 && (
           <PageHead title="Your projects" synthFam={need > 0 ? "blocked" : "merged"} synth={synth}

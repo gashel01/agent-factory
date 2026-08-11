@@ -317,10 +317,13 @@ function App(): JSX.Element {
   ].filter((s) => s.n > 0);
   const synthFam = TONE_FAM[head.tone] ?? "working";
 
+  // App-level actions the Projects/Memory header "•••" menu invokes (they live here,
+  // above those screens) — same source as the board header's menu.
+  const headerMenu = { onSettings: () => setModal({ type: "settings" }), onCmdk: () => setModal({ type: "cmdk" }), notifyOn: notify.on, onToggleNotify: notify.toggle };
   if (screen === "projects") {
     return (
       <>
-        <ProjectsScreen theme={theme} onOpen={openProject} onMemory={() => setScreen("memory")} />
+        <ProjectsScreen theme={theme} onOpen={openProject} onMemory={() => setScreen("memory")} menu={headerMenu} />
         <Toaster />
       </>
     );
@@ -328,7 +331,7 @@ function App(): JSX.Element {
   if (screen === "memory") {
     return (
       <>
-        <MemoryScreen ws={ws} tasks={tasks} theme={theme} onProjects={() => setScreen("projects")} />
+        <MemoryScreen ws={ws} tasks={tasks} theme={theme} onProjects={() => setScreen("projects")} menu={headerMenu} />
         <Toaster />
       </>
     );

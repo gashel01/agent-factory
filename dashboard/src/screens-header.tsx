@@ -1,18 +1,24 @@
 import { useEffect, useState } from "react";
 import type { JSX } from "react";
 import type { Appearance } from "./screens-theme.js";
-import { AppearanceButton } from "./screens-appearance.js";
 import { MessageCircle, ArrowUp, Bot } from "./icons.js";
 import { fetchJSON, postJSON } from "./api.js";
 import { AttachStrip, toast, useAttachments } from "./core.js";
+import { OverflowMenu } from "./widgets.js";
 
-/** The slim sticky bar shared by the Projects and Memory screens. */
+/** The app-level actions the header "•••" menu invokes — threaded from the root
+ *  since they live above the individual screens. */
+export interface HeaderMenu { onSettings: () => void; onCmdk: () => void; notifyOn: boolean; onToggleNotify: () => void }
+
+/** The slim sticky bar shared by the Projects and Memory screens. The "•••" menu
+ *  mirrors the board header's, but carries only the options relevant here —
+ *  Supervisor and the Memory jump are board-specific, so they're left out. */
 export function AppBar(
-  { active, factCount, narrow, newLabel, theme, onProjects, onMemory, onNew, onAppearance }:
+  { active, factCount, narrow, newLabel, theme, onProjects, onMemory, onNew, onAppearance, menu }:
   {
     active: "projects" | "memory"; factCount?: number; narrow?: boolean; newLabel: string;
     theme: Appearance;
-    onProjects: () => void; onMemory: () => void; onNew: () => void; onAppearance: () => void;
+    onProjects: () => void; onMemory: () => void; onNew: () => void; onAppearance: () => void; menu: HeaderMenu;
   },
 ): JSX.Element {
   return (
@@ -32,7 +38,12 @@ export function AppBar(
           </button>
         </div>
         <div className="spacer" />
-        <AppearanceButton onOpen={onAppearance} />
+        <OverflowMenu ariaLabel="More" items={[
+          { label: "Command palette", hint: "⌘K", onClick: menu.onCmdk },
+          { label: "Notifications", hint: menu.notifyOn ? "On" : "Off", on: menu.notifyOn, onClick: menu.onToggleNotify },
+          { label: "Appearance", onClick: onAppearance },
+          { label: "Settings", onClick: menu.onSettings },
+        ]} />
         <button className="hbtn accent" onClick={onNew}><span className="plus">+</span> {newLabel}</button>
       </div>
     </header>

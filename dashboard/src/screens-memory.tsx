@@ -8,6 +8,7 @@ import { Modal, ConfirmButton, Select } from "./widgets.js";
 import { toast, Skeleton } from "./core.js";
 import type { Appearance } from "./screens-theme.js";
 import { AppBar, PageHead, AppearanceModal } from "./screens.js";
+import type { HeaderMenu } from "./screens.js";
 
 export interface Fact { id: string; text: string; scope: "project" | "global"; ticketId: string | null; createdTs: string; applied?: number }
 
@@ -93,8 +94,8 @@ export function useFacts(ws: string): { facts: Fact[] | null; reload: () => void
 }
 
 export function MemoryScreen(
-  { ws, tasks, theme, onProjects }:
-  { ws: string; tasks: TaskModel[]; theme: Appearance; onProjects: () => void },
+  { ws, tasks, theme, onProjects, menu }:
+  { ws: string; tasks: TaskModel[]; theme: Appearance; onProjects: () => void; menu: HeaderMenu },
 ): JSX.Element {
   const { facts, reload } = useFacts(ws);
   const [q, setQ] = useState("");
@@ -118,7 +119,7 @@ export function MemoryScreen(
     <>
       <AppBar active="memory" factCount={all.length} narrow newLabel="New lesson" theme={theme}
         onProjects={onProjects} onMemory={() => {}} onNew={() => setEditing("new")}
-        onAppearance={() => setShowAppearance(true)} />
+        onAppearance={() => setShowAppearance(true)} menu={menu} />
       <div className="page narrow">
         <PageHead title="Memory" synthFam="merged" synth={synth}
           lead="Each lesson is learned from a task and applied to the next ones — so the same mistake isn't made twice." />

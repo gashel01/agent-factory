@@ -3,8 +3,9 @@
 
 export { readPref, useTheme } from "./screens-theme.js";
 export type { Appearance, ThemeMode } from "./screens-theme.js";
-export { AppearanceButton, AppearanceModal } from "./screens-appearance.js";
+export { AppearanceModal } from "./screens-appearance.js";
 export { AppBar, SupervisorDock, AgentVersionChip } from "./screens-header.js";
+export type { HeaderMenu } from "./screens-header.js";
 export { PageHead, StatTile, SegBar } from "./screens-layout.js";
 export { DiffModal, ReviewModal } from "./screens-review.js";
 export { DESTRUCTIVE_HINT, QUICK_REPLIES, RunGuardModal, AnswerModal } from "./screens-modals.js";

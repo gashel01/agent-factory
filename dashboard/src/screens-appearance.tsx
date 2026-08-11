@@ -6,13 +6,7 @@ import { toast } from "./core.js";
 import {
   ACCENTS, ATMOSPHERES, BACKGROUNDS, MAX_CUSTOM_BG, PANEL_COLORS, PANEL_STYLES, SCENES,
 } from "./appearance-types.js";
-import { Palette, Upload, X } from "./icons.js";
-
-export function AppearanceButton({ onOpen }: { onOpen: () => void }): JSX.Element {
-  return (
-    <button className="hbtn icon-btn" aria-label="Appearance settings" title="Appearance — theme, accent, density" onClick={onOpen}><Palette size={16} /></button>
-  );
-}
+import { Upload, X } from "./icons.js";
 
 /** The full appearance panel: theme, panels, background, scenes, atmospheres,
  *  custom backgrounds, accent and a darkness dimmer. Global UI prefs. */
