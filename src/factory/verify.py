@@ -63,7 +63,9 @@ def run_verify(
     commits = git(worktree_path, "rev-list", "--count", f"{task.base_branch}..HEAD")
     if int(commits.stdout.strip() or 0) == 0:
         return VerifyResult(ok=False, failures=("no commits on the task branch",))
-    diff = git(worktree_path, "diff", "--quiet", f"{task.base_branch}..HEAD", check=False)
+    # Three-dot: did THIS branch add anything since it forked? Two-dot would call a
+    # net-zero branch "changed" merely because the base advanced under it.
+    diff = git(worktree_path, "diff", "--quiet", f"{task.base_branch}...HEAD", check=False)
     if diff.returncode == 0:
         return VerifyResult(ok=False, failures=("commits present but the diff is empty",))
 

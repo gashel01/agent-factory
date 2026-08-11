@@ -48,6 +48,34 @@ def test_rejected_diff_retries_with_evidence_then_fails(tmp_path, repo):
     assert git(repo, "branch", "--list", "agent/*") == ""
 
 
+def test_review_diff_ignores_base_advance(tmp_path, repo):
+    """A sibling merging into the base AFTER this branch forked must not appear in
+    the review diff — otherwise it reads as scope creep this ticket never made
+    (exactly what blocked the DiagnosticsModal extraction against a moved main)."""
+    from factory.review import build_review_prompt
+    from factory.task import parse_ticket
+
+    # Fork a ticket branch and add only this ticket's own file.
+    git(repo, "checkout", "-b", "agent/feat")
+    (repo / "diagnostics.txt").write_text("mine\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "extract diagnostics")
+
+    # The base advances with an unrelated sibling change while we were away.
+    git(repo, "checkout", "main")
+    (repo / "sibling.txt").write_text("theirs\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "sibling extraction")
+    git(repo, "checkout", "agent/feat")
+
+    backlog = tmp_path / "backlog"
+    task = parse_ticket(write_ticket(backlog, "038", repo), "main")
+    prompt = build_review_prompt(task, repo)
+
+    assert "diagnostics.txt" in prompt          # the ticket's real work is shown
+    assert "sibling.txt" not in prompt          # two-dot would wrongly surface it
+
+
 def test_review_disabled_by_default(tmp_path, repo):
     backlog = tmp_path / "backlog"
     write_ticket(backlog, "001", repo, body="STUB:REVIEW_REJECT\n")

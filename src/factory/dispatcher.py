@@ -68,7 +68,9 @@ def _blocked_context(task: Task, wt: wt_mod.Worktree) -> dict:
     ).stdout.strip()
     status = wt_mod.git(wt.path, "status", "--short", check=False).stdout.strip()
     stat = wt_mod.git(
-        wt.path, "diff", "--stat", f"{task.base_branch}..{wt.branch}", check=False
+        # Three-dot (merge-base): show only what THIS branch changed, so a base
+        # that advanced via sibling merges doesn't masquerade as the ticket's work.
+        wt.path, "diff", "--stat", f"{task.base_branch}...{wt.branch}", check=False
     ).stdout.strip()
     return {
         "clean": wt_mod.is_clean(wt.path),

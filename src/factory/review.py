@@ -72,12 +72,15 @@ class ReviewResult:
 
 
 def build_review_prompt(task: Task, worktree_path: Path) -> str:
-    diff = git(worktree_path, "diff", f"{task.base_branch}..HEAD").stdout
+    # Three-dot: diff against the MERGE-BASE, not the base tip. A sibling ticket
+    # merging into the base after this branch forked would otherwise show up here
+    # as changes this ticket "made" — a false scope-creep rejection.
+    diff = git(worktree_path, "diff", f"{task.base_branch}...HEAD").stdout
     if len(diff) > MAX_DIFF_CHARS:
         diff = diff[:MAX_DIFF_CHARS] + "\n[... diff truncated — Read the files for the rest]"
     return (
         f"{REVIEW_CONTRACT}\n\n---\n\n# Ticket\n\n{task.render()}\n\n"
-        f"---\n\n# Diff under review ({task.base_branch}..HEAD)\n\n```diff\n{diff}\n```\n"
+        f"---\n\n# Diff under review ({task.base_branch}...HEAD)\n\n```diff\n{diff}\n```\n"
     )
 
 
