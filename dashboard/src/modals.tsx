@@ -413,13 +413,15 @@ export const SETTINGS_SECTIONS: Array<{ id: string; label: string }> = [
   { id: "set-advanced", label: "Advanced" },
 ];
 
-export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
+export function SettingsModal({ onClose, initialSection }: { onClose: () => void; initialSection?: string }): JSX.Element {
   const [s, setS] = useState<Settings | null>(null);
   const [testing, setTesting] = useState(false);
   const [testOut, setTestOut] = useState<string | null>(null);
   const [repo, setRepo] = useState("");
-  const [activeSec, setActiveSec] = useState(SETTINGS_SECTIONS[0]!.id);
+  const validSection = initialSection && SETTINGS_SECTIONS.some((x) => x.id === initialSection) ? initialSection : null;
+  const [activeSec, setActiveSec] = useState(validSection ?? SETTINGS_SECTIONS[0]!.id);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const jumped = useRef(false);
   const pollDoctor = useManagedInterval();
   const set = (patch: Partial<Settings>) => setS((cur) => cur ? { ...cur, ...patch } : cur);
 
@@ -454,6 +456,15 @@ export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element
     document.getElementById(id)?.scrollIntoView({ block: "start", behavior: "smooth" });
     setActiveSec(id);
   };
+
+  // Deep link: a header chip (Subscription / Integrated) can open Settings straight
+  // at the relevant section. Do it once, after the sections have rendered.
+  useEffect(() => {
+    if (!s || !validSection || jumped.current) return;
+    jumped.current = true;
+    const id = window.setTimeout(() => jump(validSection), 0);
+    return () => window.clearTimeout(id);
+  }, [s]);
 
   const saveRepoPath = async (): Promise<void> => {
     try { await postJSON("/api/repo/path", { path: repo.trim() }); }

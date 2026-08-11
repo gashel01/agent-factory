@@ -360,12 +360,12 @@ function App(): JSX.Element {
           )}
           <div className="spacer" />
           <AgentVersionChip />
-          <button className={`mode-badge mode-${model.mode}`} onClick={() => setModal({ type: "settings" })}
+          <button className={`mode-badge mode-${model.mode}`} onClick={() => setModal({ type: "settings", section: "set-safety" })}
             title={model.mode === "api" ? "API mode — real dollars billed. Click to change." : "Subscription mode — draws from your plan, no real charge. Click to change."}>
             {model.mode === "api" ? <><Key size={13} /> API</> : <><InfinityIcon size={14} /> Subscription</>}
           </button>
           {model.prMode !== null && (
-            <button className={`mode-badge delivery-${model.prMode ? "pr" : "integrated"}`} onClick={() => setModal({ type: "settings" })}
+            <button className={`mode-badge delivery-${model.prMode ? "pr" : "integrated"}`} onClick={() => setModal({ type: "settings", section: "set-safety" })}
               title={model.prMode
                 ? "Delivery: one GitHub PR per verified ticket. Nothing lands on your base branch until YOU merge those PRs — merged tickets on the board just mean the PR is open. Click to change."
                 : "Delivery: verified tickets merge straight into the base branch (one integrated result). Click to change."}>
@@ -507,7 +507,7 @@ function App(): JSX.Element {
           onReviewManual={(bt) => setModal({ type: "aireview", file: bt.file, title: bt.title })} />
       )}
 
-      {modal?.type === "settings" && <SettingsModal onClose={() => setModal(null)} />}
+      {modal?.type === "settings" && <SettingsModal onClose={() => setModal(null)} initialSection={modal.section} />}
       {modal?.type === "newwork" && <NewWorkModal onClose={() => setModal(null)} onWorkspaceAdded={loadWorkspaces} onBacklogChange={backlog.refresh} takenIds={tasks.map((t) => t.id)} initialTab={modal.tab ?? "one"} initialGoal={modal.goal} initialAutoStart={modal.autostart ?? true} />}
       {modal?.type === "editticket" && (
         <EditTicketModal ticket={modal.ticket} onClose={() => setModal(null)}

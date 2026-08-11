@@ -41,7 +41,7 @@ export type Screen = "projects" | "cockpit" | "memory";
 
 export type ModalState =
   | null
-  | { type: "settings" }
+  | { type: "settings"; section?: string }
   | { type: "newwork"; tab?: "one" | "goal"; goal?: string; autostart?: boolean }
   | { type: "editticket"; ticket: BoardTicket }
   | { type: "repo"; file?: string }
