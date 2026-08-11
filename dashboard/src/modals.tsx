@@ -408,10 +408,9 @@ export function Section({ id, title, children }: { id: string; title: string; ch
  *  essentials) leads, so the panel still opens on "run without touching a thing". */
 export const SETTINGS_SECTIONS: Array<{ id: string; label: string }> = [
   { id: "set-general", label: "General" },
-  { id: "set-models", label: "Models & thinking" },
   { id: "set-project", label: "Project & repo" },
   { id: "set-safety", label: "Execution & safety" },
-  { id: "set-notify", label: "Notifications" },
+  { id: "set-advanced", label: "Advanced" },
 ];
 
 export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element {
@@ -538,23 +537,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element
           </Row>
             </Section>
 
-            <Section id="set-models" title="Models & thinking">
-          <Row label="Planning model" hint="The ticket-maker explores the repo once and saves a reusable map. A cheaper tier here cuts planning cost. Default matches the coding model.">
-            <Select value={s.planModel} onChange={(v) => set({ planModel: v })} ariaLabel="Planning model"
-              options={planChoices.map(([value, label]) => ({ value, label }))} />
-          </Row>
-          <Row label="Reasoning effort" hint="How hard each agent thinks. Higher digs deeper but is slower and costs more. Default lets the agent decide.">
-            <Select value={s.effort} onChange={(v) => set({ effort: v })} ariaLabel="Reasoning effort"
-              options={effortChoices.map(([value, label]) => ({ value, label }))} />
-          </Row>
-          <Row label="Code reviewer" hint="A second AI double-checks every change before merge: scope, gamed tests, obvious bugs.">
-            <input type="checkbox" className="switch" checked={s.reviewer} onChange={(e) => set({ reviewer: e.target.checked })} />
-          </Row>
-          <Row label="Internet access" hint="Agents may search and read the web. Needed for research; adds exposure to web content.">
-            <input type="checkbox" className="switch" checked={s.internet} onChange={(e) => set({ internet: e.target.checked })} />
-          </Row>
-            </Section>
-
             <Section id="set-project" title="Project & repository">
           <Row label="Repository path" hint="The git repo your agents work in. New tickets default to it and the planner explores it. Set once per project.">
             <input className="input" placeholder="C:\\path\\to\\your\\repo" value={repo}
@@ -565,9 +547,6 @@ export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element
           </Row>
           <Row label="Install dependencies" hint="Run in every agent's fresh copy of the repo, before work starts. Comma-separated.">
             <input className="input" value={s.setupCommands} placeholder="npm install" onChange={(e) => set({ setupCommands: e.target.value })} />
-          </Row>
-          <Row label="Integration check" hint="After every ticket merges, run this suite once to prove the merged changes still hold together. Empty = off. Comma-separated.">
-            <input className="input" value={s.integrationCommands} placeholder="npm run build, npm test" onChange={(e) => set({ integrationCommands: e.target.value })} />
           </Row>
             </Section>
 
@@ -584,12 +563,30 @@ export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element
           <Row label="Delivery: a PR per ticket" hint="OFF (default): each verified ticket merges straight into the base branch — one integrated result lands locally. ON: each verified ticket is pushed to its own branch and opened as a GitHub PR instead — your base branch does NOT move until you merge those PRs yourself, and a batch becomes several separate PRs to review. Needs a connected GitHub repo.">
             <input type="checkbox" className="switch" checked={s.prNative} onChange={(e) => set({ prNative: e.target.checked })} />
           </Row>
-          <Row label="Retries per task" hint="How many times a failing ticket is re-attempted. Each retry is a full agent run — keep low for costly tasks.">
-            <input type="number" min="0" className="input num" value={s.maxRetries} onChange={(e) => set({ maxRetries: Math.max(0, Number(e.target.value) || 0) })} />
+          <Row label="Code reviewer" hint="A second AI double-checks every change before merge: scope, gamed tests, obvious bugs.">
+            <input type="checkbox" className="switch" checked={s.reviewer} onChange={(e) => set({ reviewer: e.target.checked })} />
+          </Row>
+          <Row label="Internet access" hint="Agents may search and read the web. Needed for research; adds exposure to web content.">
+            <input type="checkbox" className="switch" checked={s.internet} onChange={(e) => set({ internet: e.target.checked })} />
           </Row>
             </Section>
 
-            <Section id="set-notify" title="Notifications">
+            <Section id="set-advanced" title="Advanced">
+          <p className="settings-sub">Sensible defaults — you rarely need to touch these.</p>
+          <Row label="Planning model" hint="The ticket-maker explores the repo once and saves a reusable map. A cheaper tier here cuts planning cost. Default matches the coding model.">
+            <Select value={s.planModel} onChange={(v) => set({ planModel: v })} ariaLabel="Planning model"
+              options={planChoices.map(([value, label]) => ({ value, label }))} />
+          </Row>
+          <Row label="Thinking effort" hint="How hard each agent thinks. Higher digs deeper but is slower and costs more. Default lets the agent decide.">
+            <Select value={s.effort} onChange={(v) => set({ effort: v })} ariaLabel="Thinking effort"
+              options={effortChoices.map(([value, label]) => ({ value, label }))} />
+          </Row>
+          <Row label="Retries per task" hint="How many times a failing ticket is re-attempted before it needs you. Each retry is a full agent run and steps up a model tier.">
+            <input type="number" min="0" className="input num" value={s.maxRetries} onChange={(e) => set({ maxRetries: Math.max(0, Number(e.target.value) || 0) })} />
+          </Row>
+          <Row label="Integration check" hint="After every ticket merges, run this suite once to prove the merged changes still hold together. Empty = off. Comma-separated.">
+            <input className="input" value={s.integrationCommands} placeholder="npm run build, npm test" onChange={(e) => set({ integrationCommands: e.target.value })} />
+          </Row>
           <Row label="Notify me" hint="Get pinged when a run finishes or a ticket needs you. Paste a Slack, Discord, or any incoming-webhook URL. Empty = off. Fires server-side, so it works with the browser closed.">
             <input className="input" type="url" value={s.webhookUrl} placeholder="https://hooks.slack.com/services/…" onChange={(e) => set({ webhookUrl: e.target.value })} />
           </Row>

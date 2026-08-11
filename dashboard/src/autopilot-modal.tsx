@@ -232,7 +232,7 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
             )}
             {mode === "explicit" && (
               <>
-                <label className="work-label">Acceptance check <span className="loop-faint">— a command that exits 0 when done</span></label>
+                <label className="work-label">How do we know it's done? <span className="loop-faint">— a check that has to pass; leave empty to just run to the budget cap</span></label>
                 <input className="input mono" placeholder="e.g. npm --prefix dashboard test"
                   value={accept} onChange={(e) => setAccept(e.target.value)} />
               </>

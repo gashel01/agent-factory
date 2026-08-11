@@ -610,8 +610,11 @@ export function CardMeasures({ t, now }: { t: TaskModel; now: number }): JSX.Ele
       {/* While running, show the live turn/token count (C6); after, the final cost. */}
       {running && t.liveTurns > 0 && <span className="tok" title="Turns so far">turn {t.liveTurns}</span>}
       {liveTokens && <span className="tok live" title="Tokens so far (live)">{fmtTokens(t.liveTokens)}</span>}
-      {!running && t.costUsd > 0 && <span className="cost" title="Cost">{fmtUsd(t.costUsd)}</span>}
-      {!running && t.tokens > 0 && <span className="tok" title="Tokens">{fmtTokens(t.tokens)}</span>}
+      {/* Cost-first: money is the number that means something to a person; the raw
+          token count moves to the chip's tooltip, not a second chip on the card. */}
+      {!running && t.costUsd > 0 && (
+        <span className="cost" title={t.tokens > 0 ? `${fmtTokens(t.tokens)} tokens` : "Cost"}>{fmtUsd(t.costUsd)}</span>
+      )}
       {t.retries > 0 && <span className="try">attempt {t.retries + 1}</span>}
     </div>
   );

@@ -542,6 +542,8 @@ body { background: var(--bg); }
   background: var(--accent-soft); color: var(--accent);
   font: 500 12.5px/1.5 var(--sans);
 }
+/* Quiet lead-in under the "Advanced" section — signals "you can skip this". */
+.settings-sub { margin: -2px 0 12px; color: var(--faint); font: 400 12px/1.5 var(--sans); }
 /* Two columns: a sticky anchor rail on the left, the scrolling panes on the right —
    the findability of tabs without the weight of a modal. */
 .settings-layout { display: grid; grid-template-columns: 132px 1fr; gap: 22px; align-items: start; margin-top: 12px; }
