@@ -10,6 +10,20 @@ import { ConsentCard, capsuleIcon } from "./cockpit-consent.js";
 import { DeviceInstall } from "./cockpit-device.js";
 import { PanelCard } from "./cockpit-panel.js";
 
+/** Cluster actions by their optional `group`, preserving first-seen order. A
+ *  long action list then reads as labelled sections instead of a flat wall;
+ *  ungrouped actions collapse to a single unnamed section (the old flat look). */
+function groupActions(acts: CapsuleAction[]): Array<[string, CapsuleAction[]]> {
+  const order: string[] = [];
+  const by = new Map<string, CapsuleAction[]>();
+  for (const a of acts) {
+    const g = a.group ?? "";
+    if (!by.has(g)) { by.set(g, []); order.push(g); }
+    by.get(g)!.push(a);
+  }
+  return order.map((g) => [g, by.get(g)!]);
+}
+
 export function CockpitModal({ onClose }: { onClose: () => void }): JSX.Element {
   const [view, setView] = useState<CapsuleView | null>(null);
   const [net, setNet] = useState<NetInfo | null>(null);
@@ -251,7 +265,10 @@ export function CockpitModal({ onClose }: { onClose: () => void }): JSX.Element 
       {pending.map((c) => <ConsentCard key={c.id} consent={c} onApprove={() => grant(c)} />)}
 
       <div className="cockpit-actions">
-        {(capsule?.actions ?? []).map((a) => {
+        {groupActions(capsule?.actions ?? []).map(([group, items]) => (
+        <div key={group || "_flat"} className="cockpit-group">
+          {group && <h4 className="cockpit-group-h">{group}</h4>}
+          {items.map((a) => {
           const gated = !!a.consent && !grants.has(a.consent);
 
           if (a.service) {
@@ -328,7 +345,9 @@ export function CockpitModal({ onClose }: { onClose: () => void }): JSX.Element 
               {judgeUI(a)}
             </div>
           );
-        })}
+          })}
+        </div>
+        ))}
       </div>
 
       {(capsule?.panels ?? []).length > 0 && (

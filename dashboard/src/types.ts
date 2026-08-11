@@ -160,6 +160,9 @@ export interface CapsuleAction {
   steps: CapsuleStep[]; // run in order, gate on exit code
   surface?: SurfaceKind; // what to show while/after it runs (default log-stream)
   primary?: boolean; // render as the hero button
+  group?: string; // optional heading this action sits under, so a long action
+                  // list reads as labelled clusters (Setup / Checks / …) rather
+                  // than a flat wall. Ungrouped actions render as one plain list.
   consent?: string; // id of a consent that must be granted first
   // device-install / preview / link metadata:
   artifact?: string; // path (relative to repo) the action produces — served for download/QR

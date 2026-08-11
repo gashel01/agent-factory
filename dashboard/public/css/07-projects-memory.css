@@ -59,7 +59,12 @@
 .mobile-log .log-pre { max-height: 220px; overflow: auto; margin-top: 10px; }
 
 /* Cockpit: generic capsule-driven project control surface */
-.cockpit-actions { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
+.cockpit-actions { display: flex; flex-direction: column; gap: 24px; margin-top: 16px; }
+/* Actions cluster under an optional heading, so a long list reads as sections
+   (Setup / Checks / …) not a flat wall. A single unnamed group == the old look. */
+.cockpit-group { display: flex; flex-direction: column; gap: 14px; }
+.cockpit-group-h { margin: 0 0 -2px; font: 600 11px/1 var(--sans); text-transform: uppercase;
+  letter-spacing: .09em; color: var(--faint); padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .cockpit-action { display: flex; flex-direction: column; gap: 10px; }
 .cockpit-action-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .cockpit-gate { font: 500 12px/1 var(--sans); color: var(--warn, #e5a13a); }
