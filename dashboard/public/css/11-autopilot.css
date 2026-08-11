@@ -39,10 +39,18 @@ textarea.input { resize: vertical; font: inherit; }
 .loop-safety-strip { padding: 10px 14px; background: var(--plane); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 
 /* --- caps --- */
-.loop-caps { display: flex; gap: 14px; }
-.loop-caps > div { flex: 1; display: flex; flex-direction: column; gap: 4px; }
-.loop-caps .input { width: 100%; }
-.loop-caps .loop-faint { font-size: 11px; }
+/* Limits: lead with the budget (money is what the operator thinks in), and demote
+   the iteration cap to a quiet safety backstop instead of a co-equal field. */
+.loop-limits { display: flex; flex-direction: column; gap: 12px; }
+.loop-budget-field { display: flex; flex-direction: column; gap: 5px; }
+.loop-money { display: inline-flex; align-items: center; gap: 2px; align-self: flex-start;
+  border: 1px solid var(--border2); border-radius: 9px; background: var(--plane); padding-left: 12px; }
+.loop-money:focus-within { border-color: var(--accent); }
+.loop-money-sign { color: var(--muted); font: 600 18px/1 var(--sans); }
+.loop-money .input { border: 0; background: transparent; width: 90px; font: 600 18px var(--sans); padding: 9px 12px 9px 4px; }
+.loop-budget-field .loop-faint { font-size: 11.5px; }
+.loop-backstop { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.loop-iter-input { width: 52px; text-align: center; padding: 5px 4px; font-size: 13px; }
 
 /* --- launch --- */
 .loop-launch { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }

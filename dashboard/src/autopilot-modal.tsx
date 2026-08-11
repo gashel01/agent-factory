@@ -252,21 +252,27 @@ export function AutopilotModal({ ws, onClose }: { ws: string; onClose: () => voi
             <span><Check size={13} /> You review the PR</span>
           </div>
 
-          <div className="loop-caps">
-            <div>
-              <label className="work-label">Budget cap ($)</label>
-              <input className="input" type="number" min="1" value={budget} onChange={(e) => setBudget(e.target.value)} />
-              <span className="loop-faint">hard stop</span>
+          <div className="loop-limits">
+            <div className="loop-budget-field">
+              <label className="work-label">Spend up to</label>
+              <div className="loop-money">
+                <span className="loop-money-sign">$</span>
+                <input className="input" type="number" min="1" value={budget}
+                  onChange={(e) => setBudget(e.target.value)} aria-label="Budget cap in dollars" />
+              </div>
+              {costHint != null && costHint > 0 && capN > 0 ? (
+                <span className="loop-faint">≈ {Math.max(1, Math.round(capN / costHint))} tickets at your recent ~${costHint.toFixed(2)} each</span>
+              ) : (
+                <span className="loop-faint">a hard stop — the run never spends past this</span>
+              )}
             </div>
-            <div>
-              <label className="work-label">Max iterations</label>
-              <input className="input" type="number" min="1" value={maxIter} onChange={(e) => setMaxIter(e.target.value)} />
-              <span className="loop-faint">rounds before it halts</span>
-            </div>
+            <label className="loop-backstop">
+              <span className="loop-faint">Safety backstop — stop after</span>
+              <input className="input loop-iter-input" type="number" min="1" value={maxIter}
+                onChange={(e) => setMaxIter(e.target.value)} aria-label="Max rounds" />
+              <span className="loop-faint">rounds at most, even under budget</span>
+            </label>
           </div>
-          {costHint != null && costHint > 0 && (
-            <p className="loop-note">Your recent runs averaged <strong>~${costHint.toFixed(2)}/ticket</strong> — size the cap to how far you want it to go.</p>
-          )}
 
           <div className="loop-launch">
             <Button kind="btn" variant="primary" className="loop-cta" pending={starting}
