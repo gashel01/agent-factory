@@ -659,21 +659,66 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
 
   if (url.pathname === "/api/attachments" && req.method === "POST") {
-    // A pasted/dropped image. Saved under the workspace so a direct-execution
-    // agent can Read it (the prompt carries its absolute path); the client
-    // inserts the reference into the message/goal/ticket text.
     try {
-      const { dataUrl, name } = JSON.parse(await readBody(req)) as { dataUrl?: string; name?: string };
-      const m = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)$/.exec((dataUrl ?? "").trim());
-      if (!m) throw new Error("expected a base64 image data URL");
-      const buf = Buffer.from(m[2]!, "base64");
-      if (buf.length > 12 * 1024 * 1024) throw new Error("image too large (max 12 MB)");
-      const ext = m[1] === "jpeg" ? "jpg" : m[1]!;
-      const dir = join(ws.workdir, "attachments");
-      mkdirSync(dir, { recursive: true });
-      const file = join(dir, `${createHash("sha1").update(buf).digest("hex").slice(0, 10)}.${ext}`);
-      writeFileSync(file, buf);
-      json(res, 200, { path: file, name: name || basename(file) });
+      const body = JSON.parse(await readBody(req)) as {
+        dataUrl?: string; name?: string; content?: string;
+      };
+
+      // Case 1: Image upload (existing behavior) — workspace attachments for goals/tickets
+      if (body.dataUrl) {
+        const { dataUrl, name } = body;
+        const m = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)$/.exec((dataUrl ?? "").trim());
+        if (!m) throw new Error("expected a base64 image data URL");
+        const buf = Buffer.from(m[2]!, "base64");
+        if (buf.length > 12 * 1024 * 1024) throw new Error("image too large (max 12 MB)");
+        const ext = m[1] === "jpeg" ? "jpg" : m[1]!;
+        const dir = join(ws.workdir, "attachments");
+        mkdirSync(dir, { recursive: true });
+        const file = join(dir, `${createHash("sha1").update(buf).digest("hex").slice(0, 10)}.${ext}`);
+        writeFileSync(file, buf);
+        json(res, 200, { path: file, name: name || basename(file) });
+        return true;
+      }
+
+      // Case 2: File upload to run (new behavior) — supervisor companion attachments
+      if (body.content !== undefined && body.name) {
+        const { content, name } = body;
+        if (!ws.tailer.run) throw new Error("no active run");
+
+        // Validate filename (prevent directory traversal attacks)
+        if (!name.trim()) throw new Error("filename cannot be empty");
+        if (name.includes("..") || name.includes("/") || name.includes("\\")) {
+          throw new Error("filename contains invalid path characters");
+        }
+
+        // Decode content: try base64 if it looks like base64, else treat as UTF-8
+        let buf: Buffer;
+        const trimmed = content.trim();
+        if (/^[A-Za-z0-9+/=\n\r]*$/.test(trimmed)) {
+          // Looks like base64 (or could be), try to decode
+          try {
+            buf = Buffer.from(trimmed, "base64");
+          } catch {
+            // Failed to decode as base64, treat as UTF-8
+            buf = Buffer.from(content, "utf8");
+          }
+        } else {
+          // Contains non-base64 characters, treat as UTF-8
+          buf = Buffer.from(content, "utf8");
+        }
+
+        if (buf.length > 50 * 1024 * 1024) throw new Error("file too large (max 50 MB)");
+
+        const dir = join(ws.tailer.runsDir, ws.tailer.run, "uploads");
+        mkdirSync(dir, { recursive: true });
+        const file = join(dir, name);
+        writeFileSync(file, buf);
+
+        json(res, 200, { path: file, name });
+        return true;
+      }
+
+      throw new Error("provide either dataUrl (for images) or name + content (for files)");
     } catch (err) {
       json(res, 400, { ok: false, error: String(err) });
     }
