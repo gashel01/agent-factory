@@ -566,6 +566,7 @@ function fileIconSvg(fileName: string): string {
  */
 export function useFileAttachments(): {
   items: Attachment[];
+  uploading: number;
   paste: (e: ReactClipboardEvent) => void;
   drop: (e: ReactDragEvent) => void;
   pick: (files: FileList | null) => void;
@@ -574,7 +575,9 @@ export function useFileAttachments(): {
   refs: () => string;
 } {
   const [items, setItems] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(0);
   const upload = useCallback((file: File): void => {
+    setUploading((n) => n + 1);
     const reader = new FileReader();
     reader.onload = () => {
       const fileContent = String(reader.result);
@@ -592,7 +595,8 @@ export function useFileAttachments(): {
               setItems((xs) => [...xs, { path: r.path!, name: r.name || file.name, thumb }]);
             }
           })
-          .catch((e) => toast(String(e), true));
+          .catch((e) => toast(String(e), true))
+          .finally(() => setUploading((n) => Math.max(0, n - 1)));
       });
     };
     reader.readAsDataURL(file);
@@ -626,5 +630,5 @@ export function useFileAttachments(): {
     [items],
   );
 
-  return { items, paste, drop, pick, remove, clear, refs };
+  return { items, uploading, paste, drop, pick, remove, clear, refs };
 }

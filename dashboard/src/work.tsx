@@ -31,7 +31,7 @@ import {
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
 import { BoardTicket } from "./board.js";
-import { AttachStrip, Button, WorkspaceInfo, toast, useAttachments, useManagedInterval } from "./core.js";
+import { AttachStrip, Button, WorkspaceInfo, toast, useAttachments, useFileAttachments, useManagedInterval } from "./core.js";
 import { describe } from "./modals.js";
 import { ConfirmButton, Modal, Select, sendControl } from "./widgets.js";
 
@@ -251,6 +251,7 @@ export function CompanionRail(
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedBottom = useRef(true);
   const railRef = useRef<HTMLDivElement>(null);
+  const attachments = useFileAttachments();
 
   // The rail reads like a chat: everything the supervisor says (chat replies AND
   // proactive briefings) lives in the timeline — oldest at the top, newest at the
@@ -300,7 +301,8 @@ export function CompanionRail(
     if (!text || thinking) return;
     setMsg(""); setThinking(true); setProgress("");
     try {
-      await postJSON("/api/chat", { message: text });
+      await postJSON("/api/chat", { message: text + attachments.refs() });
+      attachments.clear();
       pollChat((stop) => {
         void (async () => {
           try {
@@ -371,11 +373,13 @@ export function CompanionRail(
         )}
       </div>
 
-      <div className="companion-ask">
+      <div className="companion-ask" onDrop={attachments.drop} onDragOver={(e) => e.preventDefault()}>
         <textarea className="input companion-input" placeholder="Ask your assistant…" value={msg}
           onChange={(e) => setMsg(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} />
-        <button className="btn primary companion-send" aria-label="Send message" disabled={thinking || !msg.trim()}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
+          onPaste={attachments.paste} />
+        <AttachStrip items={attachments.items} onRemove={attachments.remove} />
+        <button className="btn primary companion-send" aria-label="Send message" disabled={thinking || !msg.trim() || attachments.uploading > 0}
           onClick={() => void send()}><Send size={16} /></button>
       </div>
     </aside>
