@@ -57,6 +57,42 @@ def test_merge_lands_on_base(tmp_path, repo, task):
     assert not wt.path.exists()  # merge cleans up its worktree
 
 
+def test_merge_lands_despite_dirty_base(tmp_path, repo, task):
+    """The operator can edit the base checkout in parallel: a dirty tree no longer
+    blocks the merge — their WIP is stashed, the merge lands, the WIP is restored."""
+    wt = wt_mod.create(repo, tmp_path / "wt", "run1", task.id, "main")
+    _commit_in(wt, "output_001.txt")
+    # Uncommitted operator edit to a DIFFERENT file in the base checkout.
+    (repo / "README.md").write_text("# test repo\nWIP by the operator\n", encoding="utf-8")
+    assert not wt_mod.is_clean(repo)
+
+    result = merge_branch(task, wt, VerifyConfig())
+
+    assert result.ok, result.reason
+    assert not result.warning  # different files → clean restore, no conflict
+    assert "output_001.txt" in git(repo, "show", "main", "--stat")  # ticket landed
+    assert "WIP by the operator" in (repo / "README.md").read_text(encoding="utf-8")  # WIP restored
+    assert not wt.path.exists()
+
+
+def test_merge_warns_when_operator_edits_ticket_file(tmp_path, repo, task):
+    """When the operator's uncommitted edit overlaps the ticket's own change, the
+    merge still lands but flags a conflict — and their work stays recoverable."""
+    wt = wt_mod.create(repo, tmp_path / "wt", "run1", task.id, "main")
+    (wt.path / "README.md").write_text("# test repo\nticket line\n", encoding="utf-8")
+    git(wt.path, "add", "README.md")
+    git(wt.path, "commit", "-m", "feat: ticket edits README")
+    # Operator edits the SAME line region in the base checkout.
+    (repo / "README.md").write_text("# test repo\noperator line\n", encoding="utf-8")
+
+    result = merge_branch(task, wt, VerifyConfig())
+
+    assert result.ok, result.reason  # the merge still lands
+    assert result.warning            # but flags the overlap for a manual reconcile
+    assert "ticket line" in git(repo, "show", "main:README.md")  # ticket's change is in main
+    assert git(repo, "stash", "list").strip() != ""  # operator's work is not lost
+
+
 def test_merge_skips_reverify_when_base_did_not_move(tmp_path, repo, task):
     # The dispatcher already verified this branch; if the base has not advanced
     # under it, the rebase replays nothing and re-running verify is pure waste.

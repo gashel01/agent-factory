@@ -890,6 +890,7 @@ class Dispatcher:
                         "merged", task=task.id, branch=wt.branch, repo=str(task.repo),
                         base=result.base_sha, commit=result.head_sha,
                         reverified=result.reverified,
+                        **({"warning": result.warning} if result.warning else {}),
                     )
                     self._merged_repos.add(task.repo)
                     self._set_state(task, TaskState.DONE)

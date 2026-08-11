@@ -28,6 +28,10 @@ class MergeResult:
     # when the base had not moved under this branch, so the agent's own verify
     # still held and the redundant re-run was skipped. Observable in the log.
     reverified: bool = True
+    # Non-fatal note surfaced on a SUCCESSFUL merge — e.g. the operator's stashed
+    # work-in-progress collided with the merged ticket on restore. The merge landed;
+    # this tells them a manual reconcile is waiting in their checkout.
+    warning: str = ""
 
 
 def merge_branch(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> MergeResult:
@@ -57,8 +61,22 @@ def merge_branch(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> MergeRes
             ok=False,
             reason=f"repo is on '{branch}', expected '{task.base_branch}' (preflight drift)",
         )
+
+    # The base checkout can be dirty — the operator may be editing it in parallel.
+    # Rather than refuse (and lose the merge), set their work-in-progress aside so
+    # the merge lands on a clean tree, then restore it on top. Stashing is safe:
+    # a failed stash defers the merge instead of touching their files.
+    stashed = False
     if not is_clean(wt.repo):
-        return MergeResult(ok=False, reason="repo has uncommitted changes; merge refused")
+        st = git(wt.repo, "stash", "push", "--include-untracked",
+                 "-m", f"factory-auto {task.id}", check=False)
+        if st.returncode != 0 or not is_clean(wt.repo):
+            git(wt.repo, "stash", "pop", check=False)  # undo a partial stash
+            return MergeResult(
+                ok=False,
+                reason="base checkout is dirty and could not be set aside; merge deferred",
+            )
+        stashed = True
 
     # Capture the range before the branch is deleted; both commits stay reachable
     # from the --no-ff merge commit, so the diff survives.
@@ -76,11 +94,27 @@ def merge_branch(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> MergeRes
     )
     if merge.returncode != 0:
         git(wt.repo, "merge", "--abort", check=False)
+        if stashed:
+            git(wt.repo, "stash", "pop", check=False)  # base unchanged: restore WIP cleanly
         detail = (merge.stderr or merge.stdout).strip().splitlines()[-5:]
         return MergeResult(ok=False, reason="merge failed: " + " | ".join(detail))
 
+    warning = ""
+    if stashed:
+        # Restore the operator's WIP onto the just-advanced base (a real 3-way merge).
+        # A conflict here means they edited the very lines the ticket changed — the
+        # merge still LANDED; git keeps the stash, so their work is recoverable.
+        pop = git(wt.repo, "stash", "pop", check=False)
+        if pop.returncode != 0:
+            warning = (
+                "merged, but your uncommitted edits overlap the ticket's changes — "
+                "resolve the conflict in your checkout (your work is safe in `git stash`)"
+            )
+
     remove(wt, delete_branch=True)
-    return MergeResult(ok=True, base_sha=base_sha, head_sha=head_sha, reverified=reverified)
+    return MergeResult(
+        ok=True, base_sha=base_sha, head_sha=head_sha, reverified=reverified, warning=warning
+    )
 
 
 @dataclass(frozen=True)
