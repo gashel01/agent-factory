@@ -59,6 +59,17 @@
   color: var(--accent-ink); background: var(--accent); border: 1px solid transparent; }
 .graph-ref.branch { color: var(--ink-2); background: var(--plane); border-color: var(--border2); }
 .graph-ref.tag { color: color-mix(in srgb, #e0b341 70%, var(--ink)); background: color-mix(in srgb, #e0b341 16%, transparent); border-color: color-mix(in srgb, #e0b341 40%, transparent); }
+
+/* --- timeline scope + compare --- */
+.repo-scope { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.repo-scope-ic { display: inline-flex; color: var(--muted); }
+.compare-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px;
+  padding: 8px 12px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-sm);
+  color: var(--ink-2); font-size: 12.5px; }
+.compare-strip .mono { font-family: var(--mono); color: var(--ink); }
+.graph-row.anchor { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent) inset; }
+.graph-anchor-tag { align-self: center; flex: 0 0 auto; font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: .04em;
+  color: var(--accent-ink); background: var(--accent); padding: 1px 7px; border-radius: 999px; margin-left: auto; }
 .tree-file { text-align: left; font: 12px/1.5 var(--mono); color: var(--ink-2); background: none; border: none; border-radius: 6px; padding: 4px 8px; cursor: pointer; }
 .tree-file:hover { background: var(--plane); color: var(--ink); }
 .repo-main { max-height: 56vh; overflow: auto; }

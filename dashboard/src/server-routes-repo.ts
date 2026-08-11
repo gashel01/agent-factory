@@ -222,16 +222,19 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       // all=1 spans every branch in topo order (the timeline view), else the
       // selected ref's linear history.
       const all = url.searchParams.get("all") === "1";
-      const args = ["log", "--format=%h%x09%p%x09%ad%x09%an%x09%D%x09%s", "--date=relative", "-n", "120"];
+      // Unit-sep (\x1f) between fields, record-sep (\x1e) between commits, so the
+      // full body (%b) can carry newlines/tabs without breaking the parse.
+      const args = ["log", "--format=%h%x1f%p%x1f%ad%x1f%an%x1f%D%x1f%s%x1f%b%x1e", "--date=relative", "-n", "120"];
       if (all) args.push("--all", "--topo-order"); else args.push(ref);
       const result = await runCmd("git", args, repo);
       const commits = result.output
-        .split("\n")
+        .split("\x1e")
+        .map((rec) => rec.replace(/^\n/, ""))
         .filter(Boolean)
-        .map((line) => {
-          const [hash, parents, date, author, refs, ...subject] = line.split("\t");
+        .map((rec) => {
+          const [hash, parents, date, author, refs, subject, body] = rec.split("\x1f");
           return {
-            hash, date, author, subject: subject.join("\t"),
+            hash, date, author, subject: subject ?? "", body: (body ?? "").trim(),
             parents: (parents ?? "").split(" ").filter(Boolean),
             refs: (refs ?? "").split(", ").map((r) => r.trim()).filter(Boolean),
           };

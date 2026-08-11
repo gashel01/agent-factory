@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { JSX, ReactNode } from "react";
 import { repoGet, repoPath, postJSON } from "./api.js";
 import { langFromPath, tokenizeLine } from "./highlight.js";
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen } from "./icons.js";
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GitBranch } from "./icons.js";
 import { toast } from "./core.js";
 import { Modal, Select } from "./widgets.js";
 import { Diff } from "./diff-view.js";
@@ -95,7 +95,7 @@ export function CodeBlock({ content, path }: { content: string; path: string }):
  *  agent as "changes" feedback). */
 export interface ReviewComment { id: number; file: string; key: string; line: number | null; snippet: string; text: string }
 
-export interface Commit { hash: string; date: string; author: string; subject: string; parents: string[]; refs: string[] }
+export interface Commit { hash: string; date: string; author: string; subject: string; body: string; parents: string[]; refs: string[] }
 
 const LANE_W = 15;
 const ROW_H = 40;
@@ -167,9 +167,12 @@ function refLabel(ref: string): { text: string; kind: string } | null {
   return { text: ref, kind: "branch" };
 }
 
-/** The branch timeline: a coloured railroad of commits across every branch. */
+/** The branch timeline: a coloured railroad of commits across every branch.
+ *  `compareFrom` (when set) marks the anchor commit while the operator picks a
+ *  second one to diff against — the arming step of a range compare. */
 export function BranchGraph(
-  { commits, onPick, active }: { commits: Commit[]; onPick: (hash: string) => void; active: string | null },
+  { commits, onPick, active, compareFrom }:
+  { commits: Commit[]; onPick: (hash: string) => void; active: string | null; compareFrom: string | null },
 ): JSX.Element {
   if (commits.length === 0) return <p className="hint">No commits yet.</p>;
   const rows = computeGraph(commits);
@@ -177,23 +180,30 @@ export function BranchGraph(
   const gw = maxLanes * LANE_W;
   return (
     <div className="graph">
-      {rows.map((r) => (
-        <button key={r.commit.hash} className={`graph-row${active === r.commit.hash ? " on" : ""}`} onClick={() => onPick(r.commit.hash)}>
-          <svg className="graph-rail" width={gw} height={ROW_H} viewBox={`0 0 ${gw} ${ROW_H}`} aria-hidden="true">
-            {r.segs.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={2} strokeLinecap="round" />)}
-            <circle cx={r.col * LANE_W + LANE_W / 2} cy={ROW_H / 2} r={DOT_R} fill="var(--surface)" stroke={r.dotColor} strokeWidth={2.5} />
-          </svg>
-          <span className="graph-text">
-            <span className="graph-subject">
-              {r.commit.refs.map(refLabel).filter(Boolean).map((rl, i) => (
-                <span key={i} className={`graph-ref ${rl!.kind}`}>{rl!.text}</span>
-              ))}
-              {r.commit.subject}
+      {rows.map((r) => {
+        const c = r.commit;
+        // Hover reveals the full (often truncated) subject + body + provenance.
+        const tip = [c.subject, c.body, `${c.hash} · ${c.author} · ${c.date}`].filter(Boolean).join("\n\n");
+        const cls = `graph-row${active === c.hash ? " on" : ""}${compareFrom === c.hash ? " anchor" : ""}`;
+        return (
+          <button key={c.hash} className={cls} onClick={() => onPick(c.hash)} title={tip}>
+            <svg className="graph-rail" width={gw} height={ROW_H} viewBox={`0 0 ${gw} ${ROW_H}`} aria-hidden="true">
+              {r.segs.map((s, i) => <line key={i} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={s.color} strokeWidth={2} strokeLinecap="round" />)}
+              <circle cx={r.col * LANE_W + LANE_W / 2} cy={ROW_H / 2} r={DOT_R} fill="var(--surface)" stroke={r.dotColor} strokeWidth={2.5} />
+            </svg>
+            <span className="graph-text">
+              <span className="graph-subject">
+                {c.refs.map(refLabel).filter(Boolean).map((rl, i) => (
+                  <span key={i} className={`graph-ref ${rl!.kind}`}>{rl!.text}</span>
+                ))}
+                {c.subject}
+              </span>
+              <span className="graph-meta">{c.hash} · {c.author} · {c.date}</span>
             </span>
-            <span className="graph-meta">{r.commit.hash} · {r.commit.author} · {r.commit.date}</span>
-          </span>
-        </button>
-      ))}
+            {compareFrom === c.hash && <span className="graph-anchor-tag">base</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -207,6 +217,8 @@ export function RepoModal(
   const [commits, setCommits] = useState<Commit[]>([]);
   const [activeCommit, setActiveCommit] = useState<string | null>(null);
   const [branches, setBranches] = useState<{ branches: string[]; current: string }>({ branches: [], current: "" });
+  const [scope, setScope] = useState<string>(""); // "" = all branches, else a single ref
+  const [compareFrom, setCompareFrom] = useState<string | null>(null); // armed compare anchor
   const [mainView, setMainView] = useState<ReactNode>(<p className="hint">Pick a file to preview it, or a commit to see its diff.</p>);
   const [activePath, setActivePath] = useState<string | null>(null);
 
@@ -218,9 +230,11 @@ export function RepoModal(
     if (initialFile) void openFile(initialFile);
   }, []);
   useEffect(() => {
-    // all=1 spans every branch so the timeline shows real topology, not one line.
-    if (tab === "history") void repoGet<{ commits: Commit[] }>("log", { all: "1" }).then((r) => setCommits(r.commits)).catch(() => {});
-  }, [tab]);
+    // No scope → all=1 spans every branch (real topology); a scope shows that ref's line.
+    if (tab !== "history") return;
+    const params: Record<string, string> = scope ? { ref: scope } : { all: "1" };
+    void repoGet<{ commits: Commit[] }>("log", params).then((r) => setCommits(r.commits)).catch(() => {});
+  }, [tab, scope]);
 
   if (!repo) return <Modal title="Repo" onClose={onClose}><p className="hint">Set a repository path in the New work panel first.</p></Modal>;
 
@@ -241,8 +255,28 @@ export function RepoModal(
     setActiveCommit(hash);
     try {
       const { diff } = await repoGet<{ diff: string }>("diff", { commit: hash });
-      setMainView(<><div className="repo-file-bar">Commit {hash}</div><Diff text={diff} /></>);
+      setMainView(
+        <>
+          <div className="repo-file-bar"><span>Commit {hash}</span>
+            <button className="btn ghost" onClick={() => { setCompareFrom(hash); toast("Now pick a second commit to compare against."); }}>Compare from here</button>
+          </div>
+          <Diff text={diff} />
+        </>,
+      );
     } catch (err) { toast(String(err), true); }
+  };
+  const openRange = async (from: string, to: string): Promise<void> => {
+    setCompareFrom(null);
+    setActiveCommit(to);
+    try {
+      const { diff } = await repoGet<{ diff: string }>("diff", { from, to });
+      setMainView(<><div className="repo-file-bar">Comparing {from} → {to}</div><Diff text={diff} /></>);
+    } catch (err) { toast(String(err), true); }
+  };
+  // A click either arms/completes a compare, or shows that one commit's diff.
+  const pickCommit = (hash: string): void => {
+    if (compareFrom && compareFrom !== hash) void openRange(compareFrom, hash);
+    else void openDiff(hash);
   };
 
   return (
@@ -259,12 +293,26 @@ export function RepoModal(
           <button className={`btn link${tab === "files" ? " on" : ""}`} onClick={() => setTab("files")}>Files</button>
           <button className={`btn link${tab === "history" ? " on" : ""}`} onClick={() => setTab("history")}>History</button>
         </div>
+        {tab === "history" && (
+          <label className="repo-scope">
+            <span className="repo-scope-ic" aria-hidden="true"><GitBranch size={13} /></span>
+            <Select value={scope} ariaLabel="Timeline scope" minWidth={150}
+              options={[{ value: "", label: "All branches" }, ...branches.branches.map((b) => ({ value: b, label: b }))]}
+              onChange={setScope} />
+          </label>
+        )}
       </div>
+      {tab === "history" && compareFrom && (
+        <div className="compare-strip">
+          <span>Comparing from <span className="mono">{compareFrom}</span> — pick a target commit in the timeline.</span>
+          <button className="btn link" onClick={() => setCompareFrom(null)}>Cancel</button>
+        </div>
+      )}
       <div className={`repo-body${tab === "history" ? " history" : ""}`}>
         <div className="repo-side">
           {tab === "files"
             ? <FileTree paths={files} onOpen={(p) => void openFile(p)} activePath={activePath} />
-            : <BranchGraph commits={commits} onPick={(h) => void openDiff(h)} active={activeCommit} />}
+            : <BranchGraph commits={commits} onPick={pickCommit} active={activeCommit} compareFrom={compareFrom} />}
         </div>
         <div className="repo-main">{mainView}</div>
       </div>

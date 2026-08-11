@@ -40,10 +40,10 @@ test("computeGraph assigns stable lanes and connects merges", async () => {
   // A tiny DAG (newest first, topo order): merge M has two parents A and B;
   // A and B both descend from root R.
   const commits = [
-    { hash: "M", parents: ["A", "B"], refs: ["HEAD -> main"], author: "x", date: "now", subject: "merge" },
-    { hash: "A", parents: ["R"], refs: [], author: "x", date: "now", subject: "a" },
-    { hash: "B", parents: ["R"], refs: [], author: "x", date: "now", subject: "b" },
-    { hash: "R", parents: [], refs: [], author: "x", date: "now", subject: "root" },
+    { hash: "M", parents: ["A", "B"], refs: ["HEAD -> main"], author: "x", date: "now", subject: "merge", body: "" },
+    { hash: "A", parents: ["R"], refs: [], author: "x", date: "now", subject: "a", body: "" },
+    { hash: "B", parents: ["R"], refs: [], author: "x", date: "now", subject: "b", body: "" },
+    { hash: "R", parents: [], refs: [], author: "x", date: "now", subject: "root", body: "" },
   ];
   const rows = computeGraph(commits);
   assert.equal(rows.length, 4, "one row per commit");
@@ -52,7 +52,7 @@ test("computeGraph assigns stable lanes and connects merges", async () => {
   assert.ok(rows.some((r: { lanes: number }) => r.lanes >= 2), "a second lane opens for the merge");
   // The graph renders the railroad + a ref chip without throwing.
   const html = render(BranchGraph as unknown as ComponentType<Record<string, unknown>>, {
-    commits, onPick: () => {}, active: null,
+    commits, onPick: () => {}, active: null, compareFrom: null,
   });
   assert.match(html, /graph-rail/, "each row renders its SVG rail");
   assert.match(html, /graph-ref/, "branch refs render as chips");
