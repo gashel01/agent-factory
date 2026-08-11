@@ -82,9 +82,69 @@ function extractDraft(text: string): { objective: string; accept: string } | nul
   return null;
 }
 
+/** Fold coordination events (across every run) into the persistent world-model the
+ *  Architecture tab shows: which symbol lives where, the decisions taken, and which
+ *  ticket last landed each file. Latest wins for symbols/decisions. */
+function foldWorldModel(events: Array<Record<string, unknown>>): {
+  symbols: Array<{ name: string; file: string }>;
+  decisions: Array<{ key: string; value: string; ticket: string }>;
+  files: Array<{ file: string; ticket: string }>;
+} {
+  const symbols = new Map<string, string>();
+  const decisions = new Map<string, { value: string; ticket: string }>();
+  const files = new Map<string, string>();
+  for (const e of events) {
+    const tk = String(e.ticket ?? "");
+    if (e.kind === "landed") {
+      for (const f of (e.files as string[] ?? [])) files.set(String(f), tk);
+      for (const [name, file] of Object.entries((e.symbols as Record<string, string>) ?? {})) {
+        symbols.set(String(name), String(file));
+      }
+    } else if (e.kind === "decision") {
+      decisions.set(String(e.key ?? ""), { value: String(e.value ?? ""), ticket: tk });
+    }
+  }
+  return {
+    symbols: [...symbols].map(([name, file]) => ({ name, file })).sort((a, b) => a.name.localeCompare(b.name)),
+    decisions: [...decisions].filter(([k]) => k).map(([key, v]) => ({ key, value: v.value, ticket: v.ticket }))
+      .sort((a, b) => a.key.localeCompare(b.key)),
+    files: [...files].map(([file, ticket]) => ({ file, ticket })).sort((a, b) => a.file.localeCompare(b.file)),
+  };
+}
+
 export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
   const { req, res, url, ws, opts, globalMemFile } = ctx;
   const backlogDir = join(ws.workdir, "backlog");
+
+  if (url.pathname === "/api/architecture") {
+    // The living architecture: the agent-maintained world-model (folded from every
+    // run's coordination log, so it survives runs) plus the operator's own notes.
+    const notesFile = join(ws.workdir, "architecture.md");
+    if (req.method === "PUT") {
+      const { notes } = JSON.parse(await readBody(req)) as { notes?: string };
+      writeFileSync(notesFile, String(notes ?? ""), "utf-8");
+      json(res, 200, { ok: true });
+      return true;
+    }
+    const runsDir = ws.tailer.runsDir;
+    const events: Array<Record<string, unknown>> = [];
+    if (existsSync(runsDir)) {
+      for (const run of readdirSync(runsDir)) {
+        const f = join(runsDir, run, "coordination.jsonl");
+        if (!existsSync(f)) continue;
+        for (const line of readFileSync(f, "utf-8").split("\n")) {
+          const t = line.trim();
+          if (!t) continue;
+          try { events.push(JSON.parse(t)); } catch { /* skip a torn line */ }
+        }
+      }
+    }
+    json(res, 200, {
+      map: foldWorldModel(events),
+      notes: existsSync(notesFile) ? readFileSync(notesFile, "utf-8") : "",
+    });
+    return true;
+  }
 
   if (url.pathname === "/api/coordination") {
     // The shared workspace agents see: who claims/lands which files, the symbols
