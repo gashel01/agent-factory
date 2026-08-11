@@ -9,6 +9,7 @@ import {
 } from "./icons.js";
 import { Button, Skeleton, toast } from "./core.js";
 import { Modal } from "./widgets.js";
+import type { DockerStatus } from "./settings-modal.js";
 
 export type RunProfile = "cheap" | "standard" | "thorough";
 
@@ -32,11 +33,6 @@ export const FORECAST_BASIS: Record<string, string> = {
   heuristic: "a heuristic guess — no comparable run yet",
   blend: "your past runs blended with a heuristic",
 };
-
-export interface DockerStatus {
-  engine: boolean; image: boolean; proxy: boolean; ready: boolean;
-  detail?: string; building?: boolean; buildOk?: boolean | null; buildLog?: string;
-}
 
 const asRec = (v: unknown): Record<string, unknown> =>
   (v !== null && typeof v === "object" && !Array.isArray(v)) ? v as Record<string, unknown> : {};
