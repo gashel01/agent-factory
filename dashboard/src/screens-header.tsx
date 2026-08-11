@@ -8,11 +8,12 @@ import { OverflowMenu } from "./widgets.js";
 
 /** The app-level actions the header "•••" menu invokes — threaded from the root
  *  since they live above the individual screens. */
-export interface HeaderMenu { onSettings: () => void; onCmdk: () => void; notifyOn: boolean; onToggleNotify: () => void }
+export interface HeaderMenu { onCmdk: () => void; notifyOn: boolean; onToggleNotify: () => void }
 
-/** The slim sticky bar shared by the Projects and Memory screens. The "•••" menu
- *  mirrors the board header's, but carries only the options relevant here —
- *  Supervisor and the Memory jump are board-specific, so they're left out. */
+/** The slim sticky bar shared by the Projects and Memory screens. Its "•••" menu
+ *  carries only the truly global options — Command palette, Notifications,
+ *  Appearance. Settings is per-project (factory.yaml), so it lives on the board
+ *  header (where a project is in context), never here. */
 export function AppBar(
   { active, factCount, narrow, newLabel, theme, onProjects, onMemory, onNew, onAppearance, menu }:
   {
@@ -42,7 +43,6 @@ export function AppBar(
           { label: "Command palette", hint: "⌘K", onClick: menu.onCmdk },
           { label: "Notifications", hint: menu.notifyOn ? "On" : "Off", on: menu.notifyOn, onClick: menu.onToggleNotify },
           { label: "Appearance", onClick: onAppearance },
-          { label: "Settings", onClick: menu.onSettings },
         ]} />
         <button className="hbtn accent" onClick={onNew}><span className="plus">+</span> {newLabel}</button>
       </div>

@@ -514,6 +514,7 @@ export function SettingsModal({ onClose, initialSection }: { onClose: () => void
     }>
       <div className="panel-body settings-form" ref={scrollRef}>
         <p className="settings-intro">Sensible defaults are already set — you can run without changing a thing. Tweak these only if you want to.</p>
+        {getWs() && <p className="settings-scope"><ShieldCheck size={13} /> These apply to <b>{getWs()}</b> only — each project keeps its own settings.</p>}
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Jump to a settings section">
             {SETTINGS_SECTIONS.map((sec) => (

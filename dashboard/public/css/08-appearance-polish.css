@@ -544,6 +544,10 @@ body { background: var(--bg); }
 }
 /* Quiet lead-in under the "Advanced" section — signals "you can skip this". */
 .settings-sub { margin: -2px 0 12px; color: var(--faint); font: 400 12px/1.5 var(--sans); }
+/* Which project these settings belong to — settings are per-project (factory.yaml). */
+.settings-scope { margin: 0 0 14px; display: flex; align-items: center; gap: 7px; color: var(--muted); font: 400 12px/1.4 var(--sans); }
+.settings-scope svg { color: var(--faint); flex: 0 0 auto; }
+.settings-scope b { color: var(--ink-2); font-weight: 600; }
 /* Two columns: a sticky anchor rail on the left, the scrolling panes on the right —
    the findability of tabs without the weight of a modal. */
 .settings-layout { display: grid; grid-template-columns: 132px 1fr; gap: 22px; align-items: start; margin-top: 12px; }

@@ -319,7 +319,7 @@ function App(): JSX.Element {
 
   // App-level actions the Projects/Memory header "•••" menu invokes (they live here,
   // above those screens) — same source as the board header's menu.
-  const headerMenu = { onSettings: () => setModal({ type: "settings" }), onCmdk: () => setModal({ type: "cmdk" }), notifyOn: notify.on, onToggleNotify: notify.toggle };
+  const headerMenu = { onCmdk: () => setModal({ type: "cmdk" }), notifyOn: notify.on, onToggleNotify: notify.toggle };
   if (screen === "projects") {
     return (
       <>
