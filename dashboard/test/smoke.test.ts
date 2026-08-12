@@ -57,3 +57,23 @@ test("computeGraph assigns stable lanes and connects merges", async () => {
   assert.match(html, /graph-rail/, "each row renders its SVG rail");
   assert.match(html, /graph-ref/, "branch refs render as chips");
 });
+
+test("DecisionModal renders options side by side with a sandboxed preview", async () => {
+  const { DecisionModal } = await import("../src/decision-view.js");
+  const html = render(DecisionModal as unknown as ComponentType<Record<string, unknown>>, {
+    taskId: "042", title: "Header layout", question: "which header layout?",
+    options: [
+      { id: "a", label: "Sidebar left", detail: "nav in a left rail",
+        preview_html: "<div>left</div>" },
+      { id: "b", label: "Top bar", detail: "nav across the top" },
+    ],
+    onClose: () => {},
+  });
+  assert.match(html, /Sidebar left/, "each option's label renders");
+  assert.match(html, /Top bar/, "the second option renders");
+  // The visual option's preview is rendered in a locked-down (scriptless) iframe.
+  assert.match(html, /decide-frame/, "a preview iframe renders for the visual option");
+  assert.match(html, /sandbox=""/, "the preview iframe is sandboxed (no scripts)");
+  // The option without preview shows the placeholder, not an empty frame.
+  assert.match(html, /decide-noprev/, "the no-preview option shows a placeholder");
+});

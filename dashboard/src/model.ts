@@ -6,6 +6,7 @@ import type {
   BlockedContext,
   BlockedEvent,
   BudgetEvent,
+  DecisionOption,
   FactoryEvent,
   FailureEvent,
   PausedEvent,
@@ -38,6 +39,7 @@ export interface TaskModel {
   effort: string | null;
   prUrl: string | null;
   blockedContext: BlockedContext | null;  // git ground truth when BLOCKED (else null)
+  decision: DecisionOption[] | null;  // options to pick between when the block is a decision
   checkpoints: Checkpoint[];  // per-step undo points when AWAITING_APPROVAL (else empty)
 }
 
@@ -95,7 +97,7 @@ function task(model: Model, id: string): TaskModel {
       id, title: id, state: "QUEUED", turns: null, wallS: null, note: "",
       retries: 0, runningSince: null, finishedAt: null, costUsd: 0, tokens: 0,
       liveTurns: 0, liveTokens: 0, diff: null, deps: [],
-      model: null, effort: null, prUrl: null, blockedContext: null, checkpoints: [],
+      model: null, effort: null, prUrl: null, blockedContext: null, decision: null, checkpoints: [],
     };
     model.tasks.set(id, entry);
   }
@@ -160,6 +162,7 @@ export function reduce(model: Model, event: FactoryEvent): Model {
         entry.runningSince = Date.parse(e.ts);
         entry.note = "";
         entry.blockedContext = null;  // fresh attempt: last block's facts are stale
+        entry.decision = null;        // and its decision options are settled
         entry.liveTurns = 0; entry.liveTokens = 0;  // fresh attempt: reset live counters
         model.ratePause = null;
       }
@@ -214,6 +217,8 @@ export function reduce(model: Model, event: FactoryEvent): Model {
       const entry = task(model, e.task);
       entry.note = e.question;
       entry.blockedContext = e.context ?? null;
+      // A decision block carries the options to choose between; a plain block clears them.
+      entry.decision = e.kind === "decision" ? (e.options ?? []) : null;
       break;
     }
     case "merged": {

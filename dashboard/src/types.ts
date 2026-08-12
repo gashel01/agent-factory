@@ -99,11 +99,23 @@ export interface BlockedContext {
   diffstat: string[];
 }
 
+/** One path the agent offered the operator at a design fork. `preview_html`, when
+ *  present, is a self-contained fragment rendered in a scriptless sandboxed iframe. */
+export interface DecisionOption {
+  id: string;
+  label: string;
+  detail?: string;
+  preview_html?: string;
+}
+
 export interface BlockedEvent extends BaseEvent {
   event: "blocked";
   task: string;
   question: string;
   context?: BlockedContext;
+  // Present only when the block is a DECISION: the concrete options to pick between.
+  kind?: "decision";
+  options?: DecisionOption[];
 }
 
 export interface PausedEvent extends BaseEvent {

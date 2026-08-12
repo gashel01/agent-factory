@@ -35,6 +35,7 @@ import { Button, TONE_FAM, Toaster, WorkspaceInfo, sendNotification, toast, useC
 import { DiagnosticsModal, DocsModal, LogModal, Row, RunEstimateModal, SettingsModal, describe } from "./modals.js";
 import { CoordinationModal } from "./coordination-view.js";
 import { ArchitectureModal } from "./architecture-view.js";
+import { DecisionModal } from "./decision-view.js";
 import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, SupervisorDock, useTheme } from "./screens.js";
 import { CommandPalette, ConfirmButton, OverflowMenu, ProjectSwitcher, Select, UsageCard, sendControl, useBacklog, useHidden } from "./widgets.js";
 // The command-palette item type. Aliased because the bare name `Command` is also a
@@ -167,8 +168,11 @@ function App(): JSX.Element {
   const queued = visibleTasks.filter((t) => t.state === "QUEUED");
   const openLog = (t: TaskModel) => setModal({ type: "log", taskId: t.id, title: t.title });
   const openAnswer = (t: TaskModel) =>
-    setModal({ type: "answer", taskId: t.id, title: t.title, question: t.note ?? "",
-               context: t.blockedContext });
+    setModal(t.decision
+      ? { type: "decision", taskId: t.id, title: t.title, question: t.note ?? "",
+          options: t.decision }
+      : { type: "answer", taskId: t.id, title: t.title, question: t.note ?? "",
+          context: t.blockedContext });
   const openDiagnose = (t: TaskModel) => setModal({ type: "diagnostics", taskId: t.id, title: t.title });
   // Re-scope a stuck ticket before retrying: its backlog file still exists, so open
   // the full editor on it. Saving rewrites the file; the next "Run again" uses it.
@@ -580,6 +584,10 @@ function App(): JSX.Element {
         <AnswerModal taskId={modal.taskId} title={modal.title} question={modal.question}
           context={modal.context} onClose={() => setModal(null)} />
       )}
+      {modal?.type === "decision" && (
+        <DecisionModal taskId={modal.taskId} title={modal.title} question={modal.question}
+          options={modal.options} onClose={() => setModal(null)} />
+      )}
       {modal?.type === "lesson" && (
         <FactEditor fact="new" draft={modal.draft} tasks={tasks}
           onClose={() => setModal(null)} onSaved={() => setModal(null)} />
@@ -589,8 +597,11 @@ function App(): JSX.Element {
           getTask={() => model.tasks.get(modal.taskId)}
           onAnswer={() => {
             const t = model.tasks.get(modal.taskId);
-            setModal({ type: "answer", taskId: modal.taskId, title: modal.title,
-                       question: t?.note ?? "", context: t?.blockedContext ?? null });
+            setModal(t?.decision
+              ? { type: "decision", taskId: modal.taskId, title: modal.title,
+                  question: t.note ?? "", options: t.decision }
+              : { type: "answer", taskId: modal.taskId, title: modal.title,
+                  question: t?.note ?? "", context: t?.blockedContext ?? null });
           }}
           onDiff={() => {
             const t = model.tasks.get(modal.taskId);

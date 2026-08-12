@@ -141,6 +141,19 @@ def main() -> int:
         print(json.dumps({"type": "result", "num_turns": 1, "result": json.dumps(contract)}))
         return 0
 
+    if "STUB:DECISION" in prompt and "The operator chose:" not in prompt:
+        # First pass: offer the operator a genuine design choice with previews.
+        contract = {
+            "status": "decision", "summary": "which header layout?", "tests": "fail",
+            "options": [
+                {"id": "a", "label": "Sidebar left", "detail": "nav in a left rail",
+                 "preview_html": "<div style='padding:8px'>left</div>"},
+                {"id": "b", "label": "Top bar", "detail": "nav across the top"},
+            ],
+        }
+        print(json.dumps({"type": "result", "num_turns": 1, "result": json.dumps(contract)}))
+        return 0
+
     if "STUB:NOOP" in prompt:
         # The change already exists: report an explicit no-op (done + noop) WITHOUT
         # committing. The dispatcher must accept this as DONE, not fail on "no commits".

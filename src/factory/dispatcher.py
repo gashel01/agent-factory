@@ -120,6 +120,10 @@ class Dispatcher:
         # A blocked agent's question, kept so an operator answer can be paired
         # with what was actually asked when the task is re-queued.
         self._blocked_questions: dict[str, str] = {}
+        # When the block was a DECISION (the agent offered concrete options), the
+        # question text of that decision is kept here too, so the operator's pick is
+        # phrased as a chosen option and recorded on the coordination bus.
+        self._pending_decisions: dict[str, str] = {}
         # Control mode: verified tasks whose worktree is parked, waiting for the
         # operator to approve the merge (or request changes) from the dashboard.
         self._awaiting: dict[str, tuple[Task, wt_mod.Worktree]] = {}
@@ -395,12 +399,24 @@ class Dispatcher:
             if self.state[task_id] is TaskState.BLOCKED and answer:
                 task.attempts = 0  # answering grants a fresh budget, like a retry
                 question = self._blocked_questions.pop(task_id, "")
-                note = (
-                    f"You reported BLOCKED and asked: {question}\n  The operator answered: "
-                    f"{answer}\n  Use this answer to finish the ticket."
-                    if question
-                    else f"The operator answered your blocking question: {answer}"
-                )
+                decision_q = self._pending_decisions.pop(task_id, "")
+                if decision_q:
+                    # The operator picked one of the options the agent offered. Phrase
+                    # it as a settled choice, and record it on the coordination bus so
+                    # the decision becomes part of the shared world-model (Architecture).
+                    note = (
+                        f"You raised a decision: {decision_q}\n  The operator chose: "
+                        f"{answer}\n  Build exactly that choice and finish the ticket."
+                    )
+                    with contextlib.suppress(OSError):
+                        self._coord.decision(task_id, decision_q[:80], answer[:200])
+                else:
+                    note = (
+                        f"You reported BLOCKED and asked: {question}\n  The operator answered: "
+                        f"{answer}\n  Use this answer to finish the ticket."
+                        if question
+                        else f"The operator answered your blocking question: {answer}"
+                    )
                 task.failure_notes.append(note)
                 self.log.emit("answered", task=task_id)
                 self._set_state(task, TaskState.QUEUED)
@@ -738,6 +754,25 @@ class Dispatcher:
                 await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
                 self._trigger_pause()
                 self._set_state(task, TaskState.QUEUED)  # not a retry: task did nothing wrong
+                return
+            if result.status == "decision":
+                # The agent reached a genuine fork it must not decide alone: it
+                # offered concrete options. Park it like a block (same answer→resume
+                # machinery), but carry the options so the dashboard renders a pick
+                # instead of a free-text answer box.
+                ctx = await asyncio.to_thread(_blocked_context, task, wt)
+                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+                self._blocked_questions[task.id] = result.summary
+                self._pending_decisions[task.id] = result.summary
+                self.log.emit(
+                    "blocked", task=task.id, question=result.summary, context=ctx,
+                    kind="decision", options=list(result.options),
+                )
+                self._set_state(task, TaskState.BLOCKED)
+                await self._notify(
+                    f"{task.id} “{task.title}” needs a decision from you: "
+                    f"{result.summary[:160]}"
+                )
                 return
             if result.status == "blocked":
                 # Capture the ground truth BEFORE the worktree is gone, so the

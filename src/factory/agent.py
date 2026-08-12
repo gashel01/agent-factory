@@ -80,10 +80,23 @@ DEFAULT_CONTRACT = """\
   at the tool layer and will fail. If one seems necessary to finish, STOP and report
   status "blocked" explaining exactly why — a human will decide and act.
 - End your final message with a strict JSON block (no markdown fences around it):
-  {"status": "done" | "blocked", "summary": "<one sentence>", "tests": "pass" | "fail",
+  {"status": "done" | "blocked" | "decision", "summary": "<one sentence>",
+   "tests": "pass" | "fail",
    "noop": <true ONLY if the ticket needed no change; omit or false otherwise>}
-- If you are blocked (missing information, a product decision), use status "blocked"
+- If you are blocked (missing information you cannot obtain), use status "blocked"
   and ask a precise question in "summary". Do not guess.
+- If instead you face a genuine DESIGN OR PRODUCT CHOICE — two or more valid paths
+  the ticket does not settle, where guessing risks building the wrong thing — do NOT
+  pick one silently. Stop and use status "decision": put the question in "summary"
+  and add an "options" array so the operator chooses. Each option is
+  {"id": "<short-slug>", "label": "<short name>", "detail": "<what it means, the
+  trade-off>", "preview_html": "<optional>"}. Provide 2 to 6 options.
+  For a VISUAL choice (a layout, a component, colours), include "preview_html": a
+  SELF-CONTAINED HTML fragment with inline styles — NO <script>, no external URLs,
+  no network — that renders that option so the operator can see it side by side.
+  Reserve "decision" for real forks in the road, not for things you can verify
+  yourself or look up in the code. After the operator answers, you resume and build
+  the chosen option.
 """
 
 
@@ -115,7 +128,7 @@ def extract_usage(record: dict | None) -> Usage:
 
 @dataclass(frozen=True)
 class AgentResult:
-    status: str  # done | blocked | error | timeout | ratelimit
+    status: str  # done | blocked | decision | error | timeout | ratelimit
     summary: str
     turns: int | None
     wall_s: float
@@ -128,6 +141,10 @@ class AgentResult:
     noop: bool = False
     # Plan rate-limit snapshot (subscription): {status, resetsAt, rateLimitType, ...}
     rate_limit_info: dict | None = None
+    # A "decision" result carries the concrete options the operator should pick
+    # between (each: id/label/detail and an optional self-contained preview_html).
+    # Empty for every other status.
+    options: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -316,6 +333,45 @@ def extract_trailing_json(text: str) -> dict | None:
         if isinstance(candidate, dict) and "status" in candidate:
             return candidate
     return None
+
+
+# A decision must stay glanceable and cheap to render: a handful of options, each
+# with short text and a bounded preview. These caps also fence untrusted model
+# output before it reaches the dashboard's (sandboxed) iframe.
+_MAX_OPTIONS = 6
+_MAX_LABEL = 120
+_MAX_DETAIL = 2000
+_MAX_PREVIEW = 200_000
+
+
+def parse_options(raw: object) -> tuple[dict, ...]:
+    """Sanitise the agent's `options` array into a bounded list of choices.
+
+    Each option keeps only id/label/detail/preview_html, all length-capped. A
+    missing/malformed array yields no options (the caller then treats the result
+    as a plain blocking question, not a decision). The preview HTML is rendered
+    later inside a scriptless sandboxed iframe — these caps bound its size, the
+    sandbox bounds what it can do.
+    """
+    if not isinstance(raw, list):
+        return ()
+    out: list[dict] = []
+    for i, item in enumerate(raw[:_MAX_OPTIONS]):
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or item.get("title") or "").strip()[:_MAX_LABEL]
+        if not label:
+            continue
+        opt = {
+            "id": str(item.get("id") or f"opt-{i + 1}")[:40],
+            "label": label,
+            "detail": str(item.get("detail") or "").strip()[:_MAX_DETAIL],
+        }
+        preview = item.get("preview_html")
+        if isinstance(preview, str) and preview.strip():
+            opt["preview_html"] = preview[:_MAX_PREVIEW]
+        out.append(opt)
+    return tuple(out)
 
 
 def build_cli(
@@ -604,10 +660,15 @@ async def run_agent(
         )
     status = str(contract_json.get("status", "done"))
     summary = str(contract_json.get("summary", ""))[:500]
-    if status not in ("done", "blocked"):
+    options = parse_options(contract_json.get("options"))
+    # A "decision" is only honoured when it actually carries options to choose
+    # between; without them it is just a plain blocking question.
+    if status == "decision" and not options:
+        status = "blocked"
+    if status not in ("done", "blocked", "decision"):
         status = "done"
     noop = status == "done" and bool(contract_json.get("noop"))
     return AgentResult(
         status, summary, turns, out.wall_s, contract_json, session, usage,
-        noop=noop, rate_limit_info=rli,
+        noop=noop, rate_limit_info=rli, options=options,
     )

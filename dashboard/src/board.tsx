@@ -6,7 +6,7 @@ import type { CSSProperties, JSX, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import type {
-  BlockedContext, FactoryEvent, TaskState,
+  BlockedContext, DecisionOption, FactoryEvent, TaskState,
   CapsuleAction, CapsuleConsent, CapsulePanel, CapsuleView,
 } from "./types.js";
 import {
@@ -51,6 +51,7 @@ export type ModalState =
   | { type: "cockpit" }
   | { type: "removed" }
   | { type: "answer"; taskId: string; title: string; question: string; context: BlockedContext | null }
+  | { type: "decision"; taskId: string; title: string; question: string; options: DecisionOption[] }
   | { type: "lesson"; draft: { text: string; ticketId: string } }
   | { type: "runestimate"; tickets: number }
   | { type: "diagnostics"; taskId: string; title: string }
@@ -552,7 +553,7 @@ export function CardActions(
   return (
     <div className="kcard-actions" onClick={(e) => e.stopPropagation()}>
       {t.state === "BLOCKED" && live && (
-        <button className="act primary" onClick={onAnswer}>Answer</button>
+        <button className="act primary" onClick={onAnswer}>{t.decision ? "Decide" : "Answer"}</button>
       )}
       {attention && !(t.state === "BLOCKED" && live) && (live
         ? <Button kind="act" variant="primary" autoPending onClick={() => sendControl("retry", t.id)}>Try again</Button>
@@ -658,7 +659,7 @@ export function KanbanCard(
       <div className="kcard-title">{t.title}</div>
       <div className="kcard-activity">
         {running && <span className="pulse" />}
-        <span>{t.note && !attention ? t.note : ACTIVITY[t.state]}</span>
+        <span>{t.decision ? "Needs a decision from you" : t.note && !attention ? t.note : ACTIVITY[t.state]}</span>
       </div>
       {attention && t.note && <div className="kcard-note"><span className="flag"><Flag size={12} /></span><span>{t.note}</span></div>}
       <CardMeasures t={t} now={now} />
