@@ -91,3 +91,24 @@ test("BoardModal renders the palette and an empty grid canvas", async () => {
   assert.match(html, /Drop system map/, "the agent-layer drop action renders");
   assert.match(html, /bd-grid/, "the dotted grid backdrop renders");
 });
+
+test("ArchDiagram lays out nodes in dependency layers with edges", async () => {
+  const { ArchDiagram } = await import("../src/architecture-view.js");
+  const graph = {
+    nodes: [
+      { id: "src/app.tsx", label: "app.tsx", kind: "entry" },
+      { id: "src/board.tsx", label: "board.tsx", kind: "ui" },
+      { id: "src/db.ts", label: "db.ts", kind: "data" },
+    ],
+    edges: [
+      { from: "src/app.tsx", to: "src/board.tsx" },
+      { from: "src/board.tsx", to: "src/db.ts" },
+    ],
+    truncated: false, total: 3,
+  };
+  const html = render(ArchDiagram as unknown as ComponentType<Record<string, unknown>>, { graph });
+  assert.match(html, /arch-svg/, "the diagram renders an SVG");
+  assert.match(html, /arch-edge/, "import edges render");
+  assert.match(html, /kind-data/, "nodes carry their role class for colour");
+  assert.match(html, /db\.ts/, "node labels render");
+});
