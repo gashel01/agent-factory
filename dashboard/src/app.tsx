@@ -620,6 +620,7 @@ function App(): JSX.Element {
             currentRun={model.run} live={live} railWidth={railWidth} onRailWidth={setRailWidth}
             needsYou={visibleTasks.filter((t) => t.state === "BLOCKED" || t.state === "FAILED" || t.state === "AWAITING_APPROVAL")}
             onAnswer={openAnswer} onReview={openDiff}
+            onOpenSurface={(type) => setModal({ type })}
             onPlan={(goal) => { setRailOpen(false); setModal({ type: "newwork", tab: "goal", goal }); }} />
         : <SupervisorDock onExpand={() => setRailOpen(true)} />}
     </div>

@@ -27,7 +27,10 @@ test("CompanionRail renders the resize handle and drives --companion-width", asy
   const html = render(CompanionRail as unknown as ComponentType<Record<string, unknown>>, {
     obs: [], feed: [], needsYou: [], now: 0, currentRun: "", live: false, railWidth: 340,
     onClose: () => {}, onAnswer: () => {}, onReview: () => {}, onPlan: () => {}, onRailWidth: () => {},
+    onOpenSurface: () => {},
   });
+  // The shared-surface tabs open Architecture / Board / Shared space from the rail.
+  assert.match(html, /companion-tab/, "the supervisor rail renders its surface tabs");
   // The bug that shipped green: handle class must match the CSS, width must flow
   // through the CSS variable the stylesheet sizes the panel with.
   assert.match(html, /companion-resize/, "resize handle must render with the CSS class");

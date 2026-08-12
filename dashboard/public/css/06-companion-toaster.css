@@ -21,6 +21,16 @@
 .companion-title { font: 700 14px/1 var(--sans); color: var(--ink); }
 .companion-x { background: none; border: none; cursor: pointer; font: 400 18px/1 var(--sans); color: var(--muted); padding: 2px 8px; border-radius: 6px; }
 .companion-x:hover { background: var(--bg); color: var(--ink); }
+/* Quick access to the shared surfaces the supervisor collaborates on. */
+.companion-tabs { display: flex; gap: 5px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.companion-tab {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 6px 6px; font: 600 11.5px/1 var(--sans); cursor: pointer;
+  border: 1px solid var(--border2); border-radius: 7px; background: var(--bg); color: var(--muted);
+  transition: background .12s, color .12s, border-color .12s;
+}
+.companion-tab:hover { background: var(--surface); color: var(--ink); border-color: var(--accent); }
+.companion-tab svg { color: var(--accent); flex: 0 0 auto; }
 .companion-dial { display: flex; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .dial-seg { flex: 1; padding: 5px 4px; font: 600 11px/1 var(--sans); border: 1px solid var(--border2); background: var(--bg); border-radius: 6px; cursor: pointer; color: var(--muted); transition: background .12s, color .12s, border-color .12s; }
 .dial-seg.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }

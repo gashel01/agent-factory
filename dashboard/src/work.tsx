@@ -25,7 +25,7 @@ import {
   BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
-  GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
+  GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare,
   MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
@@ -234,12 +234,15 @@ export function RunChapter(
   );
 }
 
+export type RailSurface = "architecture" | "sketchboard" | "coordination";
+
 export function CompanionRail(
-  { obs, feed, onClose, now, currentRun, live, needsYou, onAnswer, onReview, onPlan, railWidth, onRailWidth }:
+  { obs, feed, onClose, now, currentRun, live, needsYou, onAnswer, onReview, onPlan, onOpenSurface, railWidth, onRailWidth }:
   {
     obs: Observation[]; feed: FactoryEvent[]; onClose: () => void; now: number; currentRun: string | null; live: boolean;
     needsYou: TaskModel[]; onAnswer: (t: TaskModel) => void; onReview: (t: TaskModel) => void;
-    onPlan: (goal: string) => void; railWidth: number; onRailWidth: (width: number) => void;
+    onPlan: (goal: string) => void; onOpenSurface: (s: RailSurface) => void;
+    railWidth: number; onRailWidth: (width: number) => void;
   },
 ): JSX.Element {
   const [showAll, setShowAll] = useState(false);
@@ -323,6 +326,21 @@ export function CompanionRail(
       <div className="companion-head">
         <span className="companion-title">Supervisor</span>
         <button className="companion-x" onClick={onClose} title="Hide" aria-label="Hide supervisor">›</button>
+      </div>
+
+      <div className="companion-tabs" role="group" aria-label="Shared surfaces">
+        <button className="companion-tab" onClick={() => onOpenSurface("architecture")}
+          title="Architecture — the world-model your agents maintain plus your notes">
+          <ListChecks size={13} /> Architecture
+        </button>
+        <button className="companion-tab" onClick={() => onOpenSurface("sketchboard")}
+          title="Board — sketch the system, or drop the system map">
+          <Palette size={13} /> Board
+        </button>
+        <button className="companion-tab" onClick={() => onOpenSurface("coordination")}
+          title="Shared space — who's editing what, symbols and decisions the agents share">
+          <MessageSquare size={13} /> Shared space
+        </button>
       </div>
 
       {needsYou.length > 0 && (
