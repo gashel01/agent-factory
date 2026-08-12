@@ -24,8 +24,8 @@ import {
   ArrowLeft, BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
   CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
   ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
-  GitBranch, GitMerge, GitPullRequest, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
-  MessageSquare, MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
+  GitBranch, GitMerge, GitPullRequest, Globe, InfinityIcon, Key, Laptop, Lightbulb, Lock, MessageCircle,
+  MoreHorizontal, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
   ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
 } from "./icons.js";
 import type { LucideIcon } from "./icons.js";
@@ -488,9 +488,8 @@ function App(): JSX.Element {
           {(hasDeps || autopilot) && (
             <button className="board-tool" title="Ticket dependency graph" onClick={() => setModal({ type: "depgraph" })}><GitMerge size={13} /> Deps</button>
           )}
-          <button className="board-tool" title="The shared space where agents coordinate — who's editing what, symbols they've published, decisions they share" onClick={() => setModal({ type: "coordination" })}><MessageSquare size={13} /> Shared space</button>
-          <button className="board-tool" title="The living architecture — the world-model your agents maintain (symbols, decisions, file ownership) plus your own notes" onClick={() => setModal({ type: "architecture" })}><ListChecks size={13} /> Architecture</button>
-          <button className="board-tool" title="A shared sketch canvas — draw boxes, databases, arrows and notes, or drop the system map to arrange it" onClick={() => setModal({ type: "sketchboard" })}><Palette size={13} /> Board</button>
+          {/* Architecture, Board and Shared space live in the supervisor rail now
+              (they are its collaborative surfaces) — keeping them here too was noise. */}
           <button className="board-tool" title="This project's docs your agents can read" onClick={() => setModal({ type: "docs" })}><BookOpen size={13} /> Knowledge</button>
           {removed.length > 0 && (
             <button className="board-tool" title="Tickets you removed from the board — restore them here" onClick={() => setModal({ type: "removed" })}><Trash2 size={13} /> Removed ({removed.length})</button>
