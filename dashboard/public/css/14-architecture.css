@@ -34,8 +34,15 @@
 .arch-key i { width: 10px; height: 10px; border-radius: 3px; background: var(--k, var(--muted)); display: inline-block; }
 .arch-key-note { font-size: 11px; color: var(--faint); font-style: italic; }
 
-.arch-canvas { overflow: auto; max-height: 44vh; border: 1px solid var(--border); border-radius: 11px; background: var(--bg); }
-.arch-svg { display: block; }
+.arch-canvas { overflow: hidden; height: 46vh; border: 1px solid var(--border); border-radius: 11px; background: var(--bg); }
+.arch-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.arch-svg.is-panning { cursor: grabbing; }
+.arch-reset {
+  margin-left: auto; padding: 3px 10px; font-size: 11px; cursor: pointer;
+  border: 1px solid var(--border2, var(--border)); border-radius: 7px;
+  background: var(--surface); color: var(--muted);
+}
+.arch-reset:hover { color: var(--ink); border-color: var(--accent); }
 
 /* role colours, theme-aware, exposed as --k so nodes + legend stay in lockstep */
 .kind-entry { --k: var(--accent); }

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { JSX } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { JSX, PointerEvent as RPointerEvent, WheelEvent as RWheelEvent } from "react";
 import { fetchJSON } from "./api.js";
 import { FileText, Sparkles } from "./icons.js";
 import { Skeleton, toast, Button } from "./core.js";
@@ -38,6 +38,9 @@ const NW = 168, NH = 40, HGAP = 60, VGAP = 16, PAD = 16;
  *  the layering is a bounded longest-path relaxation, rendered as plain SVG. */
 export function ArchDiagram({ graph }: { graph: ArchGraphT }): JSX.Element {
   const [sel, setSel] = useState<string | null>(null);
+  const [view, setView] = useState({ k: 1, x: 0, y: 0 });
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const pan = useRef<{ sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
   if (graph.nodes.length === 0) {
     return <p className="hint">No import graph yet — add source files and it draws itself.</p>;
   }
@@ -65,16 +68,42 @@ export function ArchDiagram({ graph }: { graph: ArchGraphT }): JSX.Element {
     cols.get(l)!.push(n);
   }
   const pos = new Map<string, { x: number; y: number }>();
-  let maxRows = 0;
   const layers = [...cols.keys()].sort((a, b) => a - b);
   for (const l of layers) {
     const col = cols.get(l)!.sort((a, b) =>
       (KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind)) || a.label.localeCompare(b.label));
     col.forEach((n, i) => pos.set(n.id, { x: PAD + l * (NW + HGAP), y: PAD + i * (NH + VGAP) }));
-    maxRows = Math.max(maxRows, col.length);
   }
-  const width = PAD * 2 + (layers.length ? (Math.max(...layers) + 1) * (NW + HGAP) - HGAP : NW);
-  const height = PAD * 2 + maxRows * (NH + VGAP) - VGAP;
+
+  // Zoom (wheel, anchored on the cursor) and pan (drag the empty canvas). The whole
+  // graph rides one <g transform>; a drag that never moves is a plain click (clears
+  // the selection). Node clicks stop propagation so a click-to-select isn't a pan.
+  const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
+  const onWheel = (e: RWheelEvent): void => {
+    e.preventDefault();
+    const r = svgRef.current!.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const k2 = clamp(view.k * Math.exp(-e.deltaY * 0.0015), 0.25, 3);
+    const wx = (mx - view.x) / view.k, wy = (my - view.y) / view.k;
+    setView({ k: k2, x: mx - wx * k2, y: my - wy * k2 });
+  };
+  const onDown = (e: RPointerEvent): void => {
+    pan.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y, moved: false };
+    svgRef.current!.setPointerCapture(e.pointerId);
+  };
+  const onMove = (e: RPointerEvent): void => {
+    const p = pan.current;
+    if (!p) return;
+    const dx = e.clientX - p.sx, dy = e.clientY - p.sy;
+    if (!p.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+    p.moved = true;
+    setView((v) => ({ ...v, x: p.ox + dx, y: p.oy + dy }));
+  };
+  const onUp = (): void => {
+    const p = pan.current;
+    pan.current = null;
+    if (p && !p.moved) setSel(null);   // a click on empty canvas clears the flow
+  };
 
   const edgePath = (a: { x: number; y: number }, b: { x: number; y: number }): string => {
     const sx = a.x + NW, sy = a.y + NH / 2, tx = b.x, ty = b.y + NH / 2;
@@ -110,38 +139,44 @@ export function ArchDiagram({ graph }: { graph: ArchGraphT }): JSX.Element {
         {KIND_ORDER.map((k) => (
           <span key={k} className={`arch-key kind-${k}`}><i /> {KIND_LABEL[k]}</span>
         ))}
-        <span className="arch-key-note">{sel ? "click the node again (or the canvas) to clear" : "click a node to isolate its flow"}</span>
+        <span className="arch-key-note">{sel ? "click the node again (or the canvas) to clear" : "click a node to isolate its flow · scroll to zoom, drag to pan"}</span>
         {graph.truncated && <span className="arch-key-note">· {graph.nodes.length} most-connected of {graph.total} files</span>}
+        {(view.k !== 1 || view.x !== 0 || view.y !== 0) && (
+          <button type="button" className="arch-reset" onClick={() => setView({ k: 1, x: 0, y: 0 })}>Reset view</button>
+        )}
       </div>
       <div className="arch-canvas">
-        <svg width={width} height={height} className={`arch-svg${sel ? " has-sel" : ""}`}
-          onClick={() => setSel(null)}>
+        <svg ref={svgRef} width="100%" height="100%" className={`arch-svg${sel ? " has-sel" : ""}${pan.current?.moved ? " is-panning" : ""}`}
+          onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerLeave={onUp}>
           <defs>
             <marker id="arch-ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
               <path d="M0,0 L7,3 L0,6 Z" className="arch-ah" />
             </marker>
           </defs>
-          {edges.map((e, i) => {
-            const a = pos.get(e.from)!, b = pos.get(e.to)!;
-            const lit = edgeLit(e);
-            return <path key={i} className={`arch-edge${sel ? (lit ? " is-lit" : " is-dim") : ""}`}
-              d={edgePath(a, b)} markerEnd="url(#arch-ah)" />;
-          })}
-          {graph.nodes.map((n) => {
-            const p = pos.get(n.id)!;
-            const lit = !sel || flow!.has(n.id);
-            const cls = `arch-node kind-${n.kind}${sel ? (lit ? " is-lit" : " is-dim") : ""}${sel === n.id ? " is-sel" : ""}`;
-            return (
-              <g key={n.id} className={cls} transform={`translate(${p.x},${p.y})`}
-                onClick={(ev) => { ev.stopPropagation(); setSel((s) => (s === n.id ? null : n.id)); }}>
-                <rect width={NW} height={NH} rx={9} />
-                <rect className="arch-node-bar" width={4} height={NH} />
-                <foreignObject x={10} y={0} width={NW - 16} height={NH}>
-                  <div className="arch-node-label" title={n.id}>{n.label}</div>
-                </foreignObject>
-              </g>
-            );
-          })}
+          <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+            {edges.map((e, i) => {
+              const a = pos.get(e.from)!, b = pos.get(e.to)!;
+              const lit = edgeLit(e);
+              return <path key={i} className={`arch-edge${sel ? (lit ? " is-lit" : " is-dim") : ""}`}
+                d={edgePath(a, b)} markerEnd="url(#arch-ah)" />;
+            })}
+            {graph.nodes.map((n) => {
+              const p = pos.get(n.id)!;
+              const lit = !sel || flow!.has(n.id);
+              const cls = `arch-node kind-${n.kind}${sel ? (lit ? " is-lit" : " is-dim") : ""}${sel === n.id ? " is-sel" : ""}`;
+              return (
+                <g key={n.id} className={cls} transform={`translate(${p.x},${p.y})`}
+                  onPointerDown={(ev) => ev.stopPropagation()}
+                  onClick={(ev) => { ev.stopPropagation(); setSel((s) => (s === n.id ? null : n.id)); }}>
+                  <rect width={NW} height={NH} rx={9} />
+                  <rect className="arch-node-bar" width={4} height={NH} />
+                  <foreignObject x={10} y={0} width={NW - 16} height={NH}>
+                    <div className="arch-node-label" title={n.id}>{n.label}</div>
+                  </foreignObject>
+                </g>
+              );
+            })}
+          </g>
         </svg>
       </div>
     </div>
