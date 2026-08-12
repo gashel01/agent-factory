@@ -442,6 +442,74 @@ def build_command(cfg: AgentConfig, task: Task) -> list[str]:
     )
 
 
+def build_prompt(
+    task: Task,
+    contract: str,
+    *,
+    lessons: str = "",
+    project_brief: str = "",
+    architecture: str = "",
+    coordination: str = "",
+) -> str:
+    """Assemble the stdin prompt for one coding agent.
+
+    A resumed retry gets only the corrective feedback (its session already carries
+    the contract, ticket, brief and repo knowledge). A fresh run is layered: the
+    execution contract, then the machine-built project map, then the operator's
+    architecture notes, the ticket itself, recalled lessons, and finally the live
+    coordination world-view. Pure and side-effect free so the layering is unit-tested
+    without spawning a subprocess.
+    """
+    if task.resume_session:
+        # Resumed retry: the session already carries the contract, ticket, brief
+        # and repo knowledge — only the corrective feedback is new information.
+        latest = task.failure_notes[-1] if task.failure_notes else "the attempt did not pass"
+        return (
+            "Your previous attempt on this ticket did not pass.\n"
+            f"Feedback: {latest}\n"
+            "Your worktree is untouched — your files and commits are still here. "
+            "Fix the problem, re-run the success criteria, and finish the ticket "
+            "contract as before (commit your changes, end with the JSON block).\n"
+        )
+    prompt = f"{contract}\n"
+    if project_brief:
+        # A shared map of the repo (from planning): the agent reads this instead
+        # of rediscovering the project's layout and conventions on every ticket.
+        prompt += f"\n---\n\n# Project map (read before exploring)\n\n{project_brief}\n"
+    if architecture:
+        # The operator's own architecture notes: the conventions, the intent,
+        # the "why". The human-maintained half of the shared source of truth
+        # (the machine half is the coordination world-view below). Honour it —
+        # if a convention here conflicts with what you'd do by default, follow
+        # the note and say so in your summary.
+        prompt += (
+            "\n---\n\n# Architecture notes (the operator's conventions — honour these)\n\n"
+            f"{architecture}\n"
+        )
+    prompt += f"\n---\n\n# Ticket\n\n{task.render()}\n"
+    if lessons:
+        # Lessons recalled from earlier work: rules the operator recorded so a
+        # past mistake is not repeated. They come after the ticket so the agent
+        # reads the task first, then the constraints that apply to it.
+        prompt += (
+            "\n---\n\n# Lessons from earlier work (apply these before you start)\n\n"
+            f"{lessons}\n"
+        )
+    if coordination:
+        # What sibling tickets have claimed, decided and landed. Read it before
+        # creating a shared type or editing a claimed file — this is how you
+        # avoid redefining what a sibling already exported (import it instead).
+        prompt += (
+            "\n---\n\n# Shared workspace — what your sibling agents are doing\n\n"
+            f"{coordination}\n\n"
+            "Before you create a shared type/util, run "
+            "`factory coord --whereis <Name>` to check it doesn't already exist. "
+            "When you make a decision others should follow, record it with "
+            "`factory coord --decision \"<Name>=<where/what>\"`.\n"
+        )
+    return prompt
+
+
 async def run_agent(
     cfg: AgentConfig,
     task: Task,
@@ -450,50 +518,18 @@ async def run_agent(
     log_path: Path,
     lessons: str = "",
     project_brief: str = "",
+    architecture: str = "",
     on_progress: Callable[[int, int], None] | None = None,
     mode: str = "subscription",
     isolation: str = "direct",
     coordination: str = "",
     coord_path: Path | None = None,
 ) -> AgentResult:
-    if task.resume_session:
-        # Resumed retry: the session already carries the contract, ticket, brief
-        # and repo knowledge — only the corrective feedback is new information.
-        latest = task.failure_notes[-1] if task.failure_notes else "the attempt did not pass"
-        prompt = (
-            "Your previous attempt on this ticket did not pass.\n"
-            f"Feedback: {latest}\n"
-            "Your worktree is untouched — your files and commits are still here. "
-            "Fix the problem, re-run the success criteria, and finish the ticket "
-            "contract as before (commit your changes, end with the JSON block).\n"
-        )
-    else:
-        prompt = f"{contract}\n"
-        if project_brief:
-            # A shared map of the repo (from planning): the agent reads this instead
-            # of rediscovering the project's layout and conventions on every ticket.
-            prompt += f"\n---\n\n# Project map (read before exploring)\n\n{project_brief}\n"
-        prompt += f"\n---\n\n# Ticket\n\n{task.render()}\n"
-        if lessons:
-            # Lessons recalled from earlier work: rules the operator recorded so a
-            # past mistake is not repeated. They come after the ticket so the agent
-            # reads the task first, then the constraints that apply to it.
-            prompt += (
-                "\n---\n\n# Lessons from earlier work (apply these before you start)\n\n"
-                f"{lessons}\n"
-            )
-        if coordination:
-            # What sibling tickets have claimed, decided and landed. Read it before
-            # creating a shared type or editing a claimed file — this is how you
-            # avoid redefining what a sibling already exported (import it instead).
-            prompt += (
-                "\n---\n\n# Shared workspace — what your sibling agents are doing\n\n"
-                f"{coordination}\n\n"
-                "Before you create a shared type/util, run "
-                "`factory coord --whereis <Name>` to check it doesn't already exist. "
-                "When you make a decision others should follow, record it with "
-                "`factory coord --decision \"<Name>=<where/what>\"`.\n"
-            )
+    prompt = build_prompt(
+        task, contract,
+        lessons=lessons, project_brief=project_brief,
+        architecture=architecture, coordination=coordination,
+    )
     cmd = build_command(cfg, task)
     env = spawn_env(mode)
     if coord_path is not None:

@@ -146,6 +146,17 @@ class Dispatcher:
             self._brief_cache[key] = read_brief(self._workspace, key)
         return self._brief_cache[key]
 
+    def _architecture(self) -> str:
+        """The operator's living architecture notes (the human half of the shared
+        source of truth, edited from the dashboard's Architecture tab). Re-read on
+        every dispatch — best-effort — so an edit made mid-run reaches later agents.
+        Same file the dashboard writes: <workspace>/architecture.md."""
+        path = self._workspace / "architecture.md"
+        try:
+            return path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        except OSError:
+            return ""
+
     def _set_state(self, task: Task, to: TaskState) -> None:
         frm = self.state[task.id]
         self.state[task.id] = to
@@ -685,7 +696,8 @@ class Dispatcher:
 
             result = await agent_mod.run_agent(
                 self.cfg.agent, task, wt.path, self._contract, log_path, recall.text,
-                self._brief_for(task.repo), on_progress=_progress,
+                self._brief_for(task.repo), architecture=self._architecture(),
+                on_progress=_progress,
                 mode=self.cfg.execution_mode,
                 isolation=self.cfg.isolation,
                 coordination=coord_text,
