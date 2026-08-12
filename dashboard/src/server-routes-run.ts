@@ -127,6 +127,9 @@ const ARCH_SRC_EXT = /\.(tsx?|jsx?|py)$/;
 const ARCH_SKIP_DIR = new Set([
   "node_modules", "dist", "build", "out", ".next", "coverage", "__pycache__",
   ".venv", "venv", ".mypy_cache", ".pytest_cache", ".factory", ".git",
+  // "runs" holds per-run agent worktrees (whole stale copies of the repo) and
+  // "wt"/"worktrees" their checkouts — scanning them duplicates every file.
+  "runs", "wt", "worktrees", ".worktrees",
 ]);
 const ARCH_MAX_NODES = 44;
 
@@ -285,7 +288,9 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
     json(res, 200, {
       map: foldWorldModel(events),
       notes: existsSync(notesFile) ? readFileSync(notesFile, "utf-8") : "",
-      graph: buildArchGraph(ws.workdir),
+      // The diagram is derived from the actual source, which lives in the repo the
+      // workspace targets — not the workspace dir (that holds runs/backlog/config).
+      graph: buildArchGraph(workspaceRepo(ws) ?? ws.workdir),
     });
     return true;
   }

@@ -57,3 +57,13 @@
 
 .arch-edge { fill: none; stroke: var(--border2, var(--border)); stroke-width: 1.3; opacity: .5; }
 .arch-ah { fill: var(--faint); }
+
+/* click-to-isolate: light the selected node's flow, fade everything else */
+.arch-node { cursor: pointer; }
+.arch-svg.has-sel .arch-node,
+.arch-svg.has-sel .arch-edge { transition: opacity .15s ease, stroke .15s ease; }
+.arch-node.is-dim { opacity: .16; }
+.arch-edge.is-dim { opacity: .05; }
+.arch-node.is-lit { opacity: 1; }
+.arch-edge.is-lit { stroke: var(--accent); opacity: .9; stroke-width: 1.8; }
+.arch-node.is-sel rect:not(.arch-node-bar) { stroke: var(--k); stroke-width: 2.4; }

@@ -37,6 +37,7 @@ const NW = 168, NH = 40, HGAP = 60, VGAP = 16, PAD = 16;
  *  the repo, so it IS the architecture, not a drawing of it. Zero-dependency:
  *  the layering is a bounded longest-path relaxation, rendered as plain SVG. */
 export function ArchDiagram({ graph }: { graph: ArchGraphT }): JSX.Element {
+  const [sel, setSel] = useState<string | null>(null);
   if (graph.nodes.length === 0) {
     return <p className="hint">No import graph yet — add source files and it draws itself.</p>;
   }
@@ -81,16 +82,40 @@ export function ArchDiagram({ graph }: { graph: ArchGraphT }): JSX.Element {
     return `M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`;
   };
 
+  // Click a node to isolate its flow: everything it depends on (downstream) and
+  // everything that depends on it (upstream), both transitively. Nodes and edges
+  // off that flow dim away so the path stands out. Click it again — or the empty
+  // canvas — to clear.
+  const fwd = new Map<string, string[]>(ids.map((id) => [id, []]));
+  const bwd = new Map<string, string[]>(ids.map((id) => [id, []]));
+  for (const e of edges) { fwd.get(e.from)!.push(e.to); bwd.get(e.to)!.push(e.from); }
+  const reach = (start: string, adj: Map<string, string[]>): Set<string> => {
+    const seen = new Set([start]);
+    const q = [start];
+    while (q.length) {
+      const n = q.shift()!;
+      for (const m of adj.get(n) ?? []) if (!seen.has(m)) { seen.add(m); q.push(m); }
+    }
+    return seen;
+  };
+  const down = sel ? reach(sel, fwd) : null;
+  const up = sel ? reach(sel, bwd) : null;
+  const flow = sel ? new Set([...down!, ...up!]) : null;
+  const edgeLit = (e: { from: string; to: string }): boolean =>
+    !sel || (down!.has(e.from) && down!.has(e.to)) || (up!.has(e.from) && up!.has(e.to));
+
   return (
     <div className="arch-diagram">
       <div className="arch-legend">
         {KIND_ORDER.map((k) => (
           <span key={k} className={`arch-key kind-${k}`}><i /> {KIND_LABEL[k]}</span>
         ))}
-        {graph.truncated && <span className="arch-key-note">showing the {graph.nodes.length} most-connected of {graph.total} files</span>}
+        <span className="arch-key-note">{sel ? "click the node again (or the canvas) to clear" : "click a node to isolate its flow"}</span>
+        {graph.truncated && <span className="arch-key-note">· {graph.nodes.length} most-connected of {graph.total} files</span>}
       </div>
       <div className="arch-canvas">
-        <svg width={width} height={height} className="arch-svg">
+        <svg width={width} height={height} className={`arch-svg${sel ? " has-sel" : ""}`}
+          onClick={() => setSel(null)}>
           <defs>
             <marker id="arch-ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
               <path d="M0,0 L7,3 L0,6 Z" className="arch-ah" />
@@ -98,12 +123,17 @@ export function ArchDiagram({ graph }: { graph: ArchGraphT }): JSX.Element {
           </defs>
           {edges.map((e, i) => {
             const a = pos.get(e.from)!, b = pos.get(e.to)!;
-            return <path key={i} className="arch-edge" d={edgePath(a, b)} markerEnd="url(#arch-ah)" />;
+            const lit = edgeLit(e);
+            return <path key={i} className={`arch-edge${sel ? (lit ? " is-lit" : " is-dim") : ""}`}
+              d={edgePath(a, b)} markerEnd="url(#arch-ah)" />;
           })}
           {graph.nodes.map((n) => {
             const p = pos.get(n.id)!;
+            const lit = !sel || flow!.has(n.id);
+            const cls = `arch-node kind-${n.kind}${sel ? (lit ? " is-lit" : " is-dim") : ""}${sel === n.id ? " is-sel" : ""}`;
             return (
-              <g key={n.id} className={`arch-node kind-${n.kind}`} transform={`translate(${p.x},${p.y})`}>
+              <g key={n.id} className={cls} transform={`translate(${p.x},${p.y})`}
+                onClick={(ev) => { ev.stopPropagation(); setSel((s) => (s === n.id ? null : n.id)); }}>
                 <rect width={NW} height={NH} rx={9} />
                 <rect className="arch-node-bar" width={4} height={NH} />
                 <foreignObject x={10} y={0} width={NW - 16} height={NH}>
