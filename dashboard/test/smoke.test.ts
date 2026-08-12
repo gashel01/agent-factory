@@ -77,3 +77,14 @@ test("DecisionModal renders options side by side with a sandboxed preview", asyn
   // The option without preview shows the placeholder, not an empty frame.
   assert.match(html, /decide-noprev/, "the no-preview option shows a placeholder");
 });
+
+test("BoardModal renders the palette and an empty grid canvas", async () => {
+  const { BoardModal } = await import("../src/board-canvas.js");
+  const html = render(BoardModal as unknown as ComponentType<Record<string, unknown>>, {
+    onClose: () => {},
+  });
+  assert.match(html, /bd-svg/, "the SVG canvas renders");
+  assert.match(html, /bd-tool/, "the shape palette renders");
+  assert.match(html, /Drop system map/, "the agent-layer drop action renders");
+  assert.match(html, /bd-grid/, "the dotted grid backdrop renders");
+});

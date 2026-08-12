@@ -26,6 +26,11 @@ dashboard/workspaces.json
 DASHBOARD_GAPS.md
 DASHBOARD_UX_PLAN.md
 
+# operator-local collaborative surfaces (Architecture notes, sketch board) —
+# per-workspace state written by the dashboard, not part of the shared repo
+architecture.md
+board.json
+
 # Nexa-managed agent rules — mirrored into the repo by the Nexa app, kept local
 # (their content is Nexa's, not part of this project); ignoring them also keeps
 # the working tree clean so runs targeting this repo aren't blocked at preflight

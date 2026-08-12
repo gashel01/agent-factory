@@ -146,6 +146,30 @@ export async function handleRunRoutes(ctx: WsRouteCtx): Promise<boolean> {
     return true;
   }
 
+  if (url.pathname === "/api/board") {
+    // The shared sketch board: the operator's freehand shapes (and system nodes
+    // they dropped from the world-model) — a spatial layer next to the kanban.
+    // Persisted whole as one JSON doc, same as the architecture notes.
+    const boardFile = join(ws.workdir, "board.json");
+    if (req.method === "PUT") {
+      const body = await readBody(req);
+      // Store verbatim but bounded — a runaway client must not write an
+      // unbounded file. 2 MiB is far past any hand-drawn board.
+      if (body.length > 2_000_000) { json(res, 413, { error: "board too large" }); return true; }
+      try { JSON.parse(body); } catch { json(res, 400, { error: "invalid JSON" }); return true; }
+      writeFileSync(boardFile, body, "utf-8");
+      json(res, 200, { ok: true });
+      return true;
+    }
+    let shapes: unknown = [];
+    if (existsSync(boardFile)) {
+      try { shapes = (JSON.parse(readFileSync(boardFile, "utf-8")) as { shapes?: unknown }).shapes ?? []; }
+      catch { shapes = []; }
+    }
+    json(res, 200, { shapes });
+    return true;
+  }
+
   if (url.pathname === "/api/coordination") {
     // The shared workspace agents see: who claims/lands which files, the symbols
     // now defined, and the decisions/notes they've posted. Folded from the run's

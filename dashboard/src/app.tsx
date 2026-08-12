@@ -36,6 +36,7 @@ import { DiagnosticsModal, DocsModal, LogModal, Row, RunEstimateModal, SettingsM
 import { CoordinationModal } from "./coordination-view.js";
 import { ArchitectureModal } from "./architecture-view.js";
 import { DecisionModal } from "./decision-view.js";
+import { BoardModal } from "./board-canvas.js";
 import { AgentVersionChip, AnswerModal, Appearance, AppearanceModal, DiffModal, FactEditor, MemoryScreen, ProjectsScreen, ReviewModal, SupervisorDock, useTheme } from "./screens.js";
 import { CommandPalette, ConfirmButton, OverflowMenu, ProjectSwitcher, Select, UsageCard, sendControl, useBacklog, useHidden } from "./widgets.js";
 // The command-palette item type. Aliased because the bare name `Command` is also a
@@ -209,6 +210,7 @@ function App(): JSX.Element {
       { id: "deps", group: "Open", label: "Dependency graph", run: () => setModal({ type: "depgraph" }) },
       { id: "coord", group: "Open", label: "Shared space (agent coordination)", run: () => setModal({ type: "coordination" }) },
       { id: "arch", group: "Open", label: "Architecture (world-model + notes)", run: () => setModal({ type: "architecture" }) },
+      { id: "sketchboard", group: "Open", label: "Board (sketch canvas + system map)", run: () => setModal({ type: "sketchboard" }) },
       { id: "analytics", group: "Open", label: "Cost analytics", run: () => setModal({ type: "analytics" }) },
       { id: "supervisor", group: "Open", label: "Supervisor", run: () => setRailOpen(true) },
       { id: "preview", group: "Open", label: "View result (preview)", run: () => setModal({ type: "preview" }) },
@@ -488,6 +490,7 @@ function App(): JSX.Element {
           )}
           <button className="board-tool" title="The shared space where agents coordinate — who's editing what, symbols they've published, decisions they share" onClick={() => setModal({ type: "coordination" })}><MessageSquare size={13} /> Shared space</button>
           <button className="board-tool" title="The living architecture — the world-model your agents maintain (symbols, decisions, file ownership) plus your own notes" onClick={() => setModal({ type: "architecture" })}><ListChecks size={13} /> Architecture</button>
+          <button className="board-tool" title="A shared sketch canvas — draw boxes, databases, arrows and notes, or drop the system map to arrange it" onClick={() => setModal({ type: "sketchboard" })}><Palette size={13} /> Board</button>
           <button className="board-tool" title="This project's docs your agents can read" onClick={() => setModal({ type: "docs" })}><BookOpen size={13} /> Knowledge</button>
           {removed.length > 0 && (
             <button className="board-tool" title="Tickets you removed from the board — restore them here" onClick={() => setModal({ type: "removed" })}><Trash2 size={13} /> Removed ({removed.length})</button>
@@ -580,6 +583,7 @@ function App(): JSX.Element {
       )}
       {modal?.type === "coordination" && <CoordinationModal onClose={() => setModal(null)} />}
       {modal?.type === "architecture" && <ArchitectureModal onClose={() => setModal(null)} />}
+      {modal?.type === "sketchboard" && <BoardModal onClose={() => setModal(null)} />}
       {modal?.type === "answer" && (
         <AnswerModal taskId={modal.taskId} title={modal.title} question={modal.question}
           context={modal.context} onClose={() => setModal(null)} />

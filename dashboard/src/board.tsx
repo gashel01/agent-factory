@@ -62,6 +62,7 @@ export type ModalState =
   | { type: "depgraph" }
   | { type: "coordination" }
   | { type: "architecture" }
+  | { type: "sketchboard" }
   | { type: "cmdk" }
   | { type: "docs" }
   | { type: "aireview"; file: string; title: string }

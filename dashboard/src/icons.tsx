@@ -18,9 +18,9 @@ import {
   Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Circle,
   CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
-  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, GitPullRequest, Globe, Hand, Infinity as InfinityIcon,
-  Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
-  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
+  Database, Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, GitPullRequest, Globe, Hand, Infinity as InfinityIcon,
+  Key, Laptop, Layers, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, MousePointer2, Palette,
+  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, StickyNote, Target,
   Terminal, Timer, Trash2, TrendingDown, TriangleAlert, Undo2, Upload, X,
 } from "lucide-react";
 
@@ -29,9 +29,9 @@ export {
   Ban, Bell, BellOff, BookOpen, Bot, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, Circle,
   CircleCheckBig, CircleDot, CircleHelp, CircleX, Command, CornerDownLeft, CornerDownRight,
   DollarSign, ExternalLink, Eye, FileText, FlaskConical, Flag, FlagTriangleRight,
-  Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, GitPullRequest, Globe, Hand, InfinityIcon,
-  Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, Palette,
-  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, Target,
+  Database, Folder, FolderOpen, FolderPlus, GitBranch, GitMerge, GitPullRequest, Globe, Hand, InfinityIcon,
+  Key, Laptop, Layers, Lightbulb, ListChecks, Lock, MessageCircle, MessageSquare, MoreHorizontal, MousePointer2, Palette,
+  Pause, Pencil, Play, Plus, RotateCw, Rocket, Search, Send, ShieldCheck, Smartphone, Sparkles, Square, StickyNote, Target,
   Terminal, Timer, Trash2, TrendingDown, TriangleAlert, Undo2, Upload, X,
 };
 export type { LucideIcon };
