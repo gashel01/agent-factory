@@ -149,3 +149,98 @@ def test_stream_headless_handles_oversized_line(tmp_path):
 
     assert out.result is not None
     assert out.result["result"] == "S" * big_len
+
+
+# -- the npm envelope ------------------------------------------------------
+#
+# On Windows `shutil.which("claude")` returns npm's `claude.CMD`, so the child
+# we hold is a `cmd.exe` wrapping the real CLI. `stream_headless` kills that
+# child on timeout and on cancellation -- normal paths here, not edge cases --
+# and killing the wrapper leaves `claude.exe` running: past the deadline, still
+# calling tools, still spending against the one OAuth bucket every slot shares.
+# It raises nothing. These tests exist because the failure is invisible.
+
+def _shim(folder, line: str, name: str = "claude.cmd"):
+    path = folder / name
+    path.write_text(f"@ECHO off\r\n{line}\r\n", encoding="utf-8")
+    return path
+
+
+def _resolved(monkeypatch, path) -> str:
+    """`_without_the_shim` on a path, as if we were on Windows.
+
+    The cache is cleared each time: it exists so the warning is said once in
+    production, and two tests sharing it would observe each other.
+    """
+    from factory import agent
+
+    monkeypatch.setattr(agent.os, "name", "nt")
+    agent._without_the_shim.cache_clear()
+    return agent._without_the_shim(str(path))
+
+
+def test_the_npm_shim_is_read_rather_than_launched(tmp_path, monkeypatch):
+    """The shim names its own executable on one line. Reading it beats guessing
+    an npm layout, which moves with the package manager."""
+    import os
+
+    exe = tmp_path / "claude.exe"
+    exe.write_bytes(b"MZ")
+    shim = _shim(tmp_path, f'"{exe}" %*')
+
+    assert _resolved(monkeypatch, shim) == os.path.normpath(str(exe))
+
+
+def test_the_shim_is_read_through_its_own_directory_variable(tmp_path, monkeypatch):
+    """npm writes the path relative to the shim with `%~dp0`, so a literal read
+    finds a file that does not exist and falls back to the envelope."""
+    import os
+
+    exe = tmp_path / "node.exe"
+    exe.write_bytes(b"MZ")
+    shim = _shim(tmp_path, r'"%~dp0\node.exe" "%~dp0\cli.js" %*')
+
+    assert _resolved(monkeypatch, shim) == os.path.normpath(str(exe))
+
+
+def test_an_unresolvable_shim_falls_back_and_says_so(tmp_path, monkeypatch, caplog):
+    """Falling back is the safe direction -- it works, it costs a cmd.exe -- but
+    silent it reads as "nothing to report", when what it means is that a timeout
+    has stopped stopping the agent."""
+    import logging
+
+    shim = _shim(tmp_path, r'"%~dp0\node.exe" "%~dp0\cli.js" %*')  # no node.exe
+
+    with caplog.at_level(logging.WARNING, logger="factory.agent"):
+        assert _resolved(monkeypatch, shim) == str(shim)
+
+    assert any("cmd.exe" in r.getMessage() for r in caplog.records), \
+        "the envelope came back and nothing said so"
+
+
+def test_a_real_executable_is_left_alone(tmp_path, monkeypatch):
+    """Only `.cmd` and `.bat` are envelopes. Anything else is already the thing
+    itself, and reading it as text would be nonsense."""
+    exe = tmp_path / "claude.exe"
+    exe.write_bytes(b"MZ")
+
+    assert _resolved(monkeypatch, exe) == str(exe)
+
+
+def test_build_cli_resolves_the_shim(tmp_path, monkeypatch):
+    """The whole point: what `build_cli` hands to `create_subprocess_exec` must
+    be the CLI, not the wrapper."""
+    import os
+
+    from factory import agent
+
+    exe = tmp_path / "claude.exe"
+    exe.write_bytes(b"MZ")
+    shim = _shim(tmp_path, f'"{exe}" %*')
+
+    monkeypatch.setattr(agent.shutil, "which", lambda _: str(shim))
+    monkeypatch.setattr(agent.os, "name", "nt")
+    agent._without_the_shim.cache_clear()
+
+    cmd = agent.build_cli(("claude",), max_turns=3, allowed_tools=())
+    assert cmd[0] == os.path.normpath(str(exe)), "build_cli handed back the wrapper"

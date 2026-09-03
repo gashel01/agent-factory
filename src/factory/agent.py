@@ -8,7 +8,10 @@ OS argument-length ceiling. Works with subscription auth out of the box: whateve
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import json
+import logging
 import os
 import re
 import shutil
@@ -374,6 +377,47 @@ def parse_options(raw: object) -> tuple[dict, ...]:
     return tuple(out)
 
 
+@functools.cache
+def _without_the_shim(path: str) -> str:
+    """The executable itself, not the script that launches it.
+
+    On Windows `shutil.which("claude")` returns `claude.CMD`, the shim npm puts
+    on PATH. Launching that puts a `cmd.exe` between us and the CLI, and every
+    process gesture then lands on the envelope instead of the agent.
+
+    `proc.kill()` is the one that matters here, because it is not an edge case:
+    it is what a timeout and a cancelled run do. Killing the shim leaves
+    `claude.exe` running — past the deadline, still calling tools, still
+    spending against the one OAuth bucket every slot shares. Nothing raises.
+    It shows up as a bill, and as rate limits nobody can account for.
+
+    The shim is readable and names itself: one line quotes the executable's
+    path. Read that rather than guess an npm layout, which moves with the
+    package manager. When in doubt, return the shim — it works, it just costs
+    an envelope, and it says so on the way past.
+
+    Cached because the path does not change between runs, and because the
+    warning below should be said once rather than on every agent.
+    """
+    if os.name != "nt" or not path.lower().endswith((".cmd", ".bat")):
+        return path
+    with contextlib.suppress(OSError, UnicodeDecodeError):
+        folder = os.path.dirname(path)
+        for line in Path(path).read_text(
+                encoding="utf-8", errors="ignore").splitlines():
+            for quoted in re.findall(r'"([^"]+\.exe)"', line):
+                target = os.path.normpath(
+                    quoted.replace("%dp0%", folder).replace("%~dp0", folder))
+                if os.path.isfile(target):
+                    return target
+    logging.getLogger(__name__).warning(
+        "could not resolve the npm shim (%s) — cmd.exe stays between us and "
+        "the CLI, so a timeout will kill the wrapper and leave the agent "
+        "running and spending", path,
+    )
+    return path
+
+
 def build_cli(
     command: tuple[str, ...],
     *,
@@ -405,6 +449,7 @@ def build_cli(
         raise (missing(msg) if missing else FileNotFoundError(
             f"{msg} — is the CLI installed and the shell environment inherited?"
         ))
+    exe = _without_the_shim(exe)
     cmd = [exe, *command[1:], "-p", "--output-format", "stream-json", "--verbose"]
     if permission_mode:
         cmd += ["--permission-mode", permission_mode]
