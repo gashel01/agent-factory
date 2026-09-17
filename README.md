@@ -32,7 +32,8 @@ Running one coding agent is easy. Running twenty is an orchestration problem:
 
 ```bash
 # 1. install (Python >= 3.11, git and the claude CLI on PATH)
-pip install -e .
+uv sync            # recommended
+# or: pip install -e .
 
 # 2. describe work as tickets
 mkdir backlog && $EDITOR backlog/001-fix-auth.md   # see "Ticket format" below
