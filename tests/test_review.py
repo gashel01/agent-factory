@@ -83,6 +83,7 @@ def test_review_fails_open_when_reviewer_crashes(tmp_path, repo, monkeypatch):
     (This is what sank ticket 040: the reviewer tried a blocked `git diff` and died.)"""
     import asyncio
     from types import SimpleNamespace
+
     import factory.review as review_mod
     from factory.task import parse_ticket
 

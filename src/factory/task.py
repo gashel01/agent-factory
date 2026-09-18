@@ -150,7 +150,9 @@ def _norm(hint: str) -> str:
 
 
 # POSIX-only tools that break a verify command on Windows cmd.exe.
-_POSIX_ONLY = ("grep", "sed", "awk", "head", "tail", "wc", "cut", "tr", "cat", "ls", "test", "xargs")
+_POSIX_ONLY = (
+    "grep", "sed", "awk", "head", "tail", "wc", "cut", "tr", "cat", "ls", "test", "xargs",
+)
 
 
 def portable_verify(cmd: str) -> str:
