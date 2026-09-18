@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+
+import pytest
 
 from factory.agent import (
     describe_step,
@@ -11,6 +14,16 @@ from factory.agent import (
     stream_headless,
 )
 from factory.events import EventLog
+
+# The npm-shim resolution is Windows-only (`os.name == "nt"`), and its tests build
+# real files and parse Windows path syntax (`%~dp0`, backslashes). Forcing nt
+# semantics onto a POSIX filesystem makes them resolve against paths that never
+# exist, so they only run faithfully on Windows — the windows-latest CI runner
+# covers them there.
+_windows_only = pytest.mark.skipif(
+    os.name != "nt",
+    reason="npm shim resolution is Windows-only (covered by the windows-latest runner)",
+)
 
 
 def _assistant(*blocks):
@@ -179,6 +192,7 @@ def _resolved(monkeypatch, path) -> str:
     return agent._without_the_shim(str(path))
 
 
+@_windows_only
 def test_the_npm_shim_is_read_rather_than_launched(tmp_path, monkeypatch):
     """The shim names its own executable on one line. Reading it beats guessing
     an npm layout, which moves with the package manager."""
@@ -191,6 +205,7 @@ def test_the_npm_shim_is_read_rather_than_launched(tmp_path, monkeypatch):
     assert _resolved(monkeypatch, shim) == os.path.normpath(str(exe))
 
 
+@_windows_only
 def test_the_shim_is_read_through_its_own_directory_variable(tmp_path, monkeypatch):
     """npm writes the path relative to the shim with `%~dp0`, so a literal read
     finds a file that does not exist and falls back to the envelope."""
@@ -203,6 +218,7 @@ def test_the_shim_is_read_through_its_own_directory_variable(tmp_path, monkeypat
     assert _resolved(monkeypatch, shim) == os.path.normpath(str(exe))
 
 
+@_windows_only
 def test_an_unresolvable_shim_falls_back_and_says_so(tmp_path, monkeypatch, caplog):
     """Falling back is the safe direction -- it works, it costs a cmd.exe -- but
     silent it reads as "nothing to report", when what it means is that a timeout
@@ -218,6 +234,7 @@ def test_an_unresolvable_shim_falls_back_and_says_so(tmp_path, monkeypatch, capl
         "the envelope came back and nothing said so"
 
 
+@_windows_only
 def test_a_real_executable_is_left_alone(tmp_path, monkeypatch):
     """Only `.cmd` and `.bat` are envelopes. Anything else is already the thing
     itself, and reading it as text would be nonsense."""
@@ -227,6 +244,7 @@ def test_a_real_executable_is_left_alone(tmp_path, monkeypatch):
     assert _resolved(monkeypatch, exe) == str(exe)
 
 
+@_windows_only
 def test_build_cli_resolves_the_shim(tmp_path, monkeypatch):
     """The whole point: what `build_cli` hands to `create_subprocess_exec` must
     be the CLI, not the wrapper."""
