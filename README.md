@@ -1,9 +1,13 @@
-# agent-factory
+# Warden
 
 Run a fleet of parallel [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents
 over a task backlog — with git-worktree isolation, deterministic verification gates, and a
 sequential merge queue. **Works on a Claude subscription (no API key)**, on Windows, macOS,
 and Linux.
+
+> ⚠️ **Work in progress.** Warden is under active development and will keep
+> changing as I test it against more project types. Expect the API, the CLI and
+> the dashboard to move. Feedback and issues are welcome.
 
 ```
 backlog/*.md ──▶ DISPATCHER ──▶ N isolated worktrees, one headless agent each
