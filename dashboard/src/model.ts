@@ -463,6 +463,24 @@ function toolResultText(content: ContentItem["content"]): string {
 }
 
 /** Parse the raw stream-json into an ordered list of story items. */
+/** An agent's message minus the machine-readable contract block it must end with
+ *  (`{"status": ...}`, fenced or not): that JSON is for the dispatcher, the story
+ *  is for a person. Same rule as the Python side — only an object that runs to
+ *  the end of the text and carries a "status" counts. */
+export function withoutContract(text: string): string {
+  const trimmed = text.trimEnd().replace(/```\s*$/, "").trimEnd();
+  for (let i = trimmed.lastIndexOf("{"); i >= 0; i = trimmed.lastIndexOf("{", i - 1)) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed.slice(i));
+      if (parsed && typeof parsed === "object" && "status" in parsed) {
+        return trimmed.slice(0, i).replace(/```(?:json)?\s*$/, "").trimEnd();
+      }
+    } catch { /* not the start of the trailing object */ }
+    if (i === 0) break;
+  }
+  return text.trim();
+}
+
 export function narrate(raw: string): StoryItem[] {
   const story: StoryItem[] = [];
   const delegated = new Set<string>();
@@ -475,8 +493,9 @@ export function narrate(raw: string): StoryItem[] {
     }
     if (record.type === "assistant" && record.message?.content) {
       for (const item of record.message.content) {
-        if (item.type === "text" && item.text?.trim()) {
-          story.push({ kind: "say", text: item.text.trim() });
+        const said = item.type === "text" && item.text ? withoutContract(item.text) : "";
+        if (said) {
+          story.push({ kind: "say", text: said });
         } else if (item.type === "tool_use" && item.name) {
           const input = item.input ?? {};
           if (SUBAGENT_TOOLS.has(item.name)) {
@@ -499,10 +518,11 @@ export function narrate(raw: string): StoryItem[] {
         }
       }
     } else if (record.type === "result" && record.result) {
+      const result = withoutContract(record.result);
       const last = story[story.length - 1];
-      if (!last || (last.kind !== "final" && last.kind !== "say") ||
-          ("text" in last && last.text.trim() !== record.result.trim())) {
-        story.push({ kind: "final", text: record.result.trim() });
+      if (result && (!last || (last.kind !== "final" && last.kind !== "say") ||
+          ("text" in last && last.text.trim() !== result))) {
+        story.push({ kind: "final", text: result });
       }
     }
   }

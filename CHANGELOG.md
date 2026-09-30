@@ -77,7 +77,10 @@ between releases.
 - Planner output with many nested braces (ticket bodies quoting API shapes) is
   parsed again — the contract JSON search is no longer capped at 50 candidates.
 - Tickets, agent summaries, questions, commit messages and review reasons follow
-  the language of the goal/ticket, not the operator's Claude language setting.
+  the language of the goal, not the operator's Claude language setting: the planner
+  records it on each ticket (`language: English`) and the agent and the reviewer
+  start with it as a CLI setting (a sentence in the contract lost to the operator's
+  setting).
 
 ### Agents
 - Agents, the planner, the reviewer and the doctor start with `--strict-mcp-config`:
@@ -100,6 +103,8 @@ between releases.
 - Draft cards show what they wait on, and the board links to the dependency graph
   whenever a ticket depends on another.
 - Insights token totals include the prompt cache.
+- A ticket's story no longer ends with the raw contract JSON the agent returns.
+- README: screenshots of the dashboard (`docs/screenshots/`).
 
 ### Breaking
 - Tickets with no verify command now fail verification unless `skip_verify: true`

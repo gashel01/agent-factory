@@ -437,7 +437,10 @@ def test_max_slots_is_a_user_parameter(tmp_path, repo, slots):
     for i in range(3):
         write_ticket(backlog, f"00{i}", repo, files_hint=f"[output_00{i}.txt]")
     counts = run_dispatcher(make_config(max_slots=slots), backlog, tmp_path / "run")
-    assert counts == {"DONE": 3}
+    # On failure, say WHY a ticket failed — the counts alone hid a CI-only race.
+    why = [e for e in EventLog.replay(tmp_path / "run" / "events.jsonl")
+           if e["event"] in ("failure", "retry", "verify", "merge_conflict", "error")]
+    assert counts == {"DONE": 3}, why
 
 
 def test_interrupted_run_leaves_no_ghost(tmp_path, repo):

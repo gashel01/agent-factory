@@ -118,6 +118,7 @@ async def run_review(cfg: Config, task: Task, worktree_path: Path, log_path: Pat
         max_turns=40,  # big-diff reviews explore a lot; too low a cap reads as a crash
         allowed_tools=REVIEWER_TOOLS,
         model=cfg.review.model or cfg.agent.model,
+        language=task.language,
         missing=ReviewError,
     )
 

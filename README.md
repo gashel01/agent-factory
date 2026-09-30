@@ -9,6 +9,8 @@ and Linux.
 > changing as I test it against more project types. Expect the API, the CLI and
 > the dashboard to move. Feedback and issues are welcome.
 
+![The Warden board: a finished run and its merged tickets, each with its cost, its diff and a link to open it in your IDE](docs/screenshots/board.png)
+
 ```
 backlog/*.md ──▶ DISPATCHER ──▶ N isolated worktrees, one headless agent each
                      │                      │
@@ -21,7 +23,20 @@ backlog/*.md ──▶ DISPATCHER ──▶ N isolated worktrees, one headless a
 
 ## Why
 
-Running one coding agent is easy. Running twenty is an orchestration problem:
+A single Claude Code session is a great pair programmer. On a small, well-specified
+task it is as good as anything else, and a little faster and cheaper than an
+orchestrator. Warden is for when the work has to be **trusted, seen and repeated**:
+
+- **Control** — nothing reaches your branch without executable proof; each run has an
+  estimate before it starts and a budget cap while it runs; destructive git is blocked;
+  real decisions stop and wait for you.
+- **Visibility** — every ticket has a story (what the agent read, ran and changed), a
+  diff, a cost and a reason when it failed. Nobody has to take "all tests pass" on
+  faith.
+- **Project knowledge** — a project map, lessons from past runs and your own documents
+  are handed to every agent, run after run, instead of starting from zero each session.
+
+Under the hood, running many agents at once is an orchestration problem:
 
 - **Isolation** — agents must not step on each other → one git worktree + branch per task.
 - **Trust** — nobody reviews twenty diffs by hand → work only "exists" once a deterministic
@@ -158,12 +173,13 @@ by the next `factory run` — or explicitly with `factory recover`: its log gets
 `run_end` marked `crashed`, its worktrees are removed, and any task branch that
 already holds commits is **continued** by the next run instead of redone.
 
-## Live dashboard
+## Dashboard
 
-A TypeScript status board and cockpit (Node >= 20, zero runtime dependencies)
-that tails `events.jsonl` over SSE — attach to a live run, watch a new run take
-over automatically, or replay a finished one — and drives the factory from the
-browser.
+A TypeScript cockpit (Node >= 20, zero runtime dependencies) that tails
+`events.jsonl` over SSE — attach to a live run, watch a new run take over
+automatically, or replay a finished one — and drives the whole factory from the
+browser: describe a goal, review the drafted tickets, start the run, answer the
+agents, merge.
 
 ```bash
 cd dashboard
@@ -172,7 +188,40 @@ npm start -- --workdir <workspace>   # http://127.0.0.1:8765
 ```
 
 `--workdir` is the workspace directory (the one holding `factory.yaml`,
-`backlog/` and `runs/`); other workspaces can be registered from the UI.
+`backlog/` and `runs/`). Each project gets its own isolated workspace; create one
+from the UI by pointing it at a repository and picking a starting model (Opus or
+Sonnet recommended).
+
+**Before a run — know what you are starting.** Three profiles priced against the
+tickets in the backlog, where the work lands, how many agents run at once, and the
+guard rails (budget cap, API billing, sandbox readiness):
+
+![Start this run? — per-profile cost estimate, per-ticket breakdown, delivery target and budget warning](docs/screenshots/estimate.png)
+
+**During and after — every ticket tells its story.** What the agent read, ran and
+edited, its reasoning, the commands that proved it, the cost and the attempt count;
+then the exact diff that merged:
+
+![A merged ticket's story: the agent's steps, with duration, cost and tokens](docs/screenshots/ticket.png)
+
+![The ticket's diff, file by file](docs/screenshots/diff.png)
+
+**A supervisor beside the board** narrates the run, answers questions about it and
+suggests next steps — which only happen when you click them. Its map shows what the
+project is made of: the system map derived from the code, and a world-model of
+symbols your agents maintain from what they land, growing every run:
+
+![The supervisor panel: the system map and the world-model agents maintain](docs/screenshots/supervisor.png)
+
+**Trust is a setting, not a hope.** Require a passing check for DONE, set default and
+integration checks, add an AI reviewer or your own approval before merge:
+
+![Settings — trust and checks](docs/screenshots/settings-trust.png)
+
+**Insights** track cost, tokens (prompt cache included) and tickets per run, and the
+dependency graph shows what waits on what.
+
+![Insights — cost, tokens and tickets per run](docs/screenshots/insights.png)
 
 It is **not** read-only: it writes operator commands to a run's `control.jsonl`
 (pause, stop, answer, approve…), stores uploads and attachments, edits
@@ -192,10 +241,10 @@ carries the token): then *every* `/api` request needs the token, except the
 built-APK download. Only do this on a network you trust — anyone holding the
 token can run agents on your machine.
 
-Header badge (live / paused on rate limit / finished), stat tiles, one card per
-task (state chip, turns, duration, retries, failure evidence, agent-log viewer),
-and the raw event feed. Light and dark theme, status colors always paired with
-an icon + label.
+Also in the UI: pull requests and branches, the repository browser and history,
+an autopilot loop toward an objective, a knowledge base of your documents, run &
+preview of the app being built, and project memory. Light and dark theme; status
+colours always come with an icon and a label.
 
 ## Testing (no tokens required)
 

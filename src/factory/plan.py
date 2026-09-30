@@ -25,7 +25,7 @@ from .agent import (
 )
 from .config import Config
 from .hotspots import brief_for_planner, scan_hotspots
-from .task import archived_ids, portable_verify
+from .task import archived_ids, language_name, portable_verify
 
 #: Exploration only — the planner must not be able to modify the repo.
 PLANNER_TOOLS = ("Read", "Glob", "Grep")
@@ -92,6 +92,8 @@ Rules for a good decomposition:
   language as the operator's goal (an English goal gets English tickets, a French
   goal French ones) — whatever language your own settings or memory prefer. Keep
   the three section headings above verbatim; code, paths and commands stay as-is.
+  Give every ticket a "language": that language's English name ("English",
+  "French", "German"...) — the coding agent and the reviewer report in it.
 - Budget honestly: timeout_min 10-45 depending on size.
 - Almost always OMIT "model". The run starts each ticket on the cheapest tier and
   ESCALATES automatically on failure (haiku → sonnet → opus), so a cheap-first
@@ -113,6 +115,7 @@ include it (e.g. "haiku") only on a trivial ticket, omit it otherwise:
 {"status": "done", "brief": "<the project map>", "tickets": [{"id": "001",
  "title": "...", "files_hint": ["src/x.py"], "depends_on": [], "priority": 1,
  "timeout_min": 30, "verify": ["pytest -q"], "model": "haiku",
+ "language": "English",
  "spec": [{"source": "SPEC.md", "quote": "<a rule, copied verbatim>"}],
  "body": "## Context\\n..."}]}
 
@@ -438,6 +441,9 @@ def write_drafts(tickets: list[dict], backlog: Path, repo: Path, goal: str = "")
         lines.append(f"verify: {json.dumps(front['verify'])}")
         if t.get("model"):
             lines.append(f"model: {json.dumps(str(t['model']))}")
+        language = language_name(t.get("language"))
+        if language:
+            lines.append(f"language: {json.dumps(language)}")
         lines.append("---")
         lines.append("")
         lines.extend(_spec_section(check_spec_quotes(t, repo, goal)))

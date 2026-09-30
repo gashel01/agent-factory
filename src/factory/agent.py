@@ -530,6 +530,7 @@ def build_cli(
     disallowed_tools: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
     hooks: dict | None = None,
+    language: str | None = None,
     isolate_mcp: bool = True,
     missing: Callable[[str], Exception] | None = None,
 ) -> list[str]:
@@ -584,8 +585,16 @@ def build_cli(
         # these. A denied call surfaces to the agent, which (per the contract)
         # reports blocked instead of finding a workaround.
         cmd += ["--disallowedTools", ",".join(disallowed_tools)]
+    settings: dict = {}
     if hooks:
-        cmd += ["--settings", json.dumps({"hooks": hooks})]
+        settings["hooks"] = hooks
+    if language:
+        # The operator's own Claude Code `language` setting reaches every headless
+        # agent as a system instruction and beats any wording in the contract: an
+        # English ticket got French summaries. A flag setting overrides it.
+        settings["language"] = language
+    if settings:
+        cmd += ["--settings", json.dumps(settings)]
     cmd += list(extra_args)
     return cmd
 
@@ -673,6 +682,7 @@ def build_command(cfg: AgentConfig, task: Task, *, runtime: str = "direct") -> l
         disallowed_tools=DESTRUCTIVE_GIT_DENY,
         extra_args=cfg.extra_args,
         hooks=hook_settings(runtime=runtime, checkpoints=cfg.checkpoints),
+        language=task.language,
     )
 
 

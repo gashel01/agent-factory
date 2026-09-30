@@ -258,3 +258,14 @@ def test_agents_and_reviewer_treat_the_quotes_as_authoritative() -> None:
     assert '"Spec (verbatim)" section' in DEFAULT_CONTRACT
     assert "follow the quote" in DEFAULT_CONTRACT
     assert "Spec (verbatim)" in REVIEW_CONTRACT
+
+
+def test_drafts_carry_the_goals_language(tmp_path: Path) -> None:
+    repo = _spec_repo(tmp_path)
+    tickets = [{"id": "1", "title": "t", "language": "English", "body": "b"},
+               {"id": "2", "title": "u", "language": "x\"; rm -rf /", "body": "b"}]
+    backlog = tmp_path / "b"
+    write_drafts(tickets, backlog, repo)
+    parsed = {t.id: t for t in load_backlog(backlog, "main")}
+    assert parsed["001"].language == "English"
+    assert parsed["002"].language is None, "an unsafe value is dropped, not written"

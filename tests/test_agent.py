@@ -1,3 +1,9 @@
+"""The agent CLI invocation and the parsing of what agents return."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 
 def test_usage_counts_the_prompt_cache_both_ways() -> None:
@@ -37,3 +43,31 @@ def test_agents_report_in_the_tickets_language() -> None:
     assert "commit messages" in DEFAULT_CONTRACT.split("LANGUAGE:")[1].split("\n- ")[0]
     assert "natural language the ticket is written in" in REVIEW_CONTRACT.replace("\n", " ")
     assert "your progress notes" in PLANNER_CONTRACT
+
+
+def test_the_tickets_language_overrides_the_operators_setting(tmp_path: Path) -> None:
+    # Measured live: a contract sentence asking for the ticket's language lost to the
+    # operator's `language: French` Claude setting (a system instruction), so the
+    # language is handed to the CLI as a flag setting, which wins.
+    import json
+
+    from factory.agent import build_cli
+    cmd = build_cli((sys.executable,), max_turns=5, allowed_tools=(), language="English",
+                    hooks={"PreToolUse": []})
+    settings = json.loads(cmd[cmd.index("--settings") + 1])
+    assert settings == {"hooks": {"PreToolUse": []}, "language": "English"}
+    bare = build_cli((sys.executable,), max_turns=5, allowed_tools=())
+    assert "--settings" not in bare, "no override when the ticket names no language"
+
+
+def test_ticket_language_is_parsed_and_sanitised(tmp_path: Path) -> None:
+    from factory.task import language_name, parse_ticket
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    t = tmp_path / "001.md"
+    front = f'id: "001"\ntitle: t\nrepo: {repo.as_posix()}\nlanguage: "English"'
+    t.write_text(f"---\n{front}\n---\nbody\n", encoding="utf-8")
+    assert parse_ticket(t, "main").language == "English"
+    assert language_name("French") == "French"
+    assert language_name('English", "hooks": {') is None, "never smuggles JSON into the flag"
+    assert language_name("") is None and language_name(None) is None

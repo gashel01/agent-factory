@@ -85,6 +85,11 @@ class Task:
     model: str | None = None
     # Optional per-ticket reasoning-effort override; None = the run-wide effort.
     effort: str | None = None
+    # The natural language the ticket is written in ("English", "French"...), set
+    # by the planner from the goal. The agent and the reviewer report in it,
+    # whatever language the operator's own Claude settings prefer. None = no
+    # override.
+    language: str | None = None
     # Best-of-N: how many independent agents attempt this ticket in parallel on its
     # first try (the verified, smallest passing diff wins). None = the run default.
     candidates: int | None = None
@@ -248,11 +253,22 @@ def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int 
         hold=bool(meta.get("hold", False)),
         model=(str(meta["model"]) if meta.get("model") else None),
         effort=effort,
+        language=language_name(meta.get("language")),
         candidates=(
             max(1, _int(meta.get("candidates"), 1, "candidates"))
             if meta.get("candidates") is not None else None
         ),
     )
+
+
+_LANGUAGE_RE = re.compile(r"[A-Za-z][A-Za-z ()-]{0,39}")
+
+
+def language_name(value: object) -> str | None:
+    """A language name for the CLI's `language` setting. Anything that isn't a
+    plain name (it ends up in a JSON flag) is dropped rather than trusted."""
+    text = str(value).strip() if value else ""
+    return text if _LANGUAGE_RE.fullmatch(text) else None
 
 
 _ID_RE = re.compile(r'^id:\s*["\']?([\w.-]+)["\']?\s*$', re.M)
