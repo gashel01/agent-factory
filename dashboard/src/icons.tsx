@@ -9,7 +9,7 @@
  *
  *  Sizing convention: 12 for inline chips/kbd, 14 for buttons and list rows,
  *  16–18 for standalone affordances. Alignment is handled globally via the
- *  `.lucide` class in style.css.
+ *  `.lucide` class in the stylesheets.
  */
 import type { JSX } from "react";
 import type { LucideIcon } from "lucide-react";

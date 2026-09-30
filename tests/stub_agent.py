@@ -19,8 +19,20 @@ import sys
 import time
 
 
+def read_prompt() -> str:
+    """The prompt as the real CLI receives it: one stream-json user message when
+    invoked with `--input-format stream-json` (what Warden sends), raw text
+    otherwise."""
+    raw = sys.stdin.read()
+    if "--input-format" not in sys.argv:
+        return raw
+    message = json.loads(raw.splitlines()[0])
+    assert message["type"] == "user", message
+    return "".join(block["text"] for block in message["message"]["content"])
+
+
 def main() -> int:
-    prompt = sys.stdin.read()
+    prompt = read_prompt()
     match = re.search(r"Ticket ID:\s*(\S+)", prompt)
     task_id = match.group(1) if match else "unknown"
 
@@ -60,6 +72,9 @@ def main() -> int:
         return 0
 
     if "Review contract" in prompt:
+        if "STUB:REVIEW_CRASH" in prompt:
+            print("reviewer died without a verdict", file=sys.stderr)
+            return 1
         if "STUB:REVIEW_RATELIMIT" in prompt:
             print("API Error: 429 rate limit exceeded", file=sys.stderr)
             return 1
@@ -136,7 +151,7 @@ def main() -> int:
         print("API Error: 429 rate limit exceeded", file=sys.stderr)
         return 1
 
-    if "STUB:BLOCKED" in prompt:
+    if "STUB:BLOCKED" in prompt and "The operator answered" not in prompt:
         contract = {"status": "blocked", "summary": "which database should I use?", "tests": "fail"}
         print(json.dumps({"type": "result", "num_turns": 1, "result": json.dumps(contract)}))
         return 0

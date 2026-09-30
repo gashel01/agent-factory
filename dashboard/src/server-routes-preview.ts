@@ -2,10 +2,10 @@
  * preview of the built product and the generic capsule cockpit (actions, panels,
  * services, chat edits, provisioning, consents, artifacts, the agent judge). */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 
-import { json, readBody, workspaceRepo } from "./server-core.js";
+import { json, readJSON, sendError, workspaceRepo, writeFileAtomic } from "./server-core.js";
 import { capsuleDiff } from "./capsule-core.js";
 import {
   capsuleEnv, capsuleFile, capsuleView, captureShell, chromeBin, detectPreview,
@@ -40,13 +40,13 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/preview" && req.method === "POST") {
     try {
-      const { repo } = JSON.parse(await readBody(req)) as { repo?: string };
+      const { repo } = await readJSON(req) as { repo?: string };
       const dir = resolve(repo ?? "");
       if (!dir || !existsSync(dir)) throw new Error("repo path does not exist");
       const kind = startPreview(ws, dir);
       json(res, 200, { ok: true, kind });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -90,7 +90,7 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/capsule/action" && req.method === "POST") {
     try {
-      const { id } = JSON.parse(await readBody(req)) as { id?: string };
+      const { id } = await readJSON(req) as { id?: string };
       const capsule = loadCapsule(ws);
       const action = capsule?.actions.find((a) => a.id === id);
       if (!capsule || !action) throw new Error("unknown action");
@@ -98,7 +98,7 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
       void runCapsuleAction(ws, capsule, action, workspaceRepo(ws) ?? ws.workdir);
       json(res, 200, { ok: true });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -124,25 +124,25 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/capsule/fix" && req.method === "POST") {
     try {
-      const { id } = JSON.parse(await readBody(req)) as { id?: string };
+      const { id } = await readJSON(req) as { id?: string };
       const capsule = loadCapsule(ws);
       const action = capsule?.actions.find((a) => a.id === id);
       if (!capsule || !action) throw new Error("unknown action");
       if (ws.capsule.runs.get(action.id)?.state === "running") throw new Error("already running");
       void generateFix(ws, capsule, action, workspaceRepo(ws) ?? ws.workdir);
       json(res, 200, { ok: true });
-    } catch (err) { json(res, 400, { ok: false, error: String(err) }); }
+    } catch (err) { sendError(res, err); }
     return true;
   }
   if (url.pathname === "/api/capsule/chat" && req.method === "POST") {
     try {
-      const { message } = JSON.parse(await readBody(req)) as { message?: string };
+      const { message } = await readJSON(req) as { message?: string };
       if (!message?.trim()) throw new Error("message is required");
       if (!loadCapsule(ws)) throw new Error("no capsule for this project");
       if (ws.capsule.runs.get("__chat__")?.state === "running") throw new Error("already editing");
       generateCapsuleChat(ws, message.trim());
       json(res, 200, { ok: true });
-    } catch (err) { json(res, 400, { ok: false, error: String(err) }); }
+    } catch (err) { sendError(res, err); }
     return true;
   }
   if (url.pathname === "/api/capsule/chat/draft" && req.method === "GET") {
@@ -153,10 +153,10 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
   if (url.pathname === "/api/capsule/chat/apply" && req.method === "POST") {
     try {
       if (!ws.capsule.chatDraft) throw new Error("nothing to apply");
-      writeFileSync(capsuleFile(ws), JSON.stringify(ws.capsule.chatDraft, null, 2), "utf-8");
+      writeFileAtomic(capsuleFile(ws), JSON.stringify(ws.capsule.chatDraft, null, 2));
       ws.capsule.chatDraft = null;
       json(res, 200, { ok: true });
-    } catch (err) { json(res, 400, { ok: false, error: String(err) }); }
+    } catch (err) { sendError(res, err); }
     return true;
   }
   if (url.pathname === "/api/capsule/chat/discard" && req.method === "POST") {
@@ -166,14 +166,14 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/capsule/judge" && req.method === "POST") {
     try {
-      const { id } = JSON.parse(await readBody(req)) as { id?: string };
+      const { id } = await readJSON(req) as { id?: string };
       const capsule = loadCapsule(ws);
       const action = capsule?.actions.find((a) => a.id === id);
       if (!capsule || !action) throw new Error("unknown action");
       if (ws.capsule.judgments.get(action.id)?.state === "running") throw new Error("already judging");
       void judgeAction(ws, capsule, action, workspaceRepo(ws) ?? ws.workdir);
       json(res, 200, { ok: true });
-    } catch (err) { json(res, 400, { ok: false, error: String(err) }); }
+    } catch (err) { sendError(res, err); }
     return true;
   }
   if (url.pathname === "/api/capsule/judge" && req.method === "GET") {
@@ -195,21 +195,21 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/capsule/service" && req.method === "POST") {
     try {
-      const { id } = JSON.parse(await readBody(req)) as { id?: string };
+      const { id } = await readJSON(req) as { id?: string };
       const capsule = loadCapsule(ws);
       const action = capsule?.actions.find((a) => a.id === id);
       if (!capsule || !action || !action.service) throw new Error("not a service action");
       void startService(ws, capsule, action, workspaceRepo(ws) ?? ws.workdir);
       json(res, 200, { ok: true });
-    } catch (err) { json(res, 400, { ok: false, error: String(err) }); }
+    } catch (err) { sendError(res, err); }
     return true;
   }
   if (url.pathname === "/api/capsule/service/stop" && req.method === "POST") {
     try {
-      const { id } = JSON.parse(await readBody(req)) as { id?: string };
+      const { id } = await readJSON(req) as { id?: string };
       stopService(ws, id ?? "");
       json(res, 200, { ok: true });
-    } catch (err) { json(res, 400, { ok: false, error: String(err) }); }
+    } catch (err) { sendError(res, err); }
     return true;
   }
   if (url.pathname === "/api/capsule/service" && req.method === "GET") {
@@ -219,7 +219,7 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/capsule/consent" && req.method === "POST") {
     try {
-      const { id } = JSON.parse(await readBody(req)) as { id?: string };
+      const { id } = await readJSON(req) as { id?: string };
       const capsule = loadCapsule(ws);
       const consent = (capsule?.consents ?? []).find((c) => c.id === id);
       if (!capsule || !consent) throw new Error("unknown consent");
@@ -227,7 +227,7 @@ export async function handlePreviewRoutes(ctx: WsRouteCtx): Promise<boolean> {
       if (r.state !== "ok") throw new Error(r.output.trim().slice(-400) || "provisioning failed");
       json(res, 200, { ok: true, output: r.output.trim() });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }

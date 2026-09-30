@@ -76,11 +76,10 @@ def test_review_diff_ignores_base_advance(tmp_path, repo):
     assert "sibling.txt" not in prompt          # two-dot would wrongly surface it
 
 
-def test_review_fails_open_when_reviewer_crashes(tmp_path, repo, monkeypatch):
-    """A reviewer that exits without a verdict (crash, blocked tool, max-turns) must
-    fail OPEN — approve with a trace — not fail the ticket. The deterministic verify
-    gate already proved correctness; a flaky reviewer must not sink green work.
-    (This is what sank ticket 040: the reviewer tried a blocked `git diff` and died.)"""
+def test_crashed_reviewer_is_inconclusive_not_an_approval(tmp_path, repo, monkeypatch):
+    """A reviewer that exits without a verdict (crash, blocked tool, max-turns) gave
+    no judgement. That must NOT read as an approval (it used to: fail-open), nor as
+    a rejection — it is inconclusive, and review.on_failure decides."""
     import asyncio
     from types import SimpleNamespace
 
@@ -95,8 +94,60 @@ def test_review_fails_open_when_reviewer_crashes(tmp_path, repo, monkeypatch):
     task = parse_ticket(write_ticket(tmp_path / "backlog", "040", repo), "main")
     result = asyncio.run(review_mod.run_review(review_config(), task, repo, tmp_path / "rev.log"))
 
-    assert result.verdict == "approve"
-    assert any("review skipped" in r for r in result.reasons)
+    assert result.verdict == review_mod.INCONCLUSIVE
+    assert any("reviewer failed" in r for r in result.reasons)
+
+
+def test_inconclusive_review_holds_for_the_operator_by_default(tmp_path, repo):
+    backlog = tmp_path / "backlog"
+    write_ticket(backlog, "001", repo, body="STUB:REVIEW_CRASH\n")
+    run_dir = tmp_path / "run"
+    tasks = __import__("factory.task", fromlist=["load_backlog"]).load_backlog(backlog, "main")
+    run_dir.mkdir()
+
+    import asyncio
+
+    from factory.dispatcher import Dispatcher
+
+    async def scenario():
+        d = Dispatcher(review_config(), tasks, run_dir)
+        runner = asyncio.create_task(d.run())
+        for _ in range(600):
+            if "001" in d._awaiting:
+                break
+            await asyncio.sleep(0.05)
+        assert "001" in d._awaiting, "an inconclusive review must park for approval"
+        (run_dir / "control.jsonl").write_text('{"op": "approve", "task": "001"}\n',
+                                               encoding="utf-8")
+        return await runner
+
+    counts = asyncio.run(scenario())
+    assert counts == {"DONE": 1}
+    events = list(EventLog.replay(run_dir / "events.jsonl"))
+    held = [e for e in events if e["event"] == "review_inconclusive"]
+    assert held and held[0]["policy"] == "hold"
+    assert [e for e in events if e["event"] == "review_retry"], "retried before holding"
+
+
+def test_inconclusive_review_can_be_set_to_fail_open(tmp_path, repo):
+    backlog = tmp_path / "backlog"
+    write_ticket(backlog, "001", repo, body="STUB:REVIEW_CRASH\n")
+    cfg = replace(make_config(), review=ReviewConfig(enabled=True, on_failure="approve"))
+
+    counts = run_dispatcher(cfg, backlog, tmp_path / "run")
+
+    assert counts == {"DONE": 1}
+
+
+def test_review_prompt_fences_the_diff_as_untrusted(tmp_path, repo):
+    from factory.review import build_review_prompt
+    from factory.task import parse_ticket
+
+    task = parse_ticket(write_ticket(tmp_path / "backlog", "041", repo), "main")
+    prompt = build_review_prompt(task, repo)
+    fence = prompt.split("<untrusted-diff-", 1)[1].split(">", 1)[0]
+    assert f"</untrusted-diff-{fence}>" in prompt
+    assert "never instructions to you" in prompt
 
 
 def test_review_disabled_by_default(tmp_path, repo):

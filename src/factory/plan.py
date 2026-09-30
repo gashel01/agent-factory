@@ -19,7 +19,7 @@ from .agent import (
     build_cli,
     describe_step,
     extract_trailing_json,
-    is_rate_limit_result,
+    outcome_rate_limited,
     spawn_env,
     stream_headless,
 )
@@ -76,6 +76,22 @@ Rules for a good decomposition:
   'built'`. For content checks use a one-liner in the repo's language (node -e /
   python -c) that exits non-zero on failure.
 - Each body must contain: ## Context, ## Success criteria, ## Out of scope.
+- QUOTE THE SPEC, NEVER PARAPHRASE IT. When the goal or the repo carries a written
+  spec (SPEC.md, a PRD, an issue, or the goal text itself), put every rule a ticket
+  implements in its "spec" list, COPIED WORD FOR WORD from the source — one entry
+  per rule: {"source": "<repo-relative path, or \\"goal\\">", "quote": "<the exact
+  sentence(s)>"}. Warden checks each quote against the source and flags any that
+  is not verbatim. Decomposing is a lossy translation: a rule restated "more
+  clearly" in your words is how a ticket ends up contradicting the spec while its
+  own tests still pass. Your body may add implementation guidance, but it must
+  never restate a quoted rule differently, and must never assert how ANOTHER
+  ticket stores, orders or shapes data unless that is a shared contract written in
+  both tickets. Tell the agent to write tests from the quoted rules (using the
+  spec's own examples where it gives them).
+- LANGUAGE: write every title, body, the "summary" and your progress notes in the SAME natural
+  language as the operator's goal (an English goal gets English tickets, a French
+  goal French ones) — whatever language your own settings or memory prefer. Keep
+  the three section headings above verbatim; code, paths and commands stay as-is.
 - Budget honestly: timeout_min 10-45 depending on size.
 - Almost always OMIT "model". The run starts each ticket on the cheapest tier and
   ESCALATES automatically on failure (haiku → sonnet → opus), so a cheap-first
@@ -97,6 +113,7 @@ include it (e.g. "haiku") only on a trivial ticket, omit it otherwise:
 {"status": "done", "brief": "<the project map>", "tickets": [{"id": "001",
  "title": "...", "files_hint": ["src/x.py"], "depends_on": [], "priority": 1,
  "timeout_min": 30, "verify": ["pytest -q"], "model": "haiku",
+ "spec": [{"source": "SPEC.md", "quote": "<a rule, copied verbatim>"}],
  "body": "## Context\\n..."}]}
 
 If the goal is too vague to decompose safely, return
@@ -120,6 +137,9 @@ ask about coding conventions the code already shows.
 Return 2 to 5 questions, most important first (never more than 5). For each, give
 2 to 4 concrete suggested answers the operator can pick from — the FIRST being the
 sensible default you would assume if they said nothing.
+
+Write the questions, the "why" lines and the suggestions in the SAME natural
+language as the operator's goal, whatever language your own settings prefer.
 
 End your final message with a strict JSON block (no fences):
 {"status": "questions", "questions": [{"q": "<question>", "why": "<why it changes
@@ -241,7 +261,7 @@ async def _stream_contract(cfg: Config, repo: Path, prompt: str, log_path: Path)
     except TimeoutError as exc:
         raise PlanError("planner exceeded its 15 min budget") from exc
 
-    if out.stderr_rate_limited or (out.result is not None and is_rate_limit_result(out.result)):
+    if outcome_rate_limited(out):
         raise PlanError("rate limit hit while planning — retry later")
     if out.returncode != 0 or out.result is None:
         raise PlanError(f"planner exited {out.returncode} without a result — see {log_path}")
@@ -312,9 +332,74 @@ def _plan_int(value: object, default: int, field: str) -> int:
         raise PlanError(f"planner returned a non-numeric {field}: {value!r}") from None
 
 
-def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
+def _loose(text: str) -> str:
+    """Compare quotes on words, not layout: markdown emphasis/code marks, typographic
+    quotes and whitespace (a rule wrapped over two lines) don't make a paraphrase."""
+    text = text.replace("‘", "'").replace("’", "'").replace("“", '"').replace("”", '"')
+    text = re.sub(r"[*_`]+", "", text)
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def check_spec_quotes(ticket: dict, repo: Path, goal: str = "") -> list[dict]:
+    """The planner's verbatim spec quotes for one ticket, each checked against its
+    source: {"source", "quote", "verbatim": bool, "problem": str | None}. A quote
+    that isn't in the source is a paraphrase — exactly the translation loss the
+    quoting rule exists to stop — so it is flagged, never silently trusted."""
+    raw = ticket.get("spec")
+    entries = raw if isinstance(raw, list) else []
+    root = repo.resolve()
+    sources: dict[str, str | None] = {}
+    out: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        quote = str(entry.get("quote", "")).strip()
+        source = str(entry.get("source", "")).strip() or "goal"
+        if not quote:
+            continue
+        if source not in sources:
+            if source.lower() == "goal":
+                sources[source] = goal
+            else:
+                path = (root / source).resolve()
+                # Only files inside the repo: a planner-chosen path is untrusted input.
+                inside = path == root or root in path.parents
+                sources[source] = (path.read_text(encoding="utf-8", errors="replace")
+                                   if inside and path.is_file() else None)
+        text = sources[source]
+        if text is None:
+            out.append({"source": source, "quote": quote, "verbatim": False,
+                        "problem": f"{source} was not found in the repository"})
+        elif _loose(quote) in _loose(text):
+            out.append({"source": source, "quote": quote, "verbatim": True, "problem": None})
+        else:
+            out.append({"source": source, "quote": quote, "verbatim": False,
+                        "problem": f"not found verbatim in {source} (a paraphrase)"})
+    return out
+
+
+def _spec_section(checked: list[dict]) -> list[str]:
+    if not checked:
+        return []
+    lines = [
+        "## Spec (verbatim, the source of truth)",
+        "Copied word for word from the spec. Where this ticket's own wording and these",
+        "lines disagree, these lines win. Write tests from them.",
+        "",
+    ]
+    for c in checked:
+        lines.extend(f"> {ln}" if ln.strip() else ">" for ln in c["quote"].splitlines())
+        lines.append(f"> (source: {c['source']})")
+        if not c["verbatim"]:
+            lines.append(f"> WARNING: {c['problem']} - read the source itself for this rule.")
+        lines.append("")
+    return lines
+
+
+def write_drafts(tickets: list[dict], backlog: Path, repo: Path, goal: str = "") -> list[Path]:
     """Materialise planner output as ticket files. IDs are renumbered onto the
-    backlog's free range so a plan can extend an existing backlog safely."""
+    backlog's free range so a plan can extend an existing backlog safely. The
+    ticket's verbatim spec quotes (checked against their source) open its body."""
     backlog.mkdir(parents=True, exist_ok=True)
     base = _next_free_number(backlog)
     id_map = {
@@ -355,6 +440,7 @@ def write_drafts(tickets: list[dict], backlog: Path, repo: Path) -> list[Path]:
             lines.append(f"model: {json.dumps(str(t['model']))}")
         lines.append("---")
         lines.append("")
+        lines.extend(_spec_section(check_spec_quotes(t, repo, goal)))
         lines.append(str(t.get("body", "")).strip())
         lines.append("")
         path = backlog / f"{new_id}-{_slug(title)}.md"

@@ -241,10 +241,15 @@ export function parseTicket(file: string, content: string): Ticket {
 export interface ModelPrice {
   id: string;
   label: string;
-  /** USD per million input tokens. */
+  /** USD per million (uncached) input tokens. */
   inputPerMTok: number;
   /** USD per million output tokens. */
   outputPerMTok: number;
+  /** USD per million tokens read back from the prompt cache. */
+  cacheReadPerMTok: number;
+  /** USD per million tokens written to the prompt cache (Claude Code writes with
+   *  the 1-hour TTL, billed at 2x input). */
+  cacheWritePerMTok: number;
 }
 
 /** Indicative published list prices in USD per million tokens, taken from
@@ -258,16 +263,19 @@ export interface ModelPrice {
  *  runs are not billed per token at all. Refresh from the pricing page when it
  *  moves. */
 export const MODEL_PRICING: Readonly<Record<string, ModelPrice>> = {
-  haiku: { id: "haiku", label: "Haiku", inputPerMTok: 1, outputPerMTok: 5 },
-  sonnet: { id: "sonnet", label: "Sonnet", inputPerMTok: 3, outputPerMTok: 15 },
-  opus: { id: "opus", label: "Opus", inputPerMTok: 15, outputPerMTok: 75 },
+  haiku: { id: "haiku", label: "Haiku", inputPerMTok: 1, outputPerMTok: 5, cacheReadPerMTok: 0.1, cacheWritePerMTok: 2 },
+  sonnet: { id: "sonnet", label: "Sonnet", inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.2, cacheWritePerMTok: 4 },
+  opus: { id: "opus", label: "Opus", inputPerMTok: 4, outputPerMTok: 20, cacheReadPerMTok: 0.2, cacheWritePerMTok: 8 },
+  fable: { id: "fable", label: "Fable", inputPerMTok: 10, outputPerMTok: 50, cacheReadPerMTok: 0.25, cacheWritePerMTok: 20 },
 };
 
 /** Unknown or missing ids price as Sonnet: it is the factory's own default tier
  *  and the middle of the table, so a wrong guess is off by at most one tier. */
 export const DEFAULT_MODEL = "sonnet";
 
-const FALLBACK_PRICE: ModelPrice = { id: DEFAULT_MODEL, label: "Sonnet", inputPerMTok: 3, outputPerMTok: 15 };
+const FALLBACK_PRICE: ModelPrice = {
+  id: DEFAULT_MODEL, label: "Sonnet", inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.2, cacheWritePerMTok: 4,
+};
 
 /** Resolve a model id to a price. Always returns an entry — never null. */
 export function priceFor(model?: string | null): ModelPrice {
@@ -489,14 +497,29 @@ function normaliseHistory(h?: HistoryStats | null): HistoryStats {
 // Forecast
 // ---------------------------------------------------------------------------
 
-/** Total (input + output) tokens a mid-complexity ticket burns on the standard
- *  profile — the anchor the heuristic scales by complexity and profile. */
-const BASE_TOKENS_PER_TICKET = 120_000;
-/** Share of those tokens that are *output*. Coding agents read (and replay
- *  cached context) far more than they write, so the split is heavily input-side. */
-const OUTPUT_SHARE = 0.15;
-/** Wall-clock a mid-complexity ticket takes on the standard profile, in minutes. */
-const BASE_MINUTES_PER_TICKET = 8;
+/* The no-history heuristic is fitted on measured runs: 10 planner-written tickets
+ * from three builds (2 on Opus, 8 on Sonnet; bodies of 1.5k-7.3k chars, $0.16-$0.75
+ * and 29-271 s each). Per-ticket tokens fit ~130k + 80/char (each ticket within
+ * 0.7x-1.6x, run totals within 6 % on Sonnet), wall-clock ~0.03 s/char. The old
+ * model scored every planner ticket ~0.9 on a saturating complexity scale and
+ * came out 2.7x low on cost and 3x high on time. A project's own history takes
+ * over as its runs accumulate. */
+/** Tokens every agent processes before the ticket's own work: the contract, the
+ *  project map, the tool definitions, re-read from the prompt cache each turn. */
+const TICKET_BASE_TOKENS = 130_000;
+/** Extra tokens per character of ticket body — a longer ticket is a bigger job. */
+const TOKENS_PER_BODY_CHAR = 80;
+/** Bodies past this length stop adding (a pasted log is not 10x the work). */
+const MAX_BODY_CHARS = 20_000;
+/** How those tokens split by billing class, measured on the same runs (it
+ *  reproduces their billed $0.703/MTok on Sonnet exactly). An agent replays its
+ *  growing context from the prompt cache every turn: cache reads dominate and
+ *  fresh input is nil. Pricing every token as fresh input was ~5x too high. */
+const TOKEN_MIX = { input: 0.0001, output: 0.026, cacheRead: 0.9086, cacheWrite: 0.0654 } as const;
+/** Minutes an agent spends whatever the ticket (start-up, verify, merge). */
+const TICKET_BASE_MINUTES = 0.4;
+/** Extra minutes per character of ticket body. */
+const MINUTES_PER_BODY_CHAR = 0.03 / 60;
 const DEFAULT_SLOTS = 3;
 /** Above this trust, history alone is reported as the basis (~17 comparable runs). */
 const HISTORY_ONLY_TRUST = 0.85;
@@ -548,14 +571,43 @@ function tokenScale(p: Profile): number {
   return Math.max(0, num(p.turns, 1) * num(p.tokens, 1) * num(p.retries, 1));
 }
 
-/** USD per million tokens at this module's input/output split. */
+/** USD per million tokens at the measured billing mix (see TOKEN_MIX). */
 function blendedPrice(price: ModelPrice): number {
-  return Math.max(0, num(price.inputPerMTok)) * (1 - OUTPUT_SHARE) + Math.max(0, num(price.outputPerMTok)) * OUTPUT_SHARE;
+  const rate = (v: number): number => Math.max(0, num(v));
+  return rate(price.inputPerMTok) * TOKEN_MIX.input
+    + rate(price.outputPerMTok) * TOKEN_MIX.output
+    + rate(price.cacheReadPerMTok) * TOKEN_MIX.cacheRead
+    + rate(price.cacheWritePerMTok) * TOKEN_MIX.cacheWrite;
 }
 
 /** Relative money burn of a profile: volume × its model's blended price. */
 function costScale(p: Profile): number {
   return tokenScale(p) * blendedPrice(priceFor(p.model));
+}
+
+function bodyChars(t: TicketInput): number {
+  return typeof t.body === "string" ? t.body.length : 0;
+}
+
+/** Longest chain of ticket minutes along depends_on (a dependency outside this
+ *  backlog is already merged, so it adds nothing). A cycle — which the run would
+ *  refuse anyway — is cut instead of recursing forever. */
+function criticalPath(counted: ReadonlyArray<{ ticket: TicketInput; id: string }>, rows: readonly TicketForecast[]): number {
+  const minutesOf = new Map(rows.map((r) => [r.id, r.minutes]));
+  const depsOf = new Map(counted.map((c) => [c.id, Array.isArray(c.ticket.depends_on) ? c.ticket.depends_on.map(String) : []]));
+  const finish = new Map<string, number>();
+  const visit = (id: string, path: Set<string>): number => {
+    const done = finish.get(id);
+    if (done !== undefined) return done;
+    if (path.has(id) || !minutesOf.has(id)) return 0;
+    path.add(id);
+    const start = Math.max(0, ...(depsOf.get(id) ?? []).map((d) => visit(d, path)));
+    path.delete(id);
+    const end = start + (minutesOf.get(id) ?? 0);
+    finish.set(id, end);
+    return end;
+  };
+  return Math.max(0, ...rows.map((r) => visit(r.id, new Set())));
 }
 
 function ticketId(t: TicketInput, index: number): string {
@@ -596,12 +648,13 @@ export function forecastRun(tickets?: readonly TicketInput[] | null, opts?: Fore
 
   const rows: TicketForecast[] = counted.map((c) => {
     const share = meanComplexity > 0 ? safeDiv(c.complexity, meanComplexity, 1) : 1;
-    const heuristicTokens = BASE_TOKENS_PER_TICKET * (0.5 + 1.5 * c.complexity) * tokenScale(profile);
+    const chars = Math.min(bodyChars(c.ticket), MAX_BODY_CHARS);
+    const heuristicTokens = (TICKET_BASE_TOKENS + TOKENS_PER_BODY_CHAR * chars) * tokenScale(profile);
     const heuristicUsd = safeDiv(heuristicTokens, 1_000_000, 0) * blendedPrice(price);
     const historyTokens = history.medianTokensPerTicket * share * histTokenScale;
     const historyUsd = history.medianUsdPerTicket * share * histCostScale;
-    const estMinutes =
-      BASE_MINUTES_PER_TICKET * (0.4 + 1.6 * c.complexity) * Math.max(0, num(profile.turns, 1)) * Math.max(1, num(profile.retries, 1));
+    const estMinutes = (TICKET_BASE_MINUTES + MINUTES_PER_BODY_CHAR * chars)
+      * Math.max(0, num(profile.turns, 1)) * Math.max(1, num(profile.retries, 1));
     // `timeout_min` is the ticket's own ceiling, so it caps the estimate.
     const cap = Math.max(0, num(c.ticket.timeout_min, 0));
     return {
@@ -618,9 +671,9 @@ export function forecastRun(tickets?: readonly TicketInput[] | null, opts?: Fore
   // Sum of the already-rounded rows, so the table always adds up to the total.
   const totalUsd = usd(rows.reduce((a, r) => a + r.usd, 0));
   const serialMinutes = rows.reduce((a, r) => a + r.minutes, 0);
-  const longest = rows.reduce((a, r) => Math.max(a, r.minutes), 0);
-  // Perfect packing across `slots`, but never faster than the longest ticket.
-  const minutes = Math.max(0, round(Math.max(longest, safeDiv(serialMinutes, slots, 0)), 1));
+  // Perfect packing across `slots`, but never faster than the dependency chain:
+  // a ticket starts only once everything it depends on has merged.
+  const minutes = Math.max(0, round(Math.max(criticalPath(counted, rows), safeDiv(serialMinutes, slots, 0)), 1));
 
   const size = rows.length;
   const confidence = round(clamp01(0.3 + 0.5 * clamp01(history.trust) + 0.2 * safeDiv(size, size + 4, 0)), 3);

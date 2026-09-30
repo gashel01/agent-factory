@@ -14,7 +14,7 @@ import type { Capsule, CapsuleAction, CapsuleConsent, CapsuleStep, CapsuleAction
 import { extractCapsule, extractConsents, parseVerdict } from "./capsule-core.js";
 import {
   type Workspace, type Preview, type CapsuleRun, type ServiceRun, type JudgeResult, type CapsuleRuntime,
-  workspaceRepo, saveGrants,
+  workspaceRepo, saveGrants, writeFileAtomic,
 } from "./server-core.js";
 
 
@@ -72,6 +72,19 @@ export function stopPreview(ws: Workspace): void {
   }
   ws.preview.state = "idle";
   ws.preview.url = null;
+}
+
+
+/** Kill every child process a workspace tracks — the jobs (plan, run, loop…),
+ *  the preview, and the capsule's runs and services — so none outlives the
+ *  dashboard on shutdown. */
+export function killWorkspaceChildren(ws: Workspace): void {
+  const children = new Set<ChildProcess>(Object.values(ws.jobProcs));
+  if (ws.loopProc) children.add(ws.loopProc);
+  for (const run of ws.capsule.runs.values()) if (run.proc) children.add(run.proc);
+  for (const svc of ws.capsule.services.values()) if (svc.proc) children.add(svc.proc);
+  for (const child of children) if (child.exitCode === null && child.signalCode === null) killTree(child);
+  stopPreview(ws);
 }
 
 
@@ -258,7 +271,9 @@ export const BOOTSTRAP_GITIGNORE = [
  *  never born tool-less (the agents need their toolchain allow-listed, or every
  *  `npm`/`npx`/`node` call is refused and the agent blocks). The allow-list covers
  *  git + the common Node and Python toolchains; tighten it later in Settings. */
-export function starterFactoryYaml(): string {
+export const STARTING_MODELS = ["opus", "sonnet", "haiku"] as const;
+
+export function starterFactoryYaml(model?: string): string {
   const tools = [
     "Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)",
     "Bash(git diff:*)", "Bash(git log:*)",
@@ -280,6 +295,7 @@ export function starterFactoryYaml(): string {
     "agent:",
     "  command: claude",
     "  permission_mode: acceptEdits",
+    ...(model ? [`  model: ${model}`] : []),
     "  allowed_tools:",
     ...tools.map((t) => `    - "${t}"`),
     "",
@@ -310,7 +326,7 @@ export function excludeLocally(repoDir: string, entry: string): void {
   try {
     const cur = existsSync(excl) ? readFileSync(excl, "utf-8") : "";
     if (cur.split(/\r?\n/).some((l) => l.trim() === entry.trim())) return;
-    writeFileSync(excl, (cur && !cur.endsWith("\n") ? cur + "\n" : cur) + entry + "\n", "utf-8");
+    writeFileAtomic(excl, (cur && !cur.endsWith("\n") ? cur + "\n" : cur) + entry + "\n");
   } catch {
     /* a locked exclude file never blocks project creation */
   }
@@ -643,7 +659,7 @@ export function generateCapsule(ws: Workspace): void {
     const capsule = extractCapsule(out);
     if (!capsule) { run.state = "error"; run.output += "\n(could not parse a capsule from the agent output)"; return; }
     try {
-      writeFileSync(capsuleFile(ws), JSON.stringify(capsule, null, 2), "utf-8");
+      writeFileAtomic(capsuleFile(ws), JSON.stringify(capsule, null, 2));
       run.state = "ok"; run.output += `\n(wrote capsule.json — ${capsule.actions.length} action(s), ${(capsule.doctor ?? []).length} check(s))`;
     } catch (e) { run.state = "error"; run.output += `\n${String(e)}`; }
   });
@@ -708,7 +724,7 @@ export async function generateProvision(ws: Workspace): Promise<void> {
   for (const c of consents) { c.granted = false; byId.set(c.id, c); }
   capsule.consents = [...byId.values()];
   try {
-    writeFileSync(capsuleFile(ws), JSON.stringify(capsule, null, 2), "utf-8");
+    writeFileAtomic(capsuleFile(ws), JSON.stringify(capsule, null, 2));
     run.state = "ok"; run.output += `\n(proposed ${consents.length} install plan(s): ${consents.map((c) => c.title).join(", ")} — review & approve them in the cockpit)`;
   } catch (e) { run.state = "error"; run.output += `\n${String(e)}`; }
 }

@@ -3,14 +3,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   appendFileSync, createReadStream, existsSync, mkdirSync,
-  readFileSync, readdirSync, statSync, unlinkSync, writeFileSync,
+  readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir, networkInterfaces } from "node:os";
-import { randomBytes } from "node:crypto";
+import { homedir, hostname, networkInterfaces } from "node:os";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { FactoryEvent, Capsule } from "./types.js";
+import { resultTokens } from "./model.js";
 import { type CompanionCtx, type Observation, type ObsAction, foldRun, newCtx, observe } from "./companion.js";
 
 
@@ -71,7 +72,7 @@ export interface RunSummary {
  * Lightweight, dependency-free digest of a run's events.jsonl — the same fold
  * the client's reduce() does, but only the numbers the portfolio needs. Spend
  * mirrors the model: the authoritative spent_usd running total when present,
- * else the sum of per-agent cost_usd; tokens are input+output.
+ * else the sum of per-agent cost_usd; tokens include the prompt cache.
  */
 export function summarizeRun(runsDir: string, run: string | null): RunSummary {
   const base: RunSummary = {
@@ -103,8 +104,7 @@ export function summarizeRun(runsDir: string, run: string | null): RunSummary {
     if (e.event === "agent_result") {
       if (typeof e.cost_usd === "number") sumCost += e.cost_usd;
       if (typeof e.spent_usd === "number") spent = e.spent_usd;
-      if (typeof e.input_tokens === "number") base.tokens += e.input_tokens;
-      if (typeof e.output_tokens === "number") base.tokens += e.output_tokens;
+      base.tokens += resultTokens(e);
     }
     if (e.event === "budget_exceeded" && typeof e.spent_usd === "number") spent = e.spent_usd;
   }
@@ -163,8 +163,7 @@ export function historyFor(runsDir: string, exceptRun: string | null): HistoryTi
       if (e.event === "state" && e.to === "DONE") done.set(id, (e.ts as string) ?? null);
       if (e.event === "agent_result") {
         if (typeof e.cost_usd === "number") cost.set(id, (cost.get(id) ?? 0) + e.cost_usd);
-        const tok = (typeof e.input_tokens === "number" ? e.input_tokens : 0)
-          + (typeof e.output_tokens === "number" ? e.output_tokens : 0);
+        const tok = resultTokens(e);
         if (tok) tokens.set(id, (tokens.get(id) ?? 0) + tok);
       }
       if (e.event === "merged" && e.repo && e.base && e.commit) {
@@ -188,14 +187,16 @@ export function historyFor(runsDir: string, exceptRun: string | null): HistoryTi
  * actually shows: `merged` is cumulative across ALL runs (deduped by id, like
  * the board's history fold), and in-flight tickets are dropped when the project
  * is not `live` — a killed run (e.g. a stopped autopilot loop) leaves tickets
- * stuck in RUNNING forever, and those are ghosts, not real work.
+ * stuck in RUNNING forever, and those are ghosts, not real work. Tickets the
+ * operator removed from the board (`hidden`) are not counted either: a card
+ * saying "needs you" about tickets the board no longer shows contradicts it.
  */
-export function portfolioCounts(runsDir: string, run: string | null, live: boolean): {
+export function portfolioCounts(runsDir: string, run: string | null, live: boolean, hidden: ReadonlySet<string> = new Set()): {
   counts: { queued: number; working: number; needs: number; merged: number }; total: number;
 } {
   const WORKING = new Set(["RUNNING", "VERIFYING", "REVIEWING", "MERGE_QUEUED", "MERGING"]);
   const mergedIds = new Set(historyFor(runsDir, null).map((h) => h.id));
-  const counts = { queued: 0, working: 0, needs: 0, merged: mergedIds.size };
+  const counts = { queued: 0, working: 0, needs: 0, merged: [...mergedIds].filter((id) => !hidden.has(id)).length };
   const states = new Map<string, string>();
   if (run) {
     const file = join(runsDir, run, "events.jsonl");
@@ -212,6 +213,7 @@ export function portfolioCounts(runsDir: string, run: string | null, live: boole
   }
   for (const [id, st] of states) {
     if (mergedIds.has(id)) continue; // a later run merged it — count once, as merged
+    if (hidden.has(id)) continue; // removed from the board by the operator
     if (st === "QUEUED") counts.queued++;
     else if (st === "FAILED" || st === "BLOCKED") counts.needs++;
     else if (WORKING.has(st) && live) counts.working++; // drop ghosts from a dead run
@@ -233,8 +235,13 @@ export const stripAnsi = (s: string): string => s.replace(/\[[0-9;]*m/g, "");
 
 /** Tails one run's events.jsonl and fans lines out to SSE clients. */
 export class RunTailer {
+  // Bytes of the file already streamed. Only ever advanced past a newline, so a
+  // torn last line (the writer mid-append) is simply re-read on the next poll.
   private offset = 0;
-  private buffer = "";
+  // A poll's read is async (a stream) while the poll loop ticks on a fixed
+  // interval: a slow read must not overlap the next tick, or both would read
+  // from the same offset and every line in that window would stream twice.
+  private reading = false;
   // The companion mapper's per-run state (title lookup + sequence). It walks the
   // current run's events as they stream so new observations can be pushed live;
   // the /api/companion history fold uses an independent ctx per run but the same
@@ -256,7 +263,6 @@ export class RunTailer {
   switchTo(run: string): void {
     this.run = run;
     this.offset = 0;
-    this.buffer = "";
     this.companion = newCtx(run);
     this.runEnded = false;
     this.lastEventAt = 0;
@@ -298,17 +304,29 @@ export class RunTailer {
   }
 
   poll(): void {
-    if (!this.file || !existsSync(this.file)) return;
-    const size = statSync(this.file).size;
+    if (this.reading) return;
+    const file = this.file;
+    if (!file || !existsSync(file)) return;
+    const size = statSync(file).size;
     if (size <= this.offset) return;
-    const stream = createReadStream(this.file, { start: this.offset, encoding: "utf-8" });
-    stream.on("data", (chunk) => {
-      this.buffer += chunk;
-    });
+    this.reading = true;
+    // Read exactly the bytes the stat saw (end is inclusive), as raw bytes: the
+    // cut can fall inside a multi-byte character, which decoding per chunk
+    // would mangle. Only whole lines are decoded and consumed.
+    const start = this.offset;
+    const chunks: Buffer[] = [];
+    const stream = createReadStream(file, { start, end: size - 1 });
+    stream.on("data", (chunk) => chunks.push(chunk as Buffer));
+    stream.on("error", () => { this.reading = false; });
     stream.on("end", () => {
-      this.offset = size;
-      const lines = this.buffer.split("\n");
-      this.buffer = lines.pop() ?? ""; // keep a torn tail for the next poll
+      this.reading = false;
+      // switchTo() ran mid-read: this data belongs to the previous run.
+      if (this.file !== file || this.offset !== start) return;
+      const bytes = Buffer.concat(chunks);
+      const lastNewline = bytes.lastIndexOf(0x0a);
+      if (lastNewline < 0) return; // no complete line yet
+      this.offset = start + lastNewline + 1;
+      const lines = bytes.subarray(0, lastNewline).toString("utf-8").split("\n");
       for (const line of lines) {
         if (!line.trim()) continue;
         for (const client of this.clients) client.write(`data: ${line}\n\n`);
@@ -459,6 +477,9 @@ export interface CapsuleRuntime {
 }
 
 
+export type JobKind = "plan" | "run" | "chat" | "doctor" | "loop";
+
+
 export interface Workspace {
   name: string;
   workdir: string;
@@ -466,7 +487,9 @@ export interface Workspace {
   // every browser/device sees it — NOT a per-browser "last typed" value.
   repo: string | null;
   tailer: RunTailer;
-  jobs: { plan: Job; run: Job; chat: Job; doctor: Job; loop: Job };
+  jobs: Record<JobKind, Job>;
+  // Each job's live child process (cleared on exit), so shutdown can kill them.
+  jobProcs: Partial<Record<JobKind, ChildProcess>>;
   // The autopilot loop's child process, kept so /api/loop/stop can kill its tree.
   loopProc: ChildProcess | null;
   preview: Preview;
@@ -477,23 +500,69 @@ export interface Workspace {
 }
 
 
+/** The `repo:` of every ticket in `dirs`, in order, each resolved against its
+ *  `base` (tickets are written relative to the backlog dir they were drafted in,
+ *  so archived done/ tickets still resolve against backlog/). Lazy: a caller
+ *  that only needs the first one stops reading there. */
+function* ticketRepos(dirs: Array<{ dir: string; base: string }>): Generator<string> {
+  for (const { dir, base } of dirs) {
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".md")).sort()) {
+      let raw: string | undefined;
+      try {
+        const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(dir, f), "utf-8"))?.[1] ?? "";
+        raw = /^repo:\s*["']?([^"'\n]+?)["']?\s*$/m.exec(fm)?.[1]?.trim();
+      } catch { /* unreadable — try the next ticket */ }
+      if (raw) yield resolve(base, raw);
+    }
+  }
+}
+
+
 /** The workspace's repo: the remembered one, else derived from ticket front
  *  matter — pending backlog first, then the archived (merged) tickets, since a
  *  project that shipped everything has an empty backlog but a full done/. */
 export function workspaceRepo(ws: Workspace): string | null {
   if (ws.repo) return ws.repo;
   const backlog = join(ws.workdir, "backlog");
-  for (const dir of [backlog, join(backlog, "done")]) {
-    if (!existsSync(dir)) continue;
-    for (const f of readdirSync(dir).filter((n) => n.endsWith(".md")).sort()) {
-      try {
-        const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(join(dir, f), "utf-8"))?.[1] ?? "";
-        const raw = /^repo:\s*["']?([^"'\n]+?)["']?\s*$/m.exec(fm)?.[1]?.trim();
-        if (raw) return resolve(backlog, raw); // tickets resolve relative to the backlog dir
-      } catch { /* try the next ticket */ }
-    }
+  for (const repo of ticketRepos([{ dir: backlog, base: backlog }, { dir: join(backlog, "done"), base: backlog }])) {
+    return repo;
   }
   return null;
+}
+
+
+/** Path identity for comparisons: absolute, and case-folded on Windows. */
+export function pathKey(p: string): string {
+  const abs = resolve(p);
+  return process.platform === "win32" ? abs.toLowerCase() : abs;
+}
+
+
+/**
+ * Every repository the dashboard legitimately serves (as pathKey()s): per
+ * registered workspace, its remembered repo, its workdir, and the repo of every
+ * ticket it holds — pending, archived, and each autopilot loop's own backlog
+ * (merged-ticket diffs point at those). The read-only git explorer is limited to
+ * this set, so a GET can't browse an arbitrary repository on the disk.
+ */
+export function knownRepos(registry: Registry): Set<string> {
+  const keys = new Set<string>();
+  for (const ws of registry.workspaces.values()) {
+    keys.add(pathKey(ws.workdir));
+    if (ws.repo) keys.add(pathKey(ws.repo));
+    const backlog = join(ws.workdir, "backlog");
+    const dirs = [{ dir: backlog, base: backlog }, { dir: join(backlog, "done"), base: backlog }];
+    const runs = join(ws.workdir, "runs");
+    if (existsSync(runs)) {
+      for (const d of readdirSync(runs).filter((n) => n.startsWith("loop-"))) {
+        const loopBacklog = join(runs, d, "backlog");
+        dirs.push({ dir: loopBacklog, base: loopBacklog }, { dir: join(loopBacklog, "done"), base: loopBacklog });
+      }
+    }
+    for (const repo of ticketRepos(dirs)) keys.add(pathKey(repo));
+  }
+  return keys;
 }
 
 
@@ -537,6 +606,7 @@ export class Registry {
         doctor: { state: "idle", output: "" },
         loop: { state: "idle", output: "" },
       },
+      jobProcs: {},
       loopProc: null,
       preview: { kind: "none", state: "idle", url: null, output: "", repo: null, proc: null, server: null },
       capsule: { runs: new Map(), services: new Map(), grants: loadGrants(dir), chatDraft: null, judgments: new Map() },
@@ -562,7 +632,7 @@ export class Registry {
   save(): void {
     const entries = [...this.workspaces.values()]
       .map(({ name, workdir, repo }) => ({ name, workdir, ...(repo ? { repo } : {}) }));
-    writeFileSync(this.file, JSON.stringify({ workspaces: entries }, null, 2), "utf-8");
+    writeFileAtomic(this.file, JSON.stringify({ workspaces: entries }, null, 2));
   }
 
   resolve(url: URL): Workspace | null {
@@ -575,7 +645,7 @@ export class Registry {
 
 export function spawnJob(
   ws: Workspace,
-  kind: "plan" | "run" | "chat" | "doctor" | "loop",
+  kind: JobKind,
   factory: string[],
   args: string[],
   env?: Record<string, string>,
@@ -593,6 +663,7 @@ export function spawnJob(
     windowsHide: true,
     env: env ? { ...process.env, ...env } : process.env,
   });
+  ws.jobProcs[kind] = child;
   // `output` is the combined stream (surfaces errors in the job panel); `stdout`
   // is kept separate so a caller can parse a clean final answer even when stderr
   // carries progress lines (see the supervisor's `ask --stream`).
@@ -622,6 +693,7 @@ export function spawnJob(
     ws.jobs[kind].output += `\n${String(err)}`;
   });
   child.on("exit", (code) => {
+    if (ws.jobProcs[kind] === child) delete ws.jobProcs[kind];
     ws.jobs[kind].state = code === 0 ? "done" : "error";
     ws.jobs[kind].progress = "";
     onDone?.(code === 0, ws.jobs[kind].output.trim(), stdout.trim());
@@ -702,7 +774,7 @@ export function loadGrants(workdir: string): Set<string> {
 }
 
 export function saveGrants(ws: Workspace): void {
-  try { writeFileSync(capsuleGrantsFile(ws.workdir), JSON.stringify([...ws.capsule.grants]), "utf-8"); }
+  try { writeFileAtomic(capsuleGrantsFile(ws.workdir), JSON.stringify([...ws.capsule.grants])); }
   catch { /* best effort */ }
 }
 
@@ -718,19 +790,95 @@ export function loadHidden(workdir: string): Set<string> {
 }
 
 export function saveHidden(ws: Workspace): void {
-  try { writeFileSync(join(ws.workdir, "hidden-tickets.json"), JSON.stringify([...ws.hidden]), "utf-8"); }
+  try { writeFileAtomic(join(ws.workdir, "hidden-tickets.json"), JSON.stringify([...ws.hidden])); }
   catch { /* best effort */ }
 }
 
 
 /* --------------------------------- http --------------------------------- */
 
-export function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolvePromise) => {
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => resolvePromise(body));
+/** Largest image a goal/ticket attachment may carry (decoded bytes). */
+export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+/** Largest file the supervisor companion accepts into a run's uploads/. */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+/** Request-body ceiling: the largest upload once base64-encoded (4/3) inside
+ *  its JSON envelope, plus headroom for the envelope itself. Anything bigger is
+ *  refused with 413 before it is buffered in memory. */
+export const MAX_BODY_BYTES = Math.ceil(MAX_UPLOAD_BYTES * 4 / 3) + 1024 * 1024;
+
+
+/** An error that carries its own HTTP status (400 bad JSON, 413 too large…). */
+export class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+
+/** Buffer a request body, refusing (HttpError 413) past `limit` bytes. Past the
+ *  limit the rest of the upload is drained and discarded, so the 413 can still
+ *  be written on the same connection. */
+export function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length;
+      if (size <= limit) { chunks.push(chunk); return; }
+      req.off("data", onData);
+      req.resume();
+      reject(new HttpError(413, `request body too large (max ${limit} bytes)`));
+    };
+    req.on("data", onData);
+    req.on("end", () => { if (size <= limit) resolvePromise(Buffer.concat(chunks).toString("utf-8")); });
+    req.on("error", reject);
   });
+}
+
+
+/** readBody + JSON.parse; malformed JSON is a client error (HttpError 400). */
+export async function readJSON<T = unknown>(req: IncomingMessage): Promise<T> {
+  const body = await readBody(req);
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new HttpError(400, "invalid JSON body");
+  }
+}
+
+
+/** Answer a failed request: an HttpError keeps its own status, anything else
+ *  gets `fallback` (400 for the routes' validation errors, 500 at the top). */
+export function sendError(res: ServerResponse, err: unknown, fallback = 400): void {
+  const status = err instanceof HttpError ? err.status : fallback;
+  json(res, status, { ok: false, error: String(err) });
+}
+
+
+/** Replace a whole file atomically: write a sibling temp file, then rename it
+ *  over the target. The Python CLI reads several of these files (workspaces,
+ *  tickets, factory.yaml, memory…) concurrently, and must never see a torn one.
+ *  On Windows a rename can briefly fail while another process holds the target
+ *  open, so it is retried a few times before giving up. */
+const ATOMIC_RENAME_RETRIES = 5;
+const ATOMIC_RENAME_BACKOFF_MS = 20;
+export function writeFileAtomic(file: string, data: string | Buffer, encoding: BufferEncoding = "utf-8"): void {
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  writeFileSync(tmp, data, typeof data === "string" ? encoding : undefined);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(tmp, file);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const transient = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+      if (!transient || attempt >= ATOMIC_RENAME_RETRIES) {
+        try { unlinkSync(tmp); } catch { /* already gone */ }
+        throw err;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ATOMIC_RENAME_BACKOFF_MS * attempt);
+    }
+  }
 }
 
 
@@ -740,6 +888,94 @@ export function readOrCreateToken(file: string): string {
   const t = randomBytes(16).toString("hex");
   try { writeFileSync(file, t, "utf-8"); } catch { /* best effort */ }
   return t;
+}
+
+
+/** Constant-time token check (no early exit on the first differing byte). */
+export function tokenMatches(candidate: string | null | undefined, token: string): boolean {
+  if (typeof candidate !== "string") return false;
+  const a = Buffer.from(candidate, "utf-8");
+  const b = Buffer.from(token, "utf-8");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+
+/** True when `host` (a bind address) only listens on this machine. */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "localhost" || h === "::1" || h.startsWith("127.");
+}
+
+
+/**
+ * Hostnames a request's Host header may name (anti DNS-rebinding): a page on a
+ * foreign origin that re-points its DNS at us still sends ITS hostname, which
+ * is not in this set. Always the loopback names and the bind host; when bound
+ * to every interface (0.0.0.0 / ::), also each local interface address and the
+ * machine name — the phone reaches us by LAN IP.
+ */
+export function allowedHosts(bindHost: string): Set<string> {
+  const hosts = new Set(["localhost", "127.0.0.1", "::1", bindHost.toLowerCase().replace(/^\[|\]$/g, "")]);
+  if (bindHost === "0.0.0.0" || bindHost === "::") {
+    hosts.add(hostname().toLowerCase());
+    for (const addrs of Object.values(networkInterfaces())) {
+      for (const a of addrs ?? []) hosts.add(a.address.toLowerCase());
+    }
+  }
+  return hosts;
+}
+
+
+/** The hostname part of a Host header ("[::1]:8765" → "::1", "a.b:80" → "a.b"). */
+export function hostOf(header: string | undefined): string {
+  if (!header) return "";
+  const h = header.trim().toLowerCase();
+  if (h.startsWith("[")) return h.slice(1, h.indexOf("]"));
+  const colon = h.lastIndexOf(":");
+  return colon > 0 && h.indexOf(":") === colon ? h.slice(0, colon) : h;
+}
+
+
+/* --------------------------- run lock (shared with the CLI) --------------------------- */
+
+/** `factory run` / `factory loop` create this file with O_EXCL while they run,
+ *  so two dispatchers never drive the same workspace — whoever launched them. */
+export function runLockFile(workdir: string): string {
+  return join(workdir, "runs", ".factory.lock");
+}
+
+export interface RunLock { pid: number; started?: string; cmd?: string }
+
+/** The workspace's run lock when its owner is still alive, else null (a stale
+ *  lock left by a crashed CLI must not block the dashboard forever). */
+export function liveRunLock(workdir: string): RunLock | null {
+  let lock: RunLock;
+  try {
+    lock = JSON.parse(readFileSync(runLockFile(workdir), "utf-8")) as RunLock;
+  } catch {
+    return null; // absent, or torn mid-write — treat as no lock
+  }
+  if (!Number.isInteger(lock.pid) || lock.pid <= 0) return null;
+  try {
+    process.kill(lock.pid, 0); // signal 0: existence check only
+    return lock;
+  } catch (err) {
+    // EPERM: the process exists but belongs to someone else — still alive.
+    return (err as NodeJS.ErrnoException).code === "EPERM" ? lock : null;
+  }
+}
+
+
+/** Why a plan / run / autopilot loop can't start in this workspace right now,
+ *  or null when it can. The three are mutually exclusive: they all drive the
+ *  same backlog and repo. A live CLI lock counts too (a `factory run` started
+ *  from a terminal), so the dashboard never launches a second dispatcher. */
+export function launchConflict(ws: Workspace): string | null {
+  if ((["plan", "run", "loop"] as const).some((k) => ws.jobs[k].state === "running")) {
+    return "a job is already running in this workspace";
+  }
+  const lock = liveRunLock(ws.workdir);
+  return lock ? `a run is already in progress (pid ${lock.pid})` : null;
 }
 
 

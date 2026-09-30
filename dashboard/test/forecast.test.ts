@@ -344,3 +344,62 @@ test("no NaN anywhere for degenerate inputs", () => {
     }
   }
 });
+
+// --- calibration against a measured run ------------------------------------
+
+// Measured tickets (planner-written, verified + merged on the first attempt):
+// body length -> real cost. Two planner-driven builds of a small API on Sonnet.
+const MEASURED_SONNET: Array<{ id: string; chars: number; usd: number; deps?: string[] }> = [
+  { id: "a1", chars: 3322, usd: 0.2304 }, { id: "a4", chars: 1706, usd: 0.1562 },
+  { id: "a3", chars: 2423, usd: 0.3141 }, { id: "a2", chars: 2845, usd: 0.3519 },
+  { id: "a5", chars: 3649, usd: 0.3407 }, { id: "b2", chars: 2910, usd: 0.1681 },
+  { id: "b1", chars: 6166, usd: 0.3398 }, { id: "b3", chars: 7282, usd: 0.7533 },
+];
+const sized = (id: string, chars: number, deps: string[] = []) =>
+  ({ id, title: id, body: "x".repeat(chars), depends_on: deps, verify: ["npm test"] });
+// The measured runs had no retry: price one attempt per ticket.
+const ONE_TRY = { ...PROFILES.standard, retries: 1 };
+
+test("forecastRun: calibrated on measured Sonnet runs (total within 20%, range holds the truth)", () => {
+  const actual = MEASURED_SONNET.reduce((a, t) => a + t.usd, 0);
+  const f = forecastRun(MEASURED_SONNET.map((t) => sized(t.id, t.chars)), { profile: ONE_TRY });
+  assert.ok(f.usd >= actual * 0.8 && f.usd <= actual * 1.2, `estimate $${f.usd} vs measured $${actual.toFixed(2)}`);
+  for (const row of f.tickets) {
+    const real = MEASURED_SONNET.find((t) => t.id === row.id)!.usd;
+    assert.ok(row.usd / real > 0.5 && row.usd / real < 2, `${row.id}: $${row.usd} vs $${real}`);
+  }
+  // With the standard profile's expected retries on top, the truth is still in range.
+  const std = forecastRun(MEASURED_SONNET.map((t) => sized(t.id, t.chars)), { profile: "standard" });
+  assert.ok(std.low <= actual && actual <= std.high, `$${actual.toFixed(2)} outside ${std.low}-${std.high}`);
+});
+
+test("forecastRun: small Opus tickets land near what they really cost", () => {
+  // Measured: two ~1.6k-char planner tickets, $0.23 and $0.24 on Opus.
+  const f = forecastRun([sized("1", 1533), sized("2", 1636, ["1"])], { profile: { ...ONE_TRY, model: "opus" } });
+  assert.ok(f.usd >= 0.47 * 0.7 && f.usd <= 0.47 * 1.6, `estimate $${f.usd} vs measured $0.47`);
+});
+
+test("forecastRun: wall-clock follows the dependency chain, not just slot packing", () => {
+  // Measured run (3 slots): 001 (6.2k chars) and 002 (2.9k) in parallel, then 003
+  // (7.3k) once both merged — 6.25 minutes end to end. Slot packing alone said the
+  // run fits in one ticket's time.
+  const plan = [sized("001", 6166), sized("002", 2910), sized("003", 7282, ["001", "002"])];
+  const f = forecastRun(plan, { profile: ONE_TRY, slots: 3 });
+  const m = (id: string) => f.tickets.find((t) => t.id === id)!.minutes;
+  assert.ok(f.minutes >= m("001") + m("003") - 0.1, `${f.minutes} min ignores 001 -> 003`);
+  assert.ok(f.minutes >= 6.25 * 0.6 && f.minutes <= 6.25 * 1.6, `${f.minutes} min vs measured 6.25`);
+  const flat = forecastRun(plan.map((t) => ({ ...t, depends_on: [] })), { profile: ONE_TRY, slots: 3 });
+  assert.ok(flat.minutes < f.minutes, "without dependencies the same tickets finish sooner");
+});
+
+test("forecastRun: a dependency cycle or an unknown dependency never hangs the estimate", () => {
+  const f = forecastRun([sized("1", 500, ["2"]), sized("2", 500, ["1"]), sized("3", 500, ["gone"])], { profile: ONE_TRY });
+  assert.ok(Number.isFinite(f.minutes) && f.minutes > 0);
+});
+
+test("MODEL_PRICING: cache reads are a fraction of input, cache writes cost more", () => {
+  for (const p of Object.values(MODEL_PRICING)) {
+    assert.ok(p.cacheReadPerMTok < p.inputPerMTok, p.id);
+    assert.ok(p.cacheWritePerMTok > p.inputPerMTok, p.id);
+  }
+});

@@ -28,6 +28,7 @@ from .config import Config
 from .dispatcher import Dispatcher
 from .events import EventLog
 from .plan import PlanError, run_planner, write_drafts
+from .recovery import recover
 from .task import Task, TicketError, load_backlog
 
 
@@ -136,7 +137,8 @@ async def _next_step(
         "You steer an autopilot loop toward a MISSION. Read the repo as needed, then "
         "propose the NEXT single, concrete, self-contained objective that moves the "
         "mission forward (one meaningful chunk, not everything at once), OR declare "
-        "the mission complete if the progress already satisfies it.\n\n"
+        "the mission complete if the progress already satisfies it. Write the objective "
+        "in the same natural language as the mission.\n\n"
         f"## Mission\n{mission}\n\n"
         f"## Progress so far (commits on the work branch)\n{progress or '(nothing yet)'}\n\n"
         'End with a strict JSON block (no fences): {"status": "continue", "objective": '
@@ -201,7 +203,7 @@ async def _pick_work(
     dicts = contract.get("tickets") or []
     if not dicts:
         return []
-    write_drafts(dicts, loop_backlog, repo)
+    write_drafts(dicts, loop_backlog, repo, goal)
     return load_backlog(loop_backlog, integ)
 
 
@@ -250,6 +252,12 @@ async def run_loop(cfg: Config, spec: LoopSpec, repo: Path, runs_dir: Path) -> d
     else:
         wt.git(repo, "checkout", "-b", integ, base)
     base_before = wt.git(repo, "rev-parse", base, check=False).stdout.strip()
+
+    # A previous loop that died mid-iteration left a run without run_end and its
+    # worktrees on disk: close it out before starting (the caller holds the lock).
+    recovered = recover(runs_dir, {repo: integ})
+    if recovered.runs:
+        log.emit("recovered", runs=recovered.runs, kept=sorted(recovered.adopt.values()))
 
     log.emit(
         "loop_start", name=spec.name, mode=spec.mode, objective=spec.objective[:500],

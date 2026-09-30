@@ -32,12 +32,13 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { diagnose } from "./diagnostics.js";
 import type { Diagnosis, DiagnosisCategory, ErrorPatternSummary } from "./diagnostics.js";
 import {
-  forecastRun, historyStats, parseTicket, PROFILE_NAMES, PROFILES, reconcile,
+  forecastRun, historyStats, parseTicket, priceFor, PROFILE_NAMES, PROFILES, reconcile,
 } from "./forecast.js";
 import type {
   Actuals, Forecast, HistoryStats, ProfileName, Reconciliation, RunRecord, Ticket,
 } from "./forecast.js";
 import { summarizeRun } from "./server-core.js";
+import { resultTokens } from "./model.js";
 import type { FactoryEvent } from "./types.js";
 
 /* ============================ Path safety ============================ */
@@ -296,6 +297,8 @@ export interface ForecastBundle {
   tickets: number;
   slots: number;
   forecasts: Record<ProfileName, Forecast>;
+  /** Whether a dependency install belongs in setup for these tickets. */
+  setup: SetupNeed;
 }
 
 /**
@@ -303,15 +306,92 @@ export interface ForecastBundle {
  * same history so they are comparable — the operator is choosing between them,
  * and a difference must come from the profile, never from the sampling.
  */
-export function buildForecasts(workdir: string, runsDir: string, slots?: number): ForecastBundle {
+/** Whether agents' fresh worktrees need a dependency install before their checks
+ *  can pass, and which one. Judged from what the project really uses — its
+ *  manifests, and the verify commands of the tickets about to run (a repo still
+ *  empty at plan time is about to get its package.json from ticket 001) —
+ *  never from the starter factory.yaml, which lists every toolchain. */
+export interface SetupNeed { needed: boolean; command: string | null; reason: string }
+
+/** A check that runs a third-party Node tool — it has to be installed first. */
+const NODE_TOOL_VERIFY = /\b(vitest|jest|mocha|tsc|vite|next|eslint|playwright)\b/;
+/** A check that goes through a package manager: whether it needs an install
+ *  depends on the manifest (`npm test` on a zero-dependency package runs
+ *  `node --test` and installs nothing). */
+const NODE_PM_VERIFY = /\b(npm|npx|pnpm|yarn)\b/;
+const PY_THIRD_PARTY_VERIFY = /\b(pytest|uv run|poetry run|ruff|mypy|tox)\b/;
+
+function hasDeps(pkgJson: string): boolean {
+  try {
+    const p = JSON.parse(pkgJson) as Record<string, unknown>;
+    return ["dependencies", "devDependencies"].some((k) => {
+      const d = p[k];
+      return typeof d === "object" && d !== null && Object.keys(d).length > 0;
+    });
+  } catch { return false; }
+}
+
+export function detectSetupNeed(repo: string | null, verify: readonly string[]): SetupNeed {
+  const has = (f: string): boolean => repo !== null && existsSync(join(repo, f));
+  const read = (f: string): string => { try { return readFileSync(join(repo!, f), "utf-8"); } catch { return ""; } };
+  const pkg = has("package.json");
+  const node = (pkg && hasDeps(read("package.json")))
+    || verify.some((v) => NODE_TOOL_VERIFY.test(v))
+    // No manifest to read: a package-manager check is assumed to need one.
+    || (!pkg && verify.some((v) => NODE_PM_VERIFY.test(v)));
+  if (node) {
+    return { needed: true, command: has("package-lock.json") ? "npm ci" : "npm install", reason: "node" };
+  }
+  const pyManifest = (has("pyproject.toml") && /dependencies\s*=\s*\[\s*["']/.test(read("pyproject.toml")))
+    || (has("requirements.txt") && read("requirements.txt").split("\n").some((l) => l.trim() && !l.trim().startsWith("#")));
+  if (pyManifest || verify.some((v) => PY_THIRD_PARTY_VERIFY.test(v))) {
+    return {
+      needed: true,
+      command: has("uv.lock") || has("pyproject.toml") ? "uv sync" : has("requirements.txt") ? "pip install -r requirements.txt" : "uv sync",
+      reason: "python",
+    };
+  }
+  return { needed: false, command: null, reason: "no third-party dependencies detected" };
+}
+
+/** Relative cost of a model tier, for ordering profiles (output price is the
+ *  dominant term of an agent's bill). */
+function blendedRank(model: string): number {
+  return priceFor(model).outputPerMTok;
+}
+
+/** The coding model the project's factory.yaml pins (agent.model), or null. */
+export function configuredModel(workdir: string): string | null {
+  const file = join(workdir, "factory.yaml");
+  if (!existsSync(file)) return null;
+  try {
+    const text = readFileSync(file, "utf-8");
+    const agent = text.match(/^agent:\s*\n((?:[ \t]+.*\n?)*)/m)?.[1] ?? "";
+    const model = agent.match(/^[ \t]+model:\s*"?([\w.\-[\]]+)"?\s*$/m)?.[1];
+    return model && model !== "null" ? model : null;
+  } catch { return null; }
+}
+
+export function buildForecasts(workdir: string, runsDir: string, slots?: number, repo: string | null = null): ForecastBundle {
   const tickets = readBacklogTickets(workdir);
   const history = historyStats(runRecords(runsDir));
   const wanted = typeof slots === "number" && Number.isFinite(slots) && slots > 0 ? slots : undefined;
+  // "Standard" is what the project is actually configured to run; "Thorough"
+  // never prices below it, so cheap <= standard <= thorough keeps holding.
+  const configured = configuredModel(workdir);
+  const pricier = (a: string, b: string): string =>
+    blendedRank(a) >= blendedRank(b) ? a : b;
+  const profiles: Record<ProfileName, typeof PROFILES[ProfileName]> = {
+    cheap: PROFILES.cheap,
+    standard: configured ? { ...PROFILES.standard, model: configured } : PROFILES.standard,
+    thorough: configured ? { ...PROFILES.thorough, model: pricier(configured, PROFILES.thorough.model) } : PROFILES.thorough,
+  };
   const forecasts = {} as Record<ProfileName, Forecast>;
   for (const name of PROFILE_NAMES) {
-    forecasts[name] = forecastRun(tickets, { profile: PROFILES[name], slots: wanted, history });
+    forecasts[name] = forecastRun(tickets, { profile: profiles[name], slots: wanted, history });
   }
-  return { history, tickets: tickets.length, slots: forecasts.standard.slots, forecasts };
+  const setup = detectSetupNeed(repo, tickets.flatMap((t) => t.verify ?? []));
+  return { history, tickets: tickets.length, slots: forecasts.standard.slots, forecasts, setup };
 }
 
 /* ==================== Pending / attached forecasts ==================== */
@@ -475,8 +555,7 @@ export function actualsFor(runsDir: string, run: string | null | undefined): Act
     if (e.event !== "agent_result" || typeof e.task !== "string") continue;
     const row = rows.get(e.task) ?? { id: e.task, title: e.task, usd: 0, tokens: 0 };
     if (typeof e.cost_usd === "number") row.usd += e.cost_usd;
-    if (typeof e.input_tokens === "number") row.tokens += e.input_tokens;
-    if (typeof e.output_tokens === "number") row.tokens += e.output_tokens;
+    row.tokens += resultTokens(e);
     rows.set(e.task, row);
   }
   const tickets = [...rows.values()].map((r) => ({ ...r, title: titles.get(r.id) ?? r.title }));

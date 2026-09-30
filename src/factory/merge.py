@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from .config import VerifyConfig
 from .task import Task
-from .verify import run_verify
+from .verify import CommandRunner, run_verify
 from .worktree import Worktree, current_branch, git, is_clean, push_branch, remotes, remove
 
 
@@ -32,15 +32,65 @@ class MergeResult:
     # work-in-progress collided with the merged ticket on restore. The merge landed;
     # this tells them a manual reconcile is waiting in their checkout.
     warning: str = ""
+    # Set when the base could not be brought in without conflicts: the worktree is
+    # left MID-MERGE (conflict markers in these files) for the agent to resolve
+    # with ordinary edits + `git add` + `git commit` — tools it is allowed to use,
+    # unlike the `git rebase` the old flow implicitly asked of it.
+    conflicts: tuple[str, ...] = ()
 
 
-def merge_branch(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> MergeResult:
-    head_before = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
+def conflict_instructions(base: str, files: tuple[str, ...]) -> str:
+    """The note handed to the resumed agent when its branch conflicts with base."""
+    listed = ", ".join(files[:20]) or "(see `git status`)"
+    return (
+        f"Your branch conflicts with `{base}`, which moved while you worked. Warden "
+        f"started `git merge {base}` in your worktree and stopped on conflicts in: "
+        f"{listed}. Resolve them: edit each file to combine both sides correctly "
+        "(remove every <<<<<<< ======= >>>>>>> marker), re-run the success criteria, "
+        "then `git add` the files and `git commit --no-edit` to conclude the merge. "
+        "Do not abort the merge and do not rebase."
+    )
+
+
+def bring_base_in(task: Task, wt: Worktree) -> MergeResult | None:
+    """Make the task branch contain the current base. None on success.
+
+    Already contains it → nothing to do. Otherwise rebase (linear history); if the
+    rebase conflicts, abort it and MERGE the base instead: a conflict-free merge
+    just succeeds, and a conflicting one is left in progress for the agent.
+    """
+    contains = git(
+        wt.path, "merge-base", "--is-ancestor", task.base_branch, "HEAD", check=False
+    ).returncode == 0
+    if contains:
+        return None
     rebase = git(wt.path, "rebase", task.base_branch, check=False)
-    if rebase.returncode != 0:
-        git(wt.path, "rebase", "--abort", check=False)
-        detail = (rebase.stderr or rebase.stdout).strip().splitlines()[-5:]
-        return MergeResult(ok=False, reason="rebase conflict: " + " | ".join(detail))
+    if rebase.returncode == 0:
+        return None
+    git(wt.path, "rebase", "--abort", check=False)
+    merge = git(wt.path, "merge", "--no-edit", "--no-ff", task.base_branch, check=False)
+    if merge.returncode == 0:
+        return None
+    unmerged = git(wt.path, "diff", "--name-only", "--diff-filter=U", check=False).stdout
+    files = tuple(f for f in unmerged.splitlines() if f.strip())
+    if not files:
+        # Failed for another reason (not conflicts): nothing to hand the agent.
+        git(wt.path, "merge", "--abort", check=False)
+        detail = (merge.stderr or merge.stdout).strip().splitlines()[-5:]
+        return MergeResult(ok=False, reason="merging the base failed: " + " | ".join(detail))
+    return MergeResult(
+        ok=False, conflicts=files,
+        reason=conflict_instructions(task.base_branch, files),
+    )
+
+
+def merge_branch(
+    task: Task, wt: Worktree, verify_cfg: VerifyConfig, runner: CommandRunner | None = None
+) -> MergeResult:
+    head_before = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
+    blocked = bring_base_in(task, wt)
+    if blocked is not None:
+        return blocked
 
     # Re-verify ONLY when the world actually moved: a rebase that replays nothing
     # (the branch head is unchanged) means the base had no new commits under this
@@ -50,7 +100,9 @@ def merge_branch(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> MergeRes
     head_after = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
     reverified = head_after != head_before
     if reverified:
-        reverify = run_verify(task, wt.path, verify_cfg)
+        # The runner matters: this executes the agent's code again, so in sandbox
+        # mode it runs in the box, offline — same as the first verify.
+        reverify = run_verify(task, wt.path, verify_cfg, runner)
         if not reverify.ok:
             reason = "post-rebase verify failed: " + "; ".join(reverify.failures)
             return MergeResult(ok=False, reason=reason)
@@ -122,9 +174,12 @@ class PrResult:
     ok: bool
     reason: str = ""
     url: str = ""
+    conflicts: tuple[str, ...] = ()
 
 
-def deliver_pr(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> PrResult:
+def deliver_pr(
+    task: Task, wt: Worktree, verify_cfg: VerifyConfig, runner: CommandRunner | None = None
+) -> PrResult:
     """PR-native landing: rebase on base, re-verify, then push the branch and open
     a GitHub PR instead of merging locally. The base stays untouched — GitHub (and
     its CI) owns the merge."""
@@ -136,17 +191,15 @@ def deliver_pr(task: Task, wt: Worktree, verify_cfg: VerifyConfig) -> PrResult:
         return PrResult(ok=False, reason="PR mode needs a git remote (origin); this repo has none")
 
     head_before = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
-    rebase = git(wt.path, "rebase", task.base_branch, check=False)
-    if rebase.returncode != 0:
-        git(wt.path, "rebase", "--abort", check=False)
-        detail = (rebase.stderr or rebase.stdout).strip().splitlines()[-5:]
-        return PrResult(ok=False, reason="rebase conflict: " + " | ".join(detail))
+    blocked = bring_base_in(task, wt)
+    if blocked is not None:
+        return PrResult(ok=False, reason=blocked.reason, conflicts=blocked.conflicts)
 
     # Only re-verify when the rebase actually replayed commits (see merge_branch):
     # an unchanged branch head means the base did not move, so the earlier verify holds.
     head_after = git(wt.path, "rev-parse", "HEAD", check=False).stdout.strip()
     if head_after != head_before:
-        reverify = run_verify(task, wt.path, verify_cfg)
+        reverify = run_verify(task, wt.path, verify_cfg, runner)
         if not reverify.ok:
             return PrResult(
                 ok=False, reason="post-rebase verify failed: " + "; ".join(reverify.failures)

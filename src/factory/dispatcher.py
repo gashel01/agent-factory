@@ -6,6 +6,12 @@ Design rules (see AGENT_FACTORY.md):
 - Anti-collision: two tasks whose files_hint overlap never run at the same time.
 - Retries re-inject the failure evidence into the ticket; a rate-limit kill is not
   a retry (the task did nothing wrong).
+
+One ticket's attempt runs through explicit phases, each its own method:
+  _open_worktree → _run_agent_on → _handle_agent_result → _verify_gate →
+  _review_gate → _land (approval park or merge queue).
+Best-of-N (`candidates`) fans the first two phases out over N worktrees and
+feeds the winner into the same pipeline.
 """
 
 from __future__ import annotations
@@ -29,21 +35,32 @@ from .events import EventLog
 from .memory import LessonStore, record_applications
 from .notify import post_webhook
 from .plan import read_brief
-from .review import ReviewError, run_review
+from .review import INCONCLUSIVE, ReviewError, ReviewResult, run_review
 from .task import IN_FLIGHT, Task, TaskState, TicketError
-from .verify import run_integration, run_verify
+from .verify import CommandRunner, VerifyResult, run_integration, run_verify
+
+#: Margin added to the CLI's own reset time before relaunching after a rate limit.
+_RESET_MARGIN_S = 30
 
 
-def _sbx_setup_runner(cmd: str, cwd: Path, timeout_s: int) -> tuple[int, str]:
-    # Dependency installs are trusted operator config and need pypi/npm, so they
-    # get network — but never the auth token (run_command mounts no credentials).
-    return sandbox_mod.run_command(cmd, cwd, allow_network=True, timeout_s=timeout_s)
+def _box_runner(wt: wt_mod.Worktree, *, tag: str, allow_network: bool) -> CommandRunner:
+    """A command runner that executes inside the sandbox against this worktree.
 
-
-def _sbx_verify_runner(cmd: str, cwd: Path, timeout_s: int) -> tuple[int, str]:
-    # Verify runs the agent's OWN code (its tests): offline in the box, so a
-    # gamed or malicious test can neither exfiltrate nor reach the network.
-    return sandbox_mod.run_command(cmd, cwd, allow_network=False, timeout_s=timeout_s)
+    Setup (trusted operator config) gets network for dependency installs; verify
+    (the agent's OWN code — its tests) runs offline, so a gamed or malicious test
+    can neither exfiltrate nor reach the network. Neither mounts the auth token.
+    The worktree's `.git` pointer is restored after every command: the box could
+    write it, and the host runs git there next.
+    """
+    def run(cmd: str, cwd: Path, timeout_s: int) -> tuple[int, str]:
+        box = sandbox_mod.box_for(wt, tag=tag)
+        try:
+            return sandbox_mod.run_command(
+                cmd, cwd, allow_network=allow_network, timeout_s=timeout_s, box=box,
+            )
+        finally:
+            wt_mod.sanitize_gitlink(wt)
+    return run
 
 
 def _is_noop(task: Task, wt: wt_mod.Worktree) -> bool:
@@ -82,6 +99,35 @@ def _blocked_context(task: Task, wt: wt_mod.Worktree) -> dict:
     }
 
 
+def _diff_size(task: Task, wt: wt_mod.Worktree) -> int:
+    """Lines added + removed by this branch — the best-of-N tie-breaker (among
+    candidates that all pass, the smallest change is the least risky)."""
+    out = wt_mod.git(
+        wt.path, "diff", "--numstat", f"{task.base_branch}...HEAD", check=False
+    ).stdout
+    total = 0
+    for line in out.splitlines():
+        added, _, rest = line.partition("\t")
+        removed = rest.partition("\t")[0]
+        total += int(added) if added.isdigit() else 0
+        total += int(removed) if removed.isdigit() else 0
+    return total
+
+
+def _fresh_log(path: Path) -> Path:
+    """Keep every attempt's transcript: move an existing log aside as
+    `<name>.attempt<N>.jsonl` before a new attempt writes to the canonical path
+    (the one the dashboard tails)."""
+    if path.exists():
+        stem = path.name.removesuffix(".jsonl")
+        n = 1
+        while (archived := path.with_name(f"{stem}.attempt{n}.jsonl")).exists():
+            n += 1
+        with suppress(OSError):
+            path.rename(archived)
+    return path
+
+
 class Dispatcher:
     def __init__(self, cfg: Config, tasks: list[Task], run_dir: Path):
         self.cfg = cfg
@@ -92,6 +138,8 @@ class Dispatcher:
         self.log = EventLog(run_dir / "events.jsonl")
         self.state: dict[str, TaskState] = {t.id: TaskState.QUEUED for t in tasks}
         self._active: dict[str, asyncio.Task] = {}
+        # Slots each active ticket occupies (best-of-N candidates count one each).
+        self._slots: dict[str, int] = {}
         self._merge_q: asyncio.Queue[tuple[Task, wt_mod.Worktree]] = asyncio.Queue()
         self._pause_until = 0.0
         self._pause_count = 0
@@ -131,11 +179,21 @@ class Dispatcher:
         # attempt. The relaunched agent RESUMES its previous session inside the
         # same worktree (work + context intact) instead of restarting cold.
         self._parked_retry: dict[str, wt_mod.Worktree] = {}
+        # Every worktree a ticket's worker currently holds (one, or N candidates),
+        # so a kill mid-phase cleans up all of them.
+        self._held: dict[str, list[wt_mod.Worktree]] = {}
         # Repos that received at least one merge this run — the integration check
         # runs the full suite on each once everything has landed.
         self._merged_repos: set[Path] = set()
+        # Since when the run has had nothing to do but wait for an operator answer
+        # on a BLOCKED ticket that queued tickets depend on (None = not waiting).
+        self._blocked_wait_since: float | None = None
 
     # ---------------------------------------------------------------- helpers
+
+    @property
+    def _sandboxed(self) -> bool:
+        return self.cfg.isolation == "sandbox"
 
     def _load_contract(self) -> str:
         if self.cfg.contract_path and self.cfg.contract_path.exists():
@@ -160,6 +218,9 @@ class Dispatcher:
             return path.read_text(encoding="utf-8").strip() if path.exists() else ""
         except OSError:
             return ""
+
+    def _verify_runner(self, wt: wt_mod.Worktree) -> CommandRunner | None:
+        return _box_runner(wt, tag="verify", allow_network=False) if self._sandboxed else None
 
     def _set_state(self, task: Task, to: TaskState) -> None:
         frm = self.state[task.id]
@@ -225,6 +286,21 @@ class Dispatcher:
         ok = await asyncio.to_thread(post_webhook, url, f"[Agent Factory] {message}")
         self.log.emit("notified", ok=ok, message=message[:200])
 
+    async def _discard(self, task: Task, wt: wt_mod.Worktree) -> None:
+        """Remove a worktree + branch this worker holds, and forget it. Off-thread:
+        a slow `git worktree remove` (Windows/AV file locks) must not stall the loop."""
+        held = self._held.get(task.id, [])
+        if wt in held:
+            held.remove(wt)
+        await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+
+    def _release(self, task: Task, wt: wt_mod.Worktree) -> None:
+        """Hand a worktree over to another owner (parked, awaiting, merge queue):
+        the worker no longer cleans it up if it is cancelled."""
+        held = self._held.get(task.id, [])
+        if wt in held:
+            held.remove(wt)
+
     def _retry_or_fail(self, task: Task, reason: str) -> bool:
         """Requeue with evidence, or fail when retries are exhausted.
 
@@ -251,10 +327,11 @@ class Dispatcher:
         requeued = self._retry_or_fail(task, reason)
         if requeued and session:
             task.resume_session = session
+            self._release(task, wt)
             self._parked_retry[task.id] = wt
         else:
             task.resume_session = None
-            await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+            await self._discard(task, wt)
 
     def _enforce_budget(self) -> None:
         """Stop launching new agents once the run's cost ceiling is crossed.
@@ -272,15 +349,46 @@ class Dispatcher:
             )
             self.log.emit("stopped", reason=f"budget reached (${self._spent_usd:.2f} / ${cap:.2f})")
 
-    def _trigger_pause(self) -> None:
+    def _trigger_pause(self, resets_at: object = None) -> None:
+        """Pause launches after a rate limit.
+
+        One EPISODE counts once: with N slots, the N agents that hit the same
+        limit all land here, and counting each used to exhaust the stop threshold
+        in a single episode. When the CLI says when the plan window resets, wait
+        for exactly that (plus a margin) instead of guessing with backoff — unless
+        it is further than ratelimit.max_wait_min (a weekly cap): then stop
+        cleanly, backlog intact, rather than idle for days.
+        """
+        now = time.monotonic()
+        if now < self._pause_until:
+            return  # already paused for this episode
         self._pause_count += 1
         if self._pause_count > self.cfg.ratelimit.max_pauses_before_stop:
             self._stopped = True
             self.log.emit("stopped", reason="rate limit persisted; weekly quota likely exhausted")
             return
         cooldown_s = self.cfg.ratelimit.cooldown_min * 60 * 2 ** (self._pause_count - 1)
-        self._pause_until = time.monotonic() + cooldown_s
+        try:
+            until_reset = float(resets_at) - time.time() if resets_at is not None else None
+        except (TypeError, ValueError):
+            until_reset = None
+        if until_reset is not None and until_reset > 0:
+            if until_reset > self.cfg.ratelimit.max_wait_min * 60:
+                self._stopped = True
+                self.log.emit(
+                    "stopped",
+                    reason=f"plan limit resets in {until_reset / 3600:.1f} h — beyond "
+                           f"ratelimit.max_wait_min; the backlog is intact for a later run",
+                )
+                return
+            cooldown_s = until_reset + _RESET_MARGIN_S
+        self._pause_until = now + cooldown_s
         self.log.emit("paused_ratelimit", pause_n=self._pause_count, cooldown_s=int(cooldown_s))
+
+    def _rate_limit_cleared(self) -> None:
+        """A successful agent call ends the rate-limit streak: the next episode is
+        a fresh one, not the 7th strike of a run that has long recovered."""
+        self._pause_count = 0
 
     # ------------------------------------------------------------- control
 
@@ -421,8 +529,25 @@ class Dispatcher:
                 self.log.emit("answered", task=task_id)
                 self._set_state(task, TaskState.QUEUED)
 
+    # ------------------------------------------------------------ scheduling
+
     def _in_flight_tasks(self) -> list[Task]:
         return [t for t in self.tasks if self.state[t.id] in IN_FLIGHT]
+
+    def _waits_on_blocked(self, task: Task, _seen: frozenset[str] = frozenset()) -> bool:
+        """True when this queued ticket (transitively) depends on a BLOCKED one —
+        i.e. it can still run once the operator answers."""
+        for dep_id in task.depends_on:
+            if dep_id in _seen:
+                continue
+            dep_state = self.state[dep_id]
+            if dep_state is TaskState.BLOCKED:
+                return True
+            if dep_state is TaskState.QUEUED and self._waits_on_blocked(
+                self.by_id[dep_id], _seen | {task.id}
+            ):
+                return True
+        return False
 
     def _next_eligible(self) -> Task | None:
         in_flight = self._in_flight_tasks()
@@ -430,9 +555,10 @@ class Dispatcher:
             (t for t in self.tasks if self.state[t.id] is TaskState.QUEUED),
             key=lambda t: (t.priority, t.id),
         )
-        terminal_bad = (TaskState.FAILED, TaskState.BLOCKED)
         for t in queued:
-            dead = [d for d in t.depends_on if self.state[d] in terminal_bad]
+            # Only a FAILED dependency is final. A BLOCKED one is waiting for the
+            # operator's answer — its dependents wait with it instead of failing.
+            dead = [d for d in t.depends_on if self.state[d] is TaskState.FAILED]
             if dead:
                 self._fail(t, f"dependency failed: {dead}")
                 continue
@@ -446,6 +572,22 @@ class Dispatcher:
     def _unfinished(self) -> bool:
         pending = (TaskState.QUEUED, *IN_FLIGHT)
         return any(self.state[t.id] in pending for t in self.tasks)
+
+    def _slots_used(self) -> int:
+        return sum(self._slots.get(tid, 1) for tid in self._active)
+
+    def _candidates_for(self, task: Task, free_slots: int) -> int:
+        """How many parallel candidates this launch gets: best-of-N only on a
+        ticket's FIRST attempt (a retry resumes one agent with evidence; an
+        adopted branch continues one line of work), capped by free slots."""
+        wanted = task.candidates or self.cfg.candidates
+        first_try = (
+            task.attempts == 0 and task.continuations == 0 and not task.resume_session
+            and task.id not in self._parked_retry and not task.adopt_branch
+        )
+        if not first_try or wanted <= 1:
+            return 1
+        return max(1, min(wanted, free_slots))
 
     # ------------------------------------------------------------------- run
 
@@ -475,6 +617,7 @@ class Dispatcher:
             slots=self.cfg.max_slots,
             budget_usd=self.cfg.budget_usd,
             mode=self.cfg.execution_mode,
+            isolation=self.cfg.isolation,
             pr=self.cfg.pr.enabled,
             tasks=[
                 {"id": t.id, "title": t.title, "model": t.model, "effort": t.effort,
@@ -530,7 +673,8 @@ class Dispatcher:
                     if self.state[t.id] is TaskState.QUEUED:
                         self.log.emit("skipped", task=t.id, reason="run stopped")
             counts = Counter(str(s) for s in self.state.values())
-            self.log.emit("run_end", counts=dict(counts), stopped=self._stopped)
+            self.log.emit("run_end", counts=dict(counts), stopped=self._stopped,
+                          spent_usd=round(self._spent_usd, 4))
             merged = counts.get(str(TaskState.DONE), 0)
             failed = counts.get(str(TaskState.FAILED), 0)
             blocked = counts.get(str(TaskState.BLOCKED), 0)
@@ -573,26 +717,51 @@ class Dispatcher:
             return
         for repo in sorted(self._merged_repos, key=str):
             self.log.emit("integration_start", repo=str(repo))
-            result = await asyncio.to_thread(run_integration, repo, self.cfg.integration)
+            result = await asyncio.to_thread(self._integration_for, repo)
             self.log.emit(
                 "integration", repo=str(repo), ok=result.ok,
                 failures=list(result.failures)[:20],
             )
 
+    def _integration_for(self, repo: Path) -> VerifyResult:
+        """Direct mode: at the repo root, as before. Sandbox mode: this is merged
+        AGENT code, so it runs in the box — against a scratch checkout of the base
+        (the operator's own checkout, with its real `.git`, never enters a box)."""
+        if not self._sandboxed:
+            return run_integration(repo, self.cfg.integration)
+        base = next(t.base_branch for t in self.tasks if t.repo == repo)
+        wt = wt_mod.create(repo, self.run_dir / "wt", self.run_id, "integration", base)
+        try:
+            if self.cfg.setup.commands:
+                wt_mod.run_setup(
+                    wt.path, self.cfg.setup.commands, self.cfg.setup.timeout_s,
+                    _box_runner(wt, tag="setup", allow_network=True),
+                )
+            return run_integration(
+                repo, self.cfg.integration,
+                _box_runner(wt, tag="integration", allow_network=False), cwd=wt.path,
+            )
+        except wt_mod.SetupError as exc:
+            return VerifyResult(ok=False, failures=(f"integration setup failed: {exc}",))
+        finally:
+            wt_mod.remove(wt, delete_branch=True)
+
     async def _schedule_loop(self) -> None:
         while self._unfinished():
             await self._poll_control()
             self._active = {k: v for k, v in self._active.items() if not v.done()}
+            self._slots = {k: v for k, v in self._slots.items() if k in self._active}
             now = time.monotonic()
 
             if self._stopped and not self._active and self._merge_q.empty():
                 break
 
             paused = self._manual_pause or now < self._pause_until
+            free = self.cfg.max_slots - self._slots_used()
             can_launch = (
                 not paused
                 and not self._stopped
-                and len(self._active) < self.cfg.max_slots
+                and free > 0
                 and now >= self._next_launch_at
             )
             if can_launch and (task := self._next_eligible()):
@@ -600,8 +769,11 @@ class Dispatcher:
                 # eligibility must never depend on whether the worker got scheduled
                 # yet, or the same task is re-selected in a tight loop that starves
                 # the event loop (bug found by faulthandler on 2026-07-11).
+                self._blocked_wait_since = None
+                n = self._candidates_for(task, free)
                 self._set_state(task, TaskState.RUNNING)
-                self._active[task.id] = asyncio.create_task(self._worker(task))
+                self._slots[task.id] = n
+                self._active[task.id] = asyncio.create_task(self._worker(task, n))
                 # Stagger as a timestamp, not a sleep: control stays responsive.
                 self._next_launch_at = now + self.cfg.stagger_seconds
                 await asyncio.sleep(0)  # yield so the worker actually starts
@@ -619,6 +791,7 @@ class Dispatcher:
             queued = [t for t in self.tasks if self.state[t.id] is TaskState.QUEUED]
             merging = any(self.state[t.id] in (TaskState.MERGE_QUEUED, TaskState.MERGING)
                           for t in self.tasks)
+            waiting = [t for t in queued if self._waits_on_blocked(t)]
             if merging:
                 await asyncio.sleep(0.2)
             elif self._awaiting:
@@ -628,6 +801,8 @@ class Dispatcher:
                 await asyncio.sleep(0.3)
             elif queued and (paused or now < self._next_launch_at):
                 await asyncio.sleep(min(1.0, max(self._next_launch_at - now, 0.1)))
+            elif waiting and len(waiting) == len(queued):
+                await self._wait_for_answers(waiting, now)
             elif queued:
                 # Nothing active, nothing launchable: the remaining graph is unsatisfiable.
                 for t in queued:
@@ -635,315 +810,479 @@ class Dispatcher:
             else:
                 break
 
+    async def _wait_for_answers(self, waiting: list[Task], now: float) -> None:
+        """Everything left depends on a BLOCKED ticket: keep the run alive (and
+        control-responsive) so an answer from the dashboard can unblock the chain —
+        for up to concurrency.blocked_wait_min, after which the dependents are left
+        for a later run, with that reason, instead of hanging forever."""
+        if self._blocked_wait_since is None:
+            self._blocked_wait_since = now
+            self.log.emit("waiting_on_operator", tasks=[t.id for t in waiting],
+                          minutes=self.cfg.blocked_wait_min)
+            await self._notify(
+                f"{len(waiting)} ticket(s) are waiting on a blocked ticket — answer it "
+                f"to let them run."
+            )
+        if now - self._blocked_wait_since < self.cfg.blocked_wait_min * 60:
+            await asyncio.sleep(0.5)
+            return
+        for t in waiting:
+            self._fail(t, "still waiting on a blocked ticket when the run's wait ended "
+                          "— left in the backlog for the next run")
+
     # ---------------------------------------------------------------- worker
 
-    async def _worker(self, task: Task) -> None:
+    async def _worker(self, task: Task, candidates: int = 1) -> None:
         # State is already RUNNING — set by the scheduler at launch time.
+        self._held[task.id] = []
+        try:
+            if candidates > 1:
+                await self._run_candidates(task, candidates)
+            else:
+                await self._single_attempt(task)
+        except asyncio.CancelledError:
+            # Deliberate operator kill (dashboard) or run shutdown. Absorbing the
+            # cancellation is intentional: the worker cleans up and records a
+            # terminal state.
+            for wt in list(self._held.get(task.id, [])):
+                await asyncio.shield(asyncio.to_thread(wt_mod.remove, wt, delete_branch=True))
+            self._fail(task, "killed by the operator")
+        except Exception as exc:  # noqa: BLE001 — a worker must never take down the run
+            for wt in list(self._held.get(task.id, [])):
+                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
+            self._fail(task, f"internal worker error: {exc!r}")
+        finally:
+            self._held.pop(task.id, None)
+
+    async def _single_attempt(self, task: Task) -> None:
         # A parked worktree from a retryable failure is reused as-is: the agent
         # resumes its session there, and setup is already done (both are paid
         # only once per task, not once per attempt).
         parked = self._parked_retry.pop(task.id, None)
+        wt = await self._open_worktree(task, parked)
+        if wt is None:
+            return
+        log_path = _fresh_log(self.run_dir / "agents" / f"{task.id}.stdout.jsonl")
+        result = await self._run_agent_on(task, wt, log_path)
+        await self._handle_agent_result(task, wt, result)
+
+    async def _open_worktree(
+        self, task: Task, parked: wt_mod.Worktree | None, suffix: str = ""
+    ) -> wt_mod.Worktree | None:
+        """A ready worktree for this attempt — parked (resume) or fresh (created,
+        sandbox infra up, setup run). None when the task failed getting there."""
         if parked is not None:
-            wt = parked
-        else:
-            task.resume_session = None  # fresh worktree ⇒ a resume would desync
-            try:
-                wt = await asyncio.to_thread(
-                    wt_mod.create, task.repo, self.run_dir / "wt", self.run_id, task.id,
-                    task.base_branch,
-                )
-            except wt_mod.GitError as exc:
-                self._fail(task, f"worktree creation failed: {exc}")
-                return
-            except asyncio.CancelledError:
-                # Killed before the worktree existed: nothing to clean, but the task
-                # must still reach a terminal state or it stays RUNNING forever.
-                self._fail(task, "killed by the operator")
-                return
-
-        sandboxed = self.cfg.isolation == "sandbox"
+            self._held[task.id].append(parked)
+            return parked
+        task.resume_session = None  # fresh worktree ⇒ a resume would desync
+        adopt = task.adopt_branch
         try:
-            if sandboxed and parked is None:
-                # Bring the isolation infra up ONCE before setup/agent/verify (all
-                # run in the box). Fails the task early with an actionable message
-                # if Docker or the image isn't ready, instead of deep in a phase.
-                try:
-                    await asyncio.to_thread(sandbox_mod.ensure_infra)
-                except sandbox_mod.SandboxError as exc:
-                    await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                    self._fail(task, f"sandbox unavailable: {exc}")
-                    return
-            if self.cfg.setup.commands and parked is None:
-                try:
-                    await asyncio.to_thread(
-                        wt_mod.run_setup, wt.path, self.cfg.setup.commands,
-                        self.cfg.setup.timeout_s,
-                        _sbx_setup_runner if sandboxed else None,
-                    )
-                    self.log.emit("setup", task=task.id, ok=True)
-                except wt_mod.SetupError as exc:
-                    self.log.emit("setup", task=task.id, ok=False, reason=str(exc)[:500])
-                    await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                    # Environment problem, not agent failure: retrying without a
-                    # config fix would burn attempts for nothing.
-                    self._fail(task, f"worktree setup failed: {exc}")
-                    return
-
-            log_path = self.run_dir / "agents" / f"{task.id}.stdout.jsonl"
-            recall = await self._lessons.recall(task)
-            if recall.text:
-                self.log.emit(
-                    "lessons", task=task.id, count=len(recall.fact_ids), ids=recall.fact_ids
-                )
-                record_applications(self._workspace, recall.fact_ids)
-
-            # Announce this ticket's intended write-set on the bus (so siblings see
-            # it in flight), then hand it the CURATED snapshot of what the others
-            # have claimed, decided and landed. Best-effort: a bus hiccup must
-            # never sink a run, so it's guarded.
-            coord_text = ""
-            with contextlib.suppress(OSError):
-                self._coord.claim(task.id, list(task.files_hint))
-                coord_text = world_view(self._coord.events(), for_ticket=task.id)
-            def _progress(turns: int, tokens: int) -> None:
-                # Live per-agent activity (C6): one event per turn, so the card shows
-                # a growing turn/token count while the agent works, not just at the end.
-                self.log.emit("agent_progress", task=task.id, turns=turns, tokens=tokens)
-
-            result = await agent_mod.run_agent(
-                self.cfg.agent, task, wt.path, self._contract, log_path, recall.text,
-                self._brief_for(task.repo), architecture=self._architecture(),
-                on_progress=_progress,
-                mode=self.cfg.execution_mode,
-                isolation=self.cfg.isolation,
-                coordination=coord_text,
-                coord_path=self._coord.path,
+            wt = await asyncio.to_thread(
+                wt_mod.create, task.repo, self.run_dir / "wt", self.run_id,
+                f"{task.id}{suffix}", task.base_branch, start_point=adopt,
             )
-            u = result.usage
-            self._spent_usd += u.cost_usd
-            # Remember the session so a later-stage failure (merge conflict,
-            # review rejection) can resume this agent rather than restart cold.
-            task.last_session = result.session_id
+        except wt_mod.GitError as exc:
+            self._fail(task, f"worktree creation failed: {exc}")
+            return None
+        self._held[task.id].append(wt)
+        if adopt:
+            # The recovered commits now live on this attempt's branch: drop the old
+            # ref, and tell the agent it is continuing interrupted work.
+            task.adopt_branch = None
+            await asyncio.to_thread(wt_mod.git, task.repo, "branch", "-D", adopt, check=False)
+            task.failure_notes.append(
+                "A previous run was interrupted while working on this ticket. Its "
+                "commits are already on your branch — read them (git log, git diff "
+                f"{task.base_branch}...HEAD), then continue from there."
+            )
+            self.log.emit("adopted", task=task.id, branch=adopt)
+        if self._sandboxed:
+            # Bring the isolation infra up ONCE before setup/agent/verify (all
+            # run in the box). Fails the task early with an actionable message
+            # if Docker or the image isn't ready, instead of deep in a phase.
+            try:
+                await asyncio.to_thread(sandbox_mod.ensure_infra)
+            except sandbox_mod.SandboxError as exc:
+                await self._discard(task, wt)
+                self._fail(task, f"sandbox unavailable: {exc}")
+                return None
+        if self.cfg.setup.commands:
+            try:
+                await asyncio.to_thread(
+                    wt_mod.run_setup, wt.path, self.cfg.setup.commands,
+                    self.cfg.setup.timeout_s,
+                    _box_runner(wt, tag="setup", allow_network=True) if self._sandboxed
+                    else None,
+                )
+                self.log.emit("setup", task=task.id, ok=True)
+            except wt_mod.SetupError as exc:
+                self.log.emit("setup", task=task.id, ok=False, reason=str(exc)[:500])
+                await self._discard(task, wt)
+                # Environment problem, not agent failure: retrying without a
+                # config fix would burn attempts for nothing.
+                self._fail(task, f"worktree setup failed: {exc}")
+                return None
+        return wt
+
+    async def _run_agent_on(
+        self, task: Task, wt: wt_mod.Worktree, log_path: Path
+    ) -> agent_mod.AgentResult:
+        """One agent pass on a worktree: prompt layers, the agent itself (in the box
+        when sandboxed, its commits imported back), cost + progress events."""
+        recall = await self._lessons.recall(task)
+        if recall.text:
             self.log.emit(
-                "agent_result",
-                task=task.id,
-                status=result.status,
-                turns=result.turns,
-                wall_s=round(result.wall_s, 1),
-                summary=result.summary,
-                session_id=result.session_id,
-                cost_usd=round(u.cost_usd, 4),
-                input_tokens=u.input_tokens,
-                output_tokens=u.output_tokens,
-                cache_read_tokens=u.cache_read_tokens,
-                spent_usd=round(self._spent_usd, 4),
+                "lessons", task=task.id, count=len(recall.fact_ids), ids=recall.fact_ids
             )
-            if result.rate_limit_info:
-                # Plan-window snapshot (subscription): reset time + status, so the
-                # dashboard can show how close the plan is to its limit.
-                rli = result.rate_limit_info
-                self.log.emit(
-                    "plan_limit",
-                    status=str(rli.get("status", "")),
-                    resets_at=rli.get("resetsAt"),
-                    window=str(rli.get("rateLimitType", "")),
-                )
-            self._enforce_budget()
+            record_applications(self._workspace, recall.fact_ids)
 
-            if result.status == "ratelimit":
-                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                self._trigger_pause()
-                self._set_state(task, TaskState.QUEUED)  # not a retry: task did nothing wrong
-                return
+        # Announce this ticket's intended write-set on the bus (so siblings see
+        # it in flight), then hand it the CURATED snapshot of what the others
+        # have claimed, decided and landed. Best-effort: a bus hiccup must
+        # never sink a run, so it's guarded.
+        coord_text = ""
+        with contextlib.suppress(OSError):
+            self._coord.claim(task.id, list(task.files_hint))
+            coord_text = world_view(self._coord.events(), for_ticket=task.id)
+
+        def _progress(turns: int, tokens: int) -> None:
+            # Live per-agent activity (C6): one event per turn, so the card shows
+            # a growing turn/token count while the agent works, not just at the end.
+            self.log.emit("agent_progress", task=task.id, turns=turns, tokens=tokens)
+
+        box = None
+        if self._sandboxed:
+            box = await asyncio.to_thread(
+                sandbox_mod.box_for, wt, tag="agent",
+                out_dir=self.run_dir / "sbx" / wt.path.name,
+            )
+        result = await agent_mod.run_agent(
+            self.cfg.agent, task, wt.path, self._contract, log_path, recall.text,
+            self._brief_for(task.repo), architecture=self._architecture(),
+            on_progress=_progress,
+            mode=self.cfg.execution_mode,
+            isolation=self.cfg.isolation,
+            coordination=coord_text,
+            coord_path=self._coord.path,
+            box=box,
+        )
+        if box is not None:
+            try:
+                await asyncio.to_thread(sandbox_mod.import_result, wt, box)
+            except (sandbox_mod.SandboxError, wt_mod.GitError) as exc:
+                result = agent_mod.AgentResult(
+                    "error", f"could not import the sandboxed agent's commits: {exc}"[:500],
+                    result.turns, result.wall_s, None, result.session_id, result.usage,
+                )
+        u = result.usage
+        self._spent_usd += u.cost_usd
+        # Remember the session so a later-stage failure (merge conflict,
+        # review rejection) can resume this agent rather than restart cold.
+        task.last_session = result.session_id
+        self.log.emit(
+            "agent_result",
+            task=task.id,
+            attempt=task.attempts,
+            worktree=wt.path.name,
+            status=result.status,
+            turns=result.turns,
+            wall_s=round(result.wall_s, 1),
+            summary=result.summary,
+            session_id=result.session_id,
+            cost_usd=round(u.cost_usd, 4),
+            input_tokens=u.input_tokens,
+            output_tokens=u.output_tokens,
+            cache_read_tokens=u.cache_read_tokens,
+            cache_write_tokens=u.cache_write_tokens,
+            spent_usd=round(self._spent_usd, 4),
+        )
+        if result.rate_limit_info:
+            # Plan-window snapshot (subscription): reset time + status, so the
+            # dashboard can show how close the plan is to its limit.
+            rli = result.rate_limit_info
+            self.log.emit(
+                "plan_limit",
+                status=str(rli.get("status", "")),
+                resets_at=rli.get("resetsAt"),
+                window=str(rli.get("rateLimitType", "")),
+            )
+        if result.status != "ratelimit":
+            self._rate_limit_cleared()
+        self._enforce_budget()
+        return result
+
+    async def _handle_agent_result(
+        self, task: Task, wt: wt_mod.Worktree, result: agent_mod.AgentResult,
+        *, verified: bool = False,
+    ) -> None:
+        """Route one agent outcome: pause, park for the operator, continue, retry,
+        or carry the work on through verify → review → landing."""
+        if result.status == "ratelimit":
+            await self._discard(task, wt)
+            resets = (result.rate_limit_info or {}).get("resetsAt")
+            self._trigger_pause(resets)
+            self._set_state(task, TaskState.QUEUED)  # not a retry: task did nothing wrong
+            return
+        if result.status in ("decision", "blocked"):
+            # A decision: the agent reached a genuine fork it must not decide alone
+            # and offered concrete options — parked like a block (same answer→resume
+            # machinery), but the options let the dashboard render a pick instead of
+            # a free-text box. Either way, capture the ground truth BEFORE the
+            # worktree is gone, so the operator judges the question against git.
+            ctx = await asyncio.to_thread(_blocked_context, task, wt)
+            await self._discard(task, wt)
+            self._blocked_questions[task.id] = result.summary
+            extra: dict = {}
             if result.status == "decision":
-                # The agent reached a genuine fork it must not decide alone: it
-                # offered concrete options. Park it like a block (same answer→resume
-                # machinery), but carry the options so the dashboard renders a pick
-                # instead of a free-text answer box.
-                ctx = await asyncio.to_thread(_blocked_context, task, wt)
-                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                self._blocked_questions[task.id] = result.summary
                 self._pending_decisions[task.id] = result.summary
-                self.log.emit(
-                    "blocked", task=task.id, question=result.summary, context=ctx,
-                    kind="decision", options=list(result.options),
+                extra = {"kind": "decision", "options": list(result.options)}
+            self.log.emit("blocked", task=task.id, question=result.summary, context=ctx, **extra)
+            self._set_state(task, TaskState.BLOCKED)
+            what = "needs a decision from you" if result.status == "decision" \
+                else "is blocked and needs you"
+            await self._notify(f"{task.id} “{task.title}” {what}: {result.summary[:160]}")
+            return
+        if result.status == "maxturns":
+            # The agent ran out of turns but was progressing — resume its session
+            # to CONTINUE rather than fail. Capped (max_continuations) so a stuck
+            # ticket can't loop forever, and it does NOT consume a retry. With no
+            # session to resume, or once the cap is hit, fall through to a normal
+            # retryable failure.
+            if result.session_id and task.continuations < self.cfg.max_continuations:
+                task.continuations += 1
+                task.resume_session = result.session_id
+                task.failure_notes.append(
+                    "You ran out of your turn budget before finishing. Your work is "
+                    "intact in the worktree — continue from where you stopped, run "
+                    "the success criteria, and finish the ticket."
                 )
-                self._set_state(task, TaskState.BLOCKED)
-                await self._notify(
-                    f"{task.id} “{task.title}” needs a decision from you: "
-                    f"{result.summary[:160]}"
-                )
-                return
-            if result.status == "blocked":
-                # Capture the ground truth BEFORE the worktree is gone, so the
-                # operator judges the agent's question against real git state.
-                ctx = await asyncio.to_thread(_blocked_context, task, wt)
-                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                self._blocked_questions[task.id] = result.summary
-                self.log.emit(
-                    "blocked", task=task.id, question=result.summary, context=ctx
-                )
-                self._set_state(task, TaskState.BLOCKED)
-                await self._notify(
-                    f"{task.id} “{task.title}” is blocked and needs you: "
-                    f"{result.summary[:160]}"
-                )
-                return
-            if result.status == "maxturns":
-                # The agent ran out of turns but was progressing — resume its session
-                # to CONTINUE rather than fail. Capped (max_continuations) so a stuck
-                # ticket can't loop forever, and it does NOT consume a retry. With no
-                # session to resume, or once the cap is hit, fall through to a normal
-                # retryable failure.
-                if result.session_id and task.continuations < self.cfg.max_continuations:
-                    task.continuations += 1
-                    task.resume_session = result.session_id
-                    task.failure_notes.append(
-                        "You ran out of your turn budget before finishing. Your work is "
-                        "intact in the worktree — continue from where you stopped, run "
-                        "the success criteria, and finish the ticket."
-                    )
-                    self._parked_retry[task.id] = wt
-                    self.log.emit("continued", task=task.id, n=task.continuations)
-                    self._set_state(task, TaskState.QUEUED)
-                else:
-                    await self._retryable_failure(
-                        task, wt, None if task.resume_session else result.session_id,
-                        "ran out of turn budget repeatedly without finishing",
-                    )
-                return
-            if result.status in ("timeout", "error"):
-                # A resumed attempt that errored again does NOT re-park: the
-                # session may be the problem, so the next attempt starts fresh.
-                session = None if task.resume_session else result.session_id
-                await self._retryable_failure(
-                    task, wt, session, f"agent {result.status}: {result.summary}"
-                )
-                return
-
-            # No-op ticket: the agent EXPLICITLY declared the change already existed
-            # ("noop": true) and git confirms it (clean tree, no new commit). Landing
-            # nothing is a valid outcome — mark it done and archive, skipping
-            # verify/review/merge. This removes the exact pressure that pushed an agent
-            # toward a destructive `git reset` to fabricate a commit. A plain done with
-            # no commit (no noop claim) is NOT trusted here: it falls through to the
-            # verify gate, which fails it with "no commits on the task branch".
-            if result.noop and await asyncio.to_thread(_is_noop, task, wt):
-                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                self.log.emit(
-                    "noop", task=task.id, summary=result.summary or "already implemented"
-                )
-                self._set_state(task, TaskState.DONE)
-                self._archive_ticket(task)
-                return
-
-            if task.skip_verify:
-                # Trivial ticket, operator opted out: no verify step (they'll eyeball it).
-                self.log.emit("verify", task=task.id, ok=True, skipped=True, failures=[])
+                self._release(task, wt)
+                self._parked_retry[task.id] = wt
+                self.log.emit("continued", task=task.id, n=task.continuations)
+                self._set_state(task, TaskState.QUEUED)
             else:
-                self._set_state(task, TaskState.VERIFYING)
-                verdict = await asyncio.to_thread(
-                    run_verify, task, wt.path, self.cfg.verify,
-                    _sbx_verify_runner if sandboxed else None,
+                await self._retryable_failure(
+                    task, wt, None if task.resume_session else result.session_id,
+                    "ran out of turn budget repeatedly without finishing",
                 )
-                self.log.emit(
-                    "verify", task=task.id, ok=verdict.ok, failures=list(verdict.failures),
-                )
-                if not verdict.ok:
-                    await self._retryable_failure(
-                        task, wt, result.session_id,
-                        "verify failed: " + "; ".join(verdict.failures),
+            return
+        if result.status in ("timeout", "error"):
+            # A resumed attempt that errored again does NOT re-park: the
+            # session may be the problem, so the next attempt starts fresh.
+            session = None if task.resume_session else result.session_id
+            await self._retryable_failure(
+                task, wt, session, f"agent {result.status}: {result.summary}"
+            )
+            return
+
+        # No-op ticket: the agent EXPLICITLY declared the change already existed
+        # ("noop": true) and git confirms it (clean tree, no new commit). Landing
+        # nothing is a valid outcome — mark it done and archive, skipping
+        # verify/review/merge. This removes the exact pressure that pushed an agent
+        # toward a destructive `git reset` to fabricate a commit. A plain done with
+        # no commit (no noop claim) is NOT trusted here: it falls through to the
+        # verify gate, which fails it with "no commits on the task branch".
+        if result.noop and await asyncio.to_thread(_is_noop, task, wt):
+            await self._discard(task, wt)
+            self.log.emit(
+                "noop", task=task.id, summary=result.summary or "already implemented"
+            )
+            self._set_state(task, TaskState.DONE)
+            self._archive_ticket(task)
+            return
+
+        if not verified and not await self._verify_gate(task, wt, result.session_id):
+            return
+        if self.cfg.review.enabled:
+            if task.skip_review:
+                # Operator opted this ticket out of the AI reviewer — saves a
+                # whole review agent's tokens on a low-risk change.
+                self.log.emit("review", task=task.id, verdict="skipped",
+                              reasons=["reviewer skipped for this ticket"])
+            else:
+                outcome = await self._review_gate(task, wt)
+                if outcome == "hold":
+                    await self._park_for_approval(
+                        task, wt, reason="the reviewer could not reach a verdict — "
+                                         "your call",
                     )
                     return
-
-            if self.cfg.review.enabled:
-                if task.skip_review:
-                    # Operator opted this ticket out of the AI reviewer — saves a
-                    # whole review agent's tokens on a low-risk change.
-                    self.log.emit("review", task=task.id, verdict="skipped",
-                                  reasons=["reviewer skipped for this ticket"])
-                elif not await self._review_gate(task, wt):
+                if outcome != "approve":
                     return
+        await self._land(task, wt)
 
-            if self.cfg.manual_approval:
-                # Control mode: park the ready branch and wait for the operator.
-                base = wt_mod.git(wt.repo, "rev-parse", task.base_branch, check=False)
-                head = wt_mod.git(wt.repo, "rev-parse", wt.branch, check=False)
-                base_sha = base.stdout.strip()
-                head_sha = head.stdout.strip()
-                self._awaiting[task.id] = (task, wt)
-                # When checkpoints are on, hand the dashboard the per-step commits so
-                # a single step can be undone before approval. Off → empty list.
-                cps = (
-                    checkpoint_mod.list_checkpoints(wt.path, task.base_branch)
-                    if self.cfg.agent.checkpoints else []
-                )
-                self.log.emit(
-                    "awaiting_approval", task=task.id, repo=str(task.repo),
-                    base=base_sha, commit=head_sha, checkpoints=cps,
-                )
-                self._set_state(task, TaskState.AWAITING_APPROVAL)
+    async def _verify_gate(self, task: Task, wt: wt_mod.Worktree, session: str | None) -> bool:
+        """The deterministic gate. False = the task was requeued or failed."""
+        if task.skip_verify:
+            # Trivial ticket, operator opted out: no verify step (they'll eyeball it).
+            self.log.emit("verify", task=task.id, ok=True, skipped=True, failures=[])
+            return True
+        self._set_state(task, TaskState.VERIFYING)
+        verdict = await asyncio.to_thread(
+            run_verify, task, wt.path, self.cfg.verify, self._verify_runner(wt),
+        )
+        self.log.emit("verify", task=task.id, ok=verdict.ok, failures=list(verdict.failures))
+        if not verdict.ok:
+            await self._retryable_failure(
+                task, wt, session, "verify failed: " + "; ".join(verdict.failures),
+            )
+            return False
+        return True
+
+    async def _park_for_approval(self, task: Task, wt: wt_mod.Worktree, reason: str = "") -> None:
+        """Park the ready branch and wait for the operator (control mode, or a
+        review that could not conclude under review.on_failure: hold)."""
+        base = wt_mod.git(wt.repo, "rev-parse", task.base_branch, check=False)
+        head = wt_mod.git(wt.repo, "rev-parse", wt.branch, check=False)
+        self._release(task, wt)
+        self._awaiting[task.id] = (task, wt)
+        # When checkpoints are on, hand the dashboard the per-step commits so
+        # a single step can be undone before approval. Off → empty list.
+        cps = (
+            checkpoint_mod.list_checkpoints(wt.path, task.base_branch)
+            if self.cfg.agent.checkpoints else []
+        )
+        self.log.emit(
+            "awaiting_approval", task=task.id, repo=str(task.repo),
+            base=base.stdout.strip(), commit=head.stdout.strip(), checkpoints=cps,
+            **({"reason": reason} if reason else {}),
+        )
+        self._set_state(task, TaskState.AWAITING_APPROVAL)
+        if reason:
+            await self._notify(f"{task.id} “{task.title}” waits for your approval: {reason}")
+
+    async def _land(self, task: Task, wt: wt_mod.Worktree) -> None:
+        if self.cfg.manual_approval:
+            await self._park_for_approval(task, wt)
+            return
+        self._release(task, wt)
+        self._set_state(task, TaskState.MERGE_QUEUED)
+        self._merge_q.put_nowait((task, wt))
+
+    # ----------------------------------------------------------- best-of-N
+
+    async def _run_candidates(self, task: Task, n: int) -> None:
+        """N independent agents on the same ticket, each in its own worktree. The
+        verified candidate with the smallest diff goes on to review/landing; the
+        rest are discarded. With no passing candidate, the first one is handled
+        like a normal single attempt (retry with evidence, blocked, …)."""
+        wts: list[wt_mod.Worktree] = []
+        for i in range(n):
+            wt = await self._open_worktree(task, None, suffix=f"-c{i + 1}")
+            if wt is None:
+                for other in wts:
+                    await self._discard(task, other)
                 return
+            wts.append(wt)
+        self.log.emit("candidates_start", task=task.id, n=n)
+        agents_dir = self.run_dir / "agents"
+        # Candidate 1 writes to the canonical log (the one the dashboard tails live).
+        logs = [_fresh_log(agents_dir / f"{task.id}.stdout.jsonl")] + [
+            _fresh_log(agents_dir / f"{task.id}.c{i + 1}.stdout.jsonl") for i in range(1, n)
+        ]
+        results = await asyncio.gather(
+            *(self._run_agent_on(task, wt, log) for wt, log in zip(wts, logs, strict=True))
+        )
+        if any(r.status == "ratelimit" for r in results):
+            for wt in wts[1:]:
+                await self._discard(task, wt)
+            limited = next(r for r in results if r.status == "ratelimit")
+            await self._handle_agent_result(task, wts[0], limited)
+            return
 
-            self._set_state(task, TaskState.MERGE_QUEUED)
-            self._merge_q.put_nowait((task, wt))
-        except asyncio.CancelledError:
-            # Deliberate operator kill (dashboard). Absorbing the cancellation is
-            # intentional: the worker cleans up and records a terminal state.
-            await asyncio.shield(asyncio.to_thread(wt_mod.remove, wt, delete_branch=True))
-            self._fail(task, "killed by the operator")
-        except Exception as exc:  # noqa: BLE001 — a worker must never take down the run
-            await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-            self._fail(task, f"internal worker error: {exc!r}")
+        self._set_state(task, TaskState.VERIFYING)
+        scored: list[tuple[int, int]] = []  # (diff size, index) of passing candidates
+        outcomes: list[dict] = []
+        for i, (wt, result) in enumerate(zip(wts, results, strict=True)):
+            entry: dict = {"candidate": i + 1, "status": result.status}
+            if result.status == "done" and not result.noop:
+                verdict = await asyncio.to_thread(
+                    run_verify, task, wt.path, self.cfg.verify, self._verify_runner(wt),
+                )
+                entry["verify"] = verdict.ok
+                if verdict.ok:
+                    size = await asyncio.to_thread(_diff_size, task, wt)
+                    entry["diff_lines"] = size
+                    scored.append((size, i))
+                else:
+                    entry["failures"] = list(verdict.failures)[:3]
+            outcomes.append(entry)
+        winner = min(scored)[1] if scored else None
+        self.log.emit("candidates", task=task.id, outcomes=outcomes,
+                      winner=None if winner is None else winner + 1)
 
-    async def _review_gate(self, task: Task, wt: wt_mod.Worktree) -> bool:
-        """Adversarial review of the diff. True = approved, proceed to merge.
+        keep = winner if winner is not None else 0
+        for i, wt in enumerate(wts):
+            if i != keep:
+                await self._discard(task, wt)
+        if winner is not None and winner != 0:
+            # The dashboard shows the canonical log: make it the winner's.
+            with suppress(OSError):
+                logs[0].rename(agents_dir / f"{task.id}.c1.stdout.jsonl")
+                logs[winner].rename(logs[0])
+        if winner is not None:
+            self.log.emit("verify", task=task.id, ok=True, failures=[],
+                          candidate=winner + 1)
+            task.last_session = results[winner].session_id
+        await self._handle_agent_result(
+            task, wts[keep], results[keep], verified=winner is not None,
+        )
 
-        On a rate limit the completed work is NOT discarded: the gate waits out
-        the global pause and reviews again.
+    # --------------------------------------------------------------- review
+
+    async def _review_gate(self, task: Task, wt: wt_mod.Worktree) -> str:
+        """Adversarial review of the diff: "approve", "rejected" (task requeued or
+        failed), "hold" (inconclusive, the operator decides) or "stopped".
+
+        A review that cannot conclude is retried (review.attempts), then handled
+        per review.on_failure — never silently approved unless the operator chose
+        that. A rate limit waits out the global pause and reviews again.
         """
         self._set_state(task, TaskState.REVIEWING)
         log_path = self.run_dir / "agents" / f"{task.id}.review.jsonl"
-        rate_limit_waits = 0
+        tries = 0
         while True:
             try:
-                verdict = await run_review(self.cfg, task, wt.path, log_path)
+                verdict = await run_review(self.cfg, task, wt.path, _fresh_log(log_path))
             except ReviewError as exc:
-                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                self._retry_or_fail(task, f"review infrastructure error: {exc}")
-                return False
-            if not verdict.rate_limited:
+                verdict = ReviewResult(INCONCLUSIVE, (f"review infrastructure error: {exc}",))
+            self._spent_usd += verdict.cost_usd
+            if verdict.rate_limited:
+                self._trigger_pause()
+                if self._stopped:
+                    await self._discard(task, wt)
+                    self._set_state(task, TaskState.QUEUED)  # intact for a later run
+                    return "stopped"
+                await asyncio.sleep(max(self._pause_until - time.monotonic(), 1.0))
+                continue
+            if verdict.verdict != INCONCLUSIVE:
                 break
-            # Each re-review is a full pass (25-turn agent + 60k-char diff). On a
-            # bad rate-limit day an uncapped loop would re-pay that indefinitely
-            # for ONE ticket — after two waits, fail open: the work already passed
-            # the deterministic verify gate, so merge it and say so loudly.
-            rate_limit_waits += 1
-            if rate_limit_waits > 2:
-                self.log.emit(
-                    "review", task=task.id, verdict="approve",
-                    reasons=["fail-open: rate limit persisted through 2 review retries; "
-                             "merged on the verify gate alone"],
-                )
-                return True
-            self._trigger_pause()
-            if self._stopped:
-                await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
-                self._set_state(task, TaskState.QUEUED)  # intact for a later run
-                return False
-            await asyncio.sleep(max(self._pause_until - time.monotonic(), 1.0))
+            tries += 1
+            if tries >= self.cfg.review.attempts:
+                break
+            self.log.emit("review_retry", task=task.id, reasons=list(verdict.reasons))
 
+        self._enforce_budget()
         self.log.emit("review", task=task.id, verdict=verdict.verdict,
-                      reasons=list(verdict.reasons))
-        if verdict.verdict != "approve":
+                      reasons=list(verdict.reasons), cost_usd=round(verdict.cost_usd, 4))
+        outcome = verdict.verdict
+        if outcome == INCONCLUSIVE:
+            policy = self.cfg.review.on_failure
+            self.log.emit("review_inconclusive", task=task.id, policy=policy)
+            if policy == "approve":
+                return "approve"
+            if policy == "hold":
+                return "hold"
+            outcome = "reject"
+        if outcome != "approve":
             # Park + resume: the agent's commits stand, so it addresses the
             # reviewer's reasons in context instead of rebuilding from scratch.
             await self._retryable_failure(
                 task, wt, task.last_session,
                 "review rejected: " + "; ".join(verdict.reasons),
             )
-            return False
-        return True
+            return "rejected"
+        return "approve"
 
     def _archive_ticket(self, task: Task) -> None:
         """Move a merged ticket to backlog/done/ so the next run cannot replay it.
@@ -961,22 +1300,27 @@ class Dispatcher:
             # Never fail a merged task over housekeeping; just record it.
             self.log.emit("archive_failed", task=task.id, reason=str(exc))
 
+    # ---------------------------------------------------------------- merge
+
     async def _merge_worker(self) -> None:
         while True:
             task, wt = await self._merge_q.get()
             try:
                 self._set_state(task, TaskState.MERGING)
+                runner = self._verify_runner(wt)
                 if self.cfg.pr.enabled:
-                    pr = await asyncio.to_thread(merge_mod.deliver_pr, task, wt, self.cfg.verify)
+                    pr = await asyncio.to_thread(
+                        merge_mod.deliver_pr, task, wt, self.cfg.verify, runner
+                    )
                     if pr.ok:
                         self.log.emit("pr_opened", task=task.id, repo=str(task.repo), url=pr.url)
                         self._set_state(task, TaskState.DONE)
                         self._archive_ticket(task)
                     else:
-                        await self._retryable_failure(task, wt, task.last_session, pr.reason)
+                        await self._merge_setback(task, wt, pr.reason, pr.conflicts)
                     continue
                 result = await asyncio.to_thread(
-                    merge_mod.merge_branch, task, wt, self.cfg.verify
+                    merge_mod.merge_branch, task, wt, self.cfg.verify, runner
                 )
                 if result.ok:
                     self.log.emit(
@@ -995,9 +1339,22 @@ class Dispatcher:
                     self._set_state(task, TaskState.DONE)
                     self._archive_ticket(task)
                 else:
-                    await self._retryable_failure(task, wt, task.last_session, result.reason)
+                    await self._merge_setback(task, wt, result.reason, result.conflicts)
             except Exception as exc:  # noqa: BLE001
                 await asyncio.to_thread(wt_mod.remove, wt, delete_branch=True)
                 self._fail(task, f"internal merge error: {exc!r}")
             finally:
                 self._merge_q.task_done()
+
+    async def _merge_setback(
+        self, task: Task, wt: wt_mod.Worktree, reason: str, conflicts: tuple[str, ...]
+    ) -> None:
+        """A branch that could not land. On conflicts with the moved base the
+        worktree is left mid-merge and the agent resumes to resolve them (with the
+        exact instructions in `reason`); anything else is an ordinary retry."""
+        if conflicts:
+            self.log.emit("merge_conflict", task=task.id, files=list(conflicts)[:50])
+            if not task.last_session:
+                # Nobody to resume into the conflict: start clean next time.
+                wt_mod.git(wt.path, "merge", "--abort", check=False)
+        await self._retryable_failure(task, wt, task.last_session, reason)

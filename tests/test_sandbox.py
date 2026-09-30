@@ -54,8 +54,20 @@ def test_wrap_strips_host_only_mcp_flags() -> None:
     cmd = sandbox.wrap(base, Path("C:/work/wt/t"))
     assert "--mcp-config" not in cmd
     assert "C:/proj/.mcp.json" not in cmd
-    assert "--strict-mcp-config" not in cmd
+    # Isolation from the operator's own MCP servers holds in the box too.
+    assert "--strict-mcp-config" in cmd
     assert "--max-turns" in cmd and "6" in cmd  # unrelated flags survive
+
+
+def test_agents_never_inherit_the_operators_mcp_servers() -> None:
+    # Observed live: without it, a coding agent booted Blender, Unity and the
+    # operator's Gmail/Drive connectors. Only the supervisor may opt out.
+    from factory.agent import build_cli
+
+    agent = build_cli(("python",), max_turns=3, allowed_tools=())
+    assert "--strict-mcp-config" in agent
+    supervisor = build_cli(("python",), max_turns=3, allowed_tools=(), isolate_mcp=False)
+    assert "--strict-mcp-config" not in supervisor
 
 
 def test_setup_uses_injected_runner(tmp_path: Path) -> None:

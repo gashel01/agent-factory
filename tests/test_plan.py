@@ -160,3 +160,101 @@ def test_planner_error_is_actionable(tmp_path, repo, monkeypatch):
     bad = make_config(agent=cfg.agent.__class__(command=(sys.executable, "-c", "exit(3)")))
     with pytest.raises(PlanError, match="without a result"):
         asyncio.run(run_planner(bad, repo, "goal", tmp_path / "plan.jsonl"))
+
+
+def test_planner_writes_tickets_in_the_goals_language() -> None:
+    # An operator whose Claude settings prefer another language must still get
+    # tickets (and clarifying questions) in the language they wrote the goal in.
+    from factory.plan import PLANNER_CONTRACT, PLANNER_QUESTIONS_CONTRACT
+    assert "SAME natural\n  language as the operator's goal" in PLANNER_CONTRACT
+    assert "SAME natural\nlanguage as the operator's goal" in PLANNER_QUESTIONS_CONTRACT
+
+
+# --- quoting the spec instead of paraphrasing it --------------------------------
+# Seen live on a planner-driven build of a small API: SPEC.md said CSV rows are
+# "oldest first (reverse of the list order)"; the planner's ticket paraphrased it as
+# "iterate group.expenses in its stored order, which is oldest-first", the agent
+# followed the ticket, its own tests passed, and the export came out in the wrong order.
+SPEC_EXCERPT = """## CSV export
+
+- One row per expense, oldest first (reverse of the list order). `paid_by` is
+  the payer's **name**.
+"""
+
+
+def _spec_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)  # parse_ticket only checks it's a repo
+    (repo / "SPEC.md").write_text(SPEC_EXCERPT, encoding="utf-8")
+    return repo
+
+
+def test_a_verbatim_quote_is_recognised_across_wrapping_and_markdown(tmp_path: Path) -> None:
+    from factory.plan import check_spec_quotes
+    repo = _spec_repo(tmp_path)
+    quote = ("One row per expense, oldest first (reverse of the list order). "
+             "paid_by is the payer's name.")
+    [c] = check_spec_quotes({"spec": [{"source": "SPEC.md", "quote": quote}]}, repo)
+    assert c["verbatim"] is True and c["problem"] is None
+
+
+def test_the_real_paraphrase_is_flagged(tmp_path: Path) -> None:
+    from factory.plan import check_spec_quotes
+    repo = _spec_repo(tmp_path)
+    paraphrase = "one row per expense, oldest first (iterate group.expenses in its stored order)"
+    [c] = check_spec_quotes({"spec": [{"source": "SPEC.md", "quote": paraphrase}]}, repo)
+    assert c["verbatim"] is False and "paraphrase" in c["problem"]
+
+
+def test_quote_sources_goal_missing_file_and_outside_repo(tmp_path: Path) -> None:
+    from factory.plan import check_spec_quotes
+    repo = _spec_repo(tmp_path)
+    (tmp_path / "secret.md").write_text("the quote", encoding="utf-8")
+    goal = "Export must use LF line endings."
+    got = check_spec_quotes({"spec": [
+        {"source": "goal", "quote": "must use LF line endings"},
+        {"source": "docs/PRD.md", "quote": "x"},
+        {"source": "../secret.md", "quote": "the quote"},
+        "not an entry",
+    ]}, repo, goal)
+    assert [c["verbatim"] for c in got] == [True, False, False]
+    assert "not found in the repository" in got[1]["problem"]
+    assert "not found in the repository" in got[2]["problem"], "never read outside the repo"
+
+
+def test_drafts_open_with_the_verbatim_spec_section(tmp_path: Path) -> None:
+    repo = _spec_repo(tmp_path)
+    backlog = tmp_path / "backlog"
+    tickets = [{
+        "id": "1", "title": "CSV export", "verify": ["node --test"],
+        "spec": [
+            {"source": "SPEC.md",
+             "quote": "One row per expense, oldest first (reverse of the list order)."},
+            {"source": "SPEC.md", "quote": "rows follow the stored order"},
+        ],
+        "body": "## Context\nWrite src/csv.js.",
+    }]
+    [path] = write_drafts(tickets, backlog, repo)
+    text = path.read_text(encoding="utf-8")
+    spec_at, body_at = text.index("## Spec (verbatim"), text.index("## Context")
+    assert spec_at < body_at, "the source of truth comes first"
+    assert "> One row per expense, oldest first (reverse of the list order)." in text
+    assert text.count("WARNING") == 1 and "rows follow the stored order" in text
+    assert load_backlog(backlog, "main")[0].body.lstrip().startswith("## Spec (verbatim")
+
+
+def test_a_ticket_without_spec_quotes_is_unchanged(tmp_path: Path) -> None:
+    repo = _spec_repo(tmp_path)
+    ticket = {"id": "1", "title": "t", "body": "## Context\nx"}
+    [path] = write_drafts([ticket], tmp_path / "b", repo)
+    assert "Spec (verbatim" not in path.read_text(encoding="utf-8")
+
+
+def test_agents_and_reviewer_treat_the_quotes_as_authoritative() -> None:
+    from factory.agent import DEFAULT_CONTRACT
+    from factory.plan import PLANNER_CONTRACT
+    from factory.review import REVIEW_CONTRACT
+    assert "QUOTE THE SPEC, NEVER PARAPHRASE IT" in PLANNER_CONTRACT
+    assert '"Spec (verbatim)" section' in DEFAULT_CONTRACT
+    assert "follow the quote" in DEFAULT_CONTRACT
+    assert "Spec (verbatim)" in REVIEW_CONTRACT

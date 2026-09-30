@@ -2,10 +2,10 @@
  * project's repo path, the companion timeline, learned facts (memory), and the
  * knowledge base (ragmcp docs). */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 
-import { json, readBody, toPosix, workspaceRepo } from "./server-core.js";
+import { json, readJSON, sendError, toPosix, workspaceRepo, writeFileAtomic } from "./server-core.js";
 import {
   knowledgePaths, readApplied, readDocs, readFacts, runRagmcp, scaffoldKnowledge,
   setKnowledgeEnabled, writeDocs, writeFacts,
@@ -24,12 +24,12 @@ export async function handleMemoryRoutes(ctx: WsRouteCtx): Promise<boolean> {
   // is the one place a project's repo path is set without drafting work.
   if (url.pathname === "/api/repo/path" && req.method === "POST") {
     try {
-      const { path } = JSON.parse(await readBody(req)) as { path?: string };
+      const { path } = await readJSON(req) as { path?: string };
       ws.repo = path?.trim() ? resolve(path.trim()) : null;
       registry.save();
       json(res, 200, { ok: true, repo: ws.repo });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -59,7 +59,7 @@ export async function handleMemoryRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/memory" && req.method === "POST") {
     try {
-      const { text, scope, ticketId } = JSON.parse(await readBody(req)) as {
+      const { text, scope, ticketId } = await readJSON(req) as {
         text?: string; scope?: string; ticketId?: string | null;
       };
       if (!text?.trim()) throw new Error("text is required");
@@ -76,7 +76,7 @@ export async function handleMemoryRoutes(ctx: WsRouteCtx): Promise<boolean> {
       writeFacts(file, facts);
       json(res, 200, { ok: true });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -94,7 +94,7 @@ export async function handleMemoryRoutes(ctx: WsRouteCtx): Promise<boolean> {
     }
     if (req.method === "PUT") {
       try {
-        const body = JSON.parse(await readBody(req)) as {
+        const body = await readJSON(req) as {
           text?: string; scope?: string; ticketId?: string | null;
         };
         // Pull the fact out of whichever file holds it (a scope change moves it).
@@ -117,7 +117,7 @@ export async function handleMemoryRoutes(ctx: WsRouteCtx): Promise<boolean> {
         writeFacts(target, facts);
         json(res, 200, { ok: true });
       } catch (err) {
-        json(res, 400, { ok: false, error: String(err) });
+        sendError(res, err);
       }
       return true;
     }
@@ -135,14 +135,14 @@ export async function handleMemoryRoutes(ctx: WsRouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/knowledge" && req.method === "POST") {
     try {
-      const { name, content } = JSON.parse(await readBody(req)) as { name?: string; content?: string };
+      const { name, content } = await readJSON(req) as { name?: string; content?: string };
       if (!name?.trim() || !content) throw new Error("name and content are required");
       // Keep only a safe basename; default a .md extension for pasted notes.
       let safe = basename(name.trim()).replace(/[^\w.\- ]+/g, "_");
       if (!extname(safe)) safe += ".md";
       scaffoldKnowledge(ws.workdir, opts.ragmcp); // idempotent; ensures store + config exist
       const file = join(kp.docsDir, safe);
-      writeFileSync(file, content, "utf-8");
+      writeFileAtomic(file, content);
       const ingest = await runRagmcp(opts.ragmcp, ["ingest", toPosix(file), "--config", toPosix(kp.yaml)], ws.workdir);
       const doc: KnowledgeDoc = {
         id: "K-" + Date.now().toString(36),
@@ -159,18 +159,18 @@ export async function handleMemoryRoutes(ctx: WsRouteCtx): Promise<boolean> {
       // domain result the client reads from doc.error (fetchJSON throws on !2xx).
       json(res, 200, { ok: ingest.ok, doc });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
   if (url.pathname === "/api/knowledge/enable" && req.method === "POST") {
     try {
-      const { enabled } = JSON.parse(await readBody(req)) as { enabled?: boolean };
+      const { enabled } = await readJSON(req) as { enabled?: boolean };
       if (enabled) scaffoldKnowledge(ws.workdir, opts.ragmcp);
       setKnowledgeEnabled(configFile, !!enabled);
       json(res, 200, { ok: true, enabled: !!enabled });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }

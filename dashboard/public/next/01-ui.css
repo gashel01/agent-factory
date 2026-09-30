@@ -1,0 +1,152 @@
+/* Primitives — every view builds from these (src/next/ui.tsx). */
+
+/* ------------------------------------------------------------------ buttons */
+.rx .btn {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 18px; border-radius: 99px;
+  font-size: 14px; font-weight: 580; white-space: nowrap;
+  background: var(--card-3); border: 1px solid var(--hair); color: var(--text);
+  transition: transform 0.16s var(--ease), background 0.16s, opacity 0.16s;
+}
+.rx .btn:hover { background: var(--card-2); transform: translateY(-1px); }
+.rx .btn:active { transform: translateY(0) scale(0.985); }
+.rx .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .btn[disabled], .rx .btn[aria-disabled="true"] { opacity: 0.42; pointer-events: none; }
+.rx .btn.sm { padding: 7px 14px; font-size: 13px; }
+.rx .btn.ghost { background: transparent; border-color: transparent; }
+.rx .btn.ghost:hover { background: var(--card-3); }
+.rx .btn.fill {
+  background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 650;
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 38%, transparent);
+}
+.rx .btn.fill:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); }
+.rx .btn.danger { color: var(--st-needs); }
+.rx .btn.block { width: 100%; }
+
+.rx .iconbtn {
+  all: unset; box-sizing: border-box; cursor: pointer; flex: none;
+  width: 36px; height: 36px; border-radius: 50%;
+  display: grid; place-items: center; color: var(--dim);
+  transition: color 0.16s, background 0.16s;
+}
+.rx .iconbtn:hover { color: var(--text); background: var(--card-2); }
+.rx .iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .iconbtn.boxed { background: var(--card-2); border: 1px solid var(--hair); }
+.rx .iconbtn.on { color: var(--accent); background: var(--card-3); }
+.rx .iconbtn.sm { width: 28px; height: 28px; }
+
+/* ------------------------------------------------------ pills & segmented */
+.rx .pills { display: flex; flex-wrap: wrap; gap: 7px; }
+.rx .pill {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  padding: 7px 14px; border-radius: 99px; font-size: 13px; font-weight: 560;
+  color: var(--dim); background: var(--card-2); border: 1px solid var(--hair);
+}
+.rx .pill:hover { color: var(--text); }
+.rx .pill[aria-pressed="true"] { color: var(--text); background: var(--card-3); border-color: var(--hair-2); }
+.rx .seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 99px; background: var(--card-2); border: 1px solid var(--hair); }
+.rx .seg button {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  padding: 6px 14px; border-radius: 99px; font-size: 13px; font-weight: 580; color: var(--dim);
+}
+.rx .seg button:hover { color: var(--text); }
+.rx .seg button[aria-pressed="true"] { background: var(--card-3); color: var(--text); box-shadow: inset 0 0 0 1px var(--hair-2); }
+.rx .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* -------------------------------------------------------------------- tags */
+.rx .tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 99px; font-size: 11.5px; font-weight: 620; white-space: nowrap;
+  color: var(--c, var(--dim)); background: color-mix(in srgb, var(--c, var(--dim)) 17%, transparent);
+}
+.rx .tag .tag-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* ------------------------------------------------------------------- cards */
+.rx .card {
+  background: var(--card); border: 1px solid var(--hair); border-radius: 21px;
+  padding: 20px; display: grid; gap: 14px; align-content: start;
+}
+.rx .card.tight { padding: 14px 16px; border-radius: 18px; }
+.rx .card-title { font-size: 15.5px; font-weight: 640; letter-spacing: -0.02em; }
+.rx .stat { padding: 16px 18px; border-radius: 18px; background: var(--card); border: 1px solid var(--hair); display: grid; gap: 2px; }
+.rx .stat-value { font-size: 24px; font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.rx .stat-label { font-size: 12.5px; color: var(--dim); }
+
+/* ------------------------------------------------------------------ text */
+.rx .hint { font-size: 13px; color: var(--dim); line-height: 1.5; }
+.rx .label { font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.rx .mono { font-family: var(--mono); font-size: 12.5px; }
+.rx .dim { color: var(--dim); }
+.rx .faint { color: var(--faint); }
+
+/* ------------------------------------------------------------------ fields */
+.rx .field { display: grid; gap: 7px; }
+.rx .field-label { font-size: 12.5px; font-weight: 600; color: var(--faint); letter-spacing: 0.03em; text-transform: uppercase; }
+.rx .input {
+  display: block; width: 100%; padding: 11px 14px; border-radius: 12px;
+  background: var(--card-2); border: 1px solid var(--hair);
+  font: inherit; font-size: 14.5px; color: var(--text); outline: none;
+}
+.rx .input::placeholder { color: var(--faint); }
+.rx .input:focus-visible { border-color: var(--accent); background: var(--card); }
+.rx textarea.input { resize: vertical; line-height: 1.5; min-height: 96px; }
+.rx select.input { cursor: pointer; }
+.rx .input.mono { font-family: var(--mono); font-size: 13px; }
+
+.rx .switch {
+  all: unset; box-sizing: border-box; cursor: pointer; flex: none;
+  width: 42px; height: 26px; border-radius: 99px; position: relative;
+  background: var(--card-3); border: 1px solid var(--hair-2); transition: background 0.16s;
+}
+.rx .switch::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--dim); transition: left 0.18s var(--ease), background 0.16s;
+}
+.rx .switch[aria-checked="true"] { background: var(--st-merged); border-color: transparent; }
+.rx .switch[aria-checked="true"]::after { left: 19px; background: #fff; }
+.rx .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.rx .search-field {
+  display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-radius: 99px;
+  background: var(--card-2); border: 1px solid var(--hair); color: var(--faint); min-width: 240px;
+}
+.rx .search-field input { all: unset; flex: 1; font-size: 14px; color: var(--text); }
+.rx .search-field input::placeholder { color: var(--faint); }
+
+/* ------------------------------------------------------------ bars & misc */
+.rx .bar { height: 6px; border-radius: 99px; background: var(--card-3); overflow: hidden; display: flex; }
+.rx .bar-seg { display: block; height: 100%; }
+.rx .divider { height: 1px; background: var(--hair); }
+.rx .row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.rx .stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.rx .spacer { flex: 1; }
+.rx .kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 6px; background: var(--card-3); color: var(--dim); }
+.rx .empty-state { display: grid; place-items: center; gap: 10px; padding: 56px 16px; text-align: center; color: var(--dim); }
+.rx .empty-state-icon { width: 52px; height: 52px; border-radius: 16px; background: var(--card-2); display: grid; place-items: center; color: var(--dim); }
+.rx .empty-state-title { font-size: 15px; font-weight: 640; color: var(--text); }
+.rx .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--hair-2); border-top-color: var(--accent); animation: rx-spin 0.8s linear infinite; }
+@keyframes rx-spin { to { transform: rotate(360deg); } }
+.rx .skeleton { border-radius: 10px; background: linear-gradient(90deg, var(--card-2), var(--card-3), var(--card-2)); background-size: 200% 100%; animation: rx-shimmer 1.4s ease infinite; }
+@keyframes rx-shimmer { to { background-position: -200% 0; } }
+
+/* -------------------------------------------------------------------- code */
+.rx .code { font-family: var(--mono); font-size: 12.5px; line-height: 1.7; background: var(--code-bg); border: 1px solid var(--hair); border-radius: 16px; padding: 12px 0; overflow: auto; }
+.rx .code-line { display: flex; padding: 0 16px; white-space: pre; }
+.rx .code-num { width: 44px; flex: none; color: var(--faint); user-select: none; }
+.rx .code-sign { width: 16px; flex: none; }
+.rx .code-line.add { background: color-mix(in srgb, var(--st-merged) 12%, transparent); }
+.rx .code-line.del { background: color-mix(in srgb, var(--st-needs) 12%, transparent); }
+.rx .code-line.add .code-sign { color: var(--st-merged); }
+.rx .code-line.del .code-sign { color: var(--st-needs); }
+.rx .code-line.hunk { color: var(--st-info); }
+
+/* ErrorBoundary — a view that crashed renders this instead of a blank screen. */
+.error-boundary {
+  margin: 16px; padding: 16px 18px; border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--st-needs) 40%, transparent);
+  background: color-mix(in srgb, var(--st-needs) 10%, var(--card)); color: var(--text);
+}
+.error-boundary-title { display: flex; align-items: center; gap: 8px; font: 700 14px/1.3 var(--sans); color: var(--st-needs); }
+.error-boundary-msg { margin: 8px 0 12px; font: 12px/1.5 var(--mono); color: var(--dim); overflow-wrap: anywhere; white-space: pre-wrap; }
+.error-boundary-acts { display: flex; gap: 8px; flex-wrap: wrap; }

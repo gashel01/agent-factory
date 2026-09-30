@@ -12,6 +12,11 @@ concurrency:
   # Per-run override: `factory run --slots N`
   max_slots: 2
   stagger_seconds: 20
+  # Best-of-N: independent agents per ticket on its first attempt (each takes a
+  # slot); the verified candidate with the smallest diff wins. 1 = off.
+  candidates: 1
+  # Tickets depending on a BLOCKED one wait this long for your answer.
+  blocked_wait_min: 60
 
 agent:
   command: claude          # any CLI honoring the same flags works (tests use a stub)
@@ -39,6 +44,11 @@ setup:
 verify:
   commands: []             # default gate; tickets usually declare their own
   command_timeout_s: 600
+  require_commands: true   # no command at all = not DONE (a diff proves nothing works);
+                           # a single ticket can opt out with `skip_verify: true`
+  # protected: [...]       # test/CI config the agent may not touch unless its ticket's
+                           # files_hint names it; defaults cover conftest/pytest/jest/
+                           # vitest config and .github/**. [] disables the check.
 
 review:
   enabled: false           # adversarial second agent judging each diff before merge.
@@ -46,6 +56,8 @@ review:
                            # merges land somewhere that matters.
   model: null              # cheap tier recommended, e.g. "haiku"
   timeout_min: 10
+  attempts: 2              # a review with no verdict is retried this many times, then:
+  on_failure: hold         # hold (you approve) | reject (back to the agent) | approve
 
 supervisor:
   # The dashboard chat agent. It always reads the workspace ground truth;
@@ -61,5 +73,6 @@ supervisor:
 ratelimit:
   cooldown_min: 20         # doubles on each subsequent pause: 20 → 40 → 80 ...
   max_pauses_before_stop: 6
+  max_wait_min: 330        # wait for an announced reset up to this; further = stop cleanly
 
 # contract_path: ./CONTRACT.md   # override the built-in execution contract

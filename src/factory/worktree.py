@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,14 +56,49 @@ class GitError(Exception):
         super().__init__(f"git {' '.join(args_)} failed: {self.stderr}")
 
 
-def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+#: Ceiling for one git invocation. Local plumbing takes milliseconds; the ceiling
+#: exists for the network verbs (fetch/push) and a wedged index lock, which would
+#: otherwise hang a whole run with no error.
+GIT_TIMEOUT_S = 300
+
+#: Never let git stop and wait for a human: a fetch/push that wants credentials
+#: fails fast instead of blocking a headless run forever.
+_GIT_ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"}
+
+#: Config overrides for git commands run inside an agent's worktree. The agent
+#: can write anything in that tree; these keep an agent-authored file from
+#: turning a host `git status` into code execution (an fsmonitor command, a
+#: nested submodule's own config). Command-line config beats every config file
+#: and propagates to the child git processes git itself spawns.
+_UNTRUSTED_TREE_OPTS = (
+    "-c", "core.fsmonitor=false",
+    "-c", "diff.ignoreSubmodules=all",
+    "-c", "submodule.recurse=false",
+)
+
+
+def _is_linked_worktree(path: Path) -> bool:
+    """A factory worktree carries a `.git` FILE (a gitdir pointer); the operator's
+    own checkout carries a `.git` directory. Only the former is agent-writable."""
+    return (path / ".git").is_file()
+
+
+def git(
+    repo: Path, *args: str, check: bool = True, timeout: float = GIT_TIMEOUT_S
+) -> subprocess.CompletedProcess[str]:
+    opts = _UNTRUSTED_TREE_OPTS if _is_linked_worktree(repo) else ()
+    try:
+        proc = subprocess.run(
+            ["git", *opts, "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_GIT_ENV,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(args, f"timed out after {timeout:.0f}s") from exc
     if check and proc.returncode != 0:
         raise GitError(args, proc.stderr or proc.stdout)
     return proc
@@ -70,20 +109,89 @@ class Worktree:
     path: Path
     branch: str
     repo: Path
+    # The `.git` pointer file git wrote at creation. Kept so a tree the agent had
+    # write access to can be restored to it before the host runs git there again
+    # (see sanitize_gitlink). Empty for worktrees built by hand in tests.
+    gitlink: str = ""
 
 
-def create(repo: Path, wt_root: Path, run_id: str, task_id: str, base_branch: str) -> Worktree:
+def _branch_exists(repo: Path, branch: str) -> bool:
+    return git(
+        repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False
+    ).returncode == 0
+
+
+def create(
+    repo: Path, wt_root: Path, run_id: str, task_id: str, base_branch: str,
+    *, start_point: str | None = None,
+) -> Worktree:
+    """A fresh worktree on a new `agent/<run>/<task>` branch.
+
+    ``start_point`` (default: the base) lets a recovered branch from a crashed
+    run be adopted, so its commits aren't thrown away. Leftovers from an earlier
+    attempt at the same path/branch (a removal Windows refused, a crash) are
+    cleared first — otherwise every retry of this ticket would fail on
+    "already exists" instead of running.
+    """
     wt_root.mkdir(parents=True, exist_ok=True)
     path = wt_root / task_id  # short path: Windows path-length budget matters here
     branch = f"agent/{run_id}/{task_id}"
-    git(repo, "worktree", "add", str(path), "-b", branch, base_branch)
-    return Worktree(path=path, branch=branch, repo=repo)
+    if (path.exists() or _branch_exists(repo, branch)) and not remove(
+        Worktree(path=path, branch=branch, repo=repo), delete_branch=True
+    ):
+        raise GitError(("worktree", "add"), f"a leftover {path} could not be deleted (locked?)")
+    git(repo, "worktree", "add", str(path), "-b", branch, start_point or base_branch)
+    gitlink = ""
+    with contextlib.suppress(OSError):
+        gitlink = (path / ".git").read_text(encoding="utf-8")
+    return Worktree(path=path, branch=branch, repo=repo, gitlink=gitlink)
 
 
-def remove(wt: Worktree, *, delete_branch: bool) -> None:
-    git(wt.repo, "worktree", "remove", "--force", str(wt.path), check=False)
+def sanitize_gitlink(wt: Worktree) -> None:
+    """Put back the `.git` pointer git wrote when the worktree was created.
+
+    Whoever had write access to the tree (a sandboxed agent, its test suite)
+    could have replaced it with a pointer — or a whole `.git` directory — whose
+    config runs commands. The host is about to run git in this tree, so it must
+    be git's own pointer again. No-op for worktrees without a recorded pointer.
+    """
+    if not wt.gitlink:
+        return
+    dotgit = wt.path / ".git"
+    if dotgit.is_dir() and not dotgit.is_symlink():
+        shutil.rmtree(dotgit, ignore_errors=True)
+    elif dotgit.exists() or dotgit.is_symlink():
+        dotgit.unlink()
+    dotgit.write_text(wt.gitlink, encoding="utf-8")
+
+
+#: Windows keeps files locked for a moment after the process that held them exits
+#: (and antivirus scanners open fresh files). A few spaced attempts ride that out.
+_REMOVE_ATTEMPTS = 4
+_REMOVE_BACKOFF_S = 0.5
+
+
+def remove(wt: Worktree, *, delete_branch: bool) -> bool:
+    """Remove the worktree and (optionally) its branch — and make sure it's gone.
+
+    A silent failure here used to surface one step later as a permanent
+    "worktree already exists" on the retry. So: retry the removal, fall back to
+    deleting the directory and pruning git's record. Returns whether the
+    directory is really gone; it never raises, because it runs on cleanup paths
+    that must still record the task's real outcome (create() re-checks).
+    """
+    for attempt in range(_REMOVE_ATTEMPTS):
+        git(wt.repo, "worktree", "remove", "--force", str(wt.path), check=False)
+        if not wt.path.exists():
+            break
+        shutil.rmtree(wt.path, ignore_errors=True)
+        if not wt.path.exists():
+            break
+        time.sleep(_REMOVE_BACKOFF_S * (attempt + 1))
+    git(wt.repo, "worktree", "prune", check=False)
     if delete_branch:
         git(wt.repo, "branch", "-D", wt.branch, check=False)
+    return not wt.path.exists()
 
 
 def prune(repo: Path) -> None:

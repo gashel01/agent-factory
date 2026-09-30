@@ -2,14 +2,16 @@
  * routes: workspace registry management, host info, usage, Docker, hotspots,
  * portfolio. Runs before per-workspace resolution. */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-import { json, lanIPv4, portfolioCounts, readBody, SAFE_WS, summarizeRun, workspaceRepo } from "./server-core.js";
+import {
+  json, lanIPv4, portfolioCounts, readJSON, SAFE_WS, sendError, summarizeRun, workspaceRepo, writeFileAtomic,
+} from "./server-core.js";
 import {
   dockerPreflight, hotspotsScan, sbxBuild, startDockerBuild, subscriptionUsage,
 } from "./server-usage.js";
-import { excludeLocally, starterFactoryYaml } from "./server-preview.js";
+import { STARTING_MODELS, excludeLocally, starterFactoryYaml } from "./server-preview.js";
 import type { RouteCtx } from "./server-routes.js";
 
 export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
@@ -64,7 +66,7 @@ export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
         // summarizeRun for spend/tokens/budget/mode; portfolioCounts for the
         // board-accurate, cumulative, ghost-free counts (merged across all runs,
         // in-flight dropped when nothing is live).
-        const pc = portfolioCounts(ws.tailer.runsDir, ws.tailer.run, live);
+        const pc = portfolioCounts(ws.tailer.runsDir, ws.tailer.run, live, ws.hidden);
         return {
           name: ws.name,
           workdir: ws.workdir,
@@ -80,7 +82,7 @@ export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
   }
   if (url.pathname === "/api/workspaces" && req.method === "POST") {
     try {
-      const { name, workdir } = JSON.parse(await readBody(req)) as {
+      const { name, workdir } = await readJSON(req) as {
         name?: string;
         workdir?: string;
       };
@@ -92,7 +94,7 @@ export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
       registry.save();
       json(res, 200, { ok: true });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -102,7 +104,8 @@ export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
   // another project the way a reused/shared workspace does.
   if (url.pathname === "/api/projects" && req.method === "POST") {
     try {
-      const { repo, name } = JSON.parse(await readBody(req)) as { repo?: string; name?: string };
+      const { repo, name, model } = await readJSON(req) as { repo?: string; name?: string; model?: string };
+      if (model && !(STARTING_MODELS as readonly string[]).includes(model)) throw new Error(`unknown model "${model}"`);
       if (!repo?.trim()) throw new Error("repository path is required");
       const repoDir = resolve(repo.trim());
       if (!existsSync(repoDir)) throw new Error("repository folder does not exist");
@@ -114,20 +117,20 @@ export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
       const workdir = join(repoDir, ".factory");
       mkdirSync(join(workdir, "backlog"), { recursive: true });
       const cfgPath = join(workdir, "factory.yaml");
-      if (!existsSync(cfgPath)) writeFileSync(cfgPath, starterFactoryYaml(), "utf-8");
+      if (!existsSync(cfgPath)) writeFileAtomic(cfgPath, starterFactoryYaml(model));
       excludeLocally(repoDir, ".factory/");
       registry.register(wsName, workdir, repoDir);
       registry.save();
       json(res, 200, { ok: true, name: wsName, workdir });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
   if (url.pathname.startsWith("/api/workspaces/") && req.method === "PUT") {
     try {
       const oldName = decodeURIComponent(url.pathname.slice("/api/workspaces/".length));
-      const { name } = JSON.parse(await readBody(req)) as { name?: string };
+      const { name } = await readJSON(req) as { name?: string };
       if (!registry.workspaces.has(oldName)) throw new Error("unknown workspace");
       if (!name || !SAFE_WS.test(name)) throw new Error("bad workspace name");
       if (name !== oldName) {
@@ -137,7 +140,7 @@ export async function handleSystemRoutes(ctx: RouteCtx): Promise<boolean> {
       }
       json(res, 200, { ok: true });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }

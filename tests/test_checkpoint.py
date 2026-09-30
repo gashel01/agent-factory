@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from conftest import git as raw_git
@@ -69,11 +70,25 @@ def test_build_command_injects_checkpoint_hook_only_when_enabled(tmp_path, repo)
     task = load_backlog(backlog, "main")[0]
 
     # command=("python",) so PATH resolution succeeds on CI without the real CLI.
+    # The PreToolUse guard is always there; only the checkpoint hook is opt-in.
     off = build_command(AgentConfig(command=("python",)), task)
-    assert "--settings" not in off
+    off_settings = json.loads(off[off.index("--settings") + 1])
+    assert "PreToolUse" in off_settings["hooks"]
+    assert "PostToolUse" not in off_settings["hooks"]
 
     on = build_command(AgentConfig(command=("python",), checkpoints=True), task)
-    assert "--settings" in on
     settings = on[on.index("--settings") + 1]
     assert "PostToolUse" in settings
     assert "factory checkpoint" in settings
+
+    # In the box, Warden isn't installed: both hooks run the mounted standalone script.
+    boxed = build_command(AgentConfig(command=("python",), checkpoints=True), task,
+                          runtime="sandbox")
+    boxed_hooks = json.loads(boxed[boxed.index("--settings") + 1])["hooks"]
+    post = boxed_hooks["PostToolUse"][0]["hooks"][0]["command"]
+    assert post.startswith("python3 /opt/warden/agent_hooks.py checkpoint")
+
+
+def test_standalone_checkpoint_mark_matches():
+    from factory import agent_hooks
+    assert agent_hooks.CHECKPOINT_MARK == CHECKPOINT_MARK

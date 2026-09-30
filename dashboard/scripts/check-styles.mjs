@@ -9,6 +9,8 @@
  *  - only STATIC string-literal classNames (template-interpolated ones are skipped);
  *  - "has a rule" = the substring `.<token>` appears anywhere in the CSS (so
  *    compound selectors like `.a .token` and `.token.x` still count).
+ *
+ * Every .tsx under src/ is checked against the stylesheets in public/next.
  * Exits non-zero with the offenders listed. */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -17,10 +19,10 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (dir, ext) =>
   readdirSync(dir, { withFileTypes: true })
-    .flatMap((d) => (d.isDirectory() ? read(join(dir, d.name), ext) : d.name.endsWith(ext) ? [join(dir, d.name)] : []));
-
-const css = read(join(root, "public", "css"), ".css").map((f) => readFileSync(f, "utf-8")).join("\n");
-const tsxFiles = read(join(root, "src"), ".tsx");
+    .flatMap((d) => {
+      const path = join(dir, d.name);
+      return d.isDirectory() ? read(path, ext) : d.name.endsWith(ext) ? [path] : [];
+    });
 
 // Ratchet baseline: component classNames that legitimately have no CSS rule today
 // (JS hooks, default/neutral states styled only via compound rules). The check
@@ -31,16 +33,24 @@ const IGNORE = new Set([
   "proj-picker", "tone-neutral", "ds-files", "docs-item-main", "raw-body",
 ]);
 
-const orphans = new Map(); // token -> Set<file>
-for (const file of tsxFiles) {
-  const src = readFileSync(file, "utf-8");
-  // Static className string literals only: className="a b" / className={"a b"}.
-  for (const m of src.matchAll(/className=\{?["']([^"'{}]+)["']\}?/g)) {
-    for (const tok of m[1].split(/\s+/)) {
-      if (!tok.includes("-") || IGNORE.has(tok)) continue; // component-style names only
-      if (!css.includes(`.${tok}`)) {
-        if (!orphans.has(tok)) orphans.set(tok, new Set());
-        orphans.get(tok).add(file.slice(root.length + 1).replaceAll("\\", "/"));
+const surfaces = [
+  { name: "ui", css: join(root, "public", "next"), tsx: read(join(root, "src"), ".tsx") },
+];
+
+const orphans = new Map(); // "<surface> .token" -> Set<file>
+for (const surface of surfaces) {
+  const css = read(surface.css, ".css").map((f) => readFileSync(f, "utf-8")).join("\n");
+  for (const file of surface.tsx) {
+    const src = readFileSync(file, "utf-8");
+    // Static className string literals only: className="a b" / className={"a b"}.
+    for (const m of src.matchAll(/className=\{?["']([^"'{}]+)["']\}?/g)) {
+      for (const tok of m[1].split(/\s+/)) {
+        if (!tok.includes("-") || IGNORE.has(tok)) continue; // component-style names only
+        if (!css.includes(`.${tok}`)) {
+          const key = `${surface.name} .${tok}`;
+          if (!orphans.has(key)) orphans.set(key, new Set());
+          orphans.get(key).add(file.slice(root.length + 1).replaceAll("\\", "/"));
+        }
       }
     }
   }
@@ -51,5 +61,5 @@ if (orphans.size === 0) {
   process.exit(0);
 }
 console.error("check-styles: classNames with NO matching CSS rule (likely a mismatch):");
-for (const [tok, files] of orphans) console.error(`  .${tok}  ← ${[...files].join(", ")}`);
+for (const [tok, files] of orphans) console.error(`  ${tok}  ← ${[...files].join(", ")}`);
 process.exit(1);

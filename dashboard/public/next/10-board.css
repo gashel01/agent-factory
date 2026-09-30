@@ -1,0 +1,316 @@
+/* Board (bd-) and everything about one ticket (tk-): the Kanban, Focus, run
+ * card, notices, removed list, the ticket sheet, the diff page and the answer /
+ * decision sheets. Colours only through tokens; a column or notice sets --c to
+ * its state colour and its parts read it. */
+
+/* =================================================================== board */
+
+.rx .bd-view { gap: 16px; }
+.rx .bd-toolbar { flex-wrap: wrap; gap: 10px; }
+.rx .bd-filter { flex: 0 1 360px; }
+.rx .bd-filter-n { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
+.rx .bd-empty-actions { justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+
+/* ---------------------------------------------------------------- run card */
+.rx .bd-run { grid-template-columns: 1fr auto; align-items: center; gap: 18px; padding: 18px 22px; }
+.rx .bd-run-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.rx .bd-run-title { gap: 10px; font-size: 16.5px; letter-spacing: -0.02em; }
+.rx .bd-run-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.rx .bd-run-meta { font-size: 13px; }
+.rx .bd-run-counts { flex-wrap: wrap; gap: 8px; }
+.rx .bd-run-ctl { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.rx .bd-budget { display: grid; gap: 6px; max-width: 340px; font-size: 12.5px; }
+.rx .bd-shipped { display: grid; gap: 8px; padding-top: 4px; }
+.rx .bd-shipped-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13.5px; }
+.rx .bd-shipped-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ----------------------------------------------------------------- notices */
+.rx .bd-notice {
+  display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; border-radius: 16px; font-size: 13.5px;
+  background: color-mix(in srgb, var(--c) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
+}
+.rx .bd-notice-icon { color: var(--c); display: grid; place-items: center; padding-top: 1px; flex: none; }
+.rx .bd-notice-body { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.rx .bd-integ-fail { display: grid; gap: 2px; }
+.rx .bd-integ-fail ul { margin: 0; padding-left: 18px; color: var(--dim); }
+.rx .bd-hot-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.rx .bd-hot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.rx .bd-hot-path {
+  all: unset; cursor: pointer; font-family: var(--mono); font-size: 12.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.rx .bd-hot-path:hover { text-decoration: underline; }
+.rx .bd-hot-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* ------------------------------------------------------------------ kanban */
+/* Columns with tickets share the width; empty ones shrink to a slim lane, so a
+   run that is all merged still shows its Merged column without scrolling. */
+.rx .bd-cols {
+  display: flex; gap: 14px;
+  overflow-x: auto; padding-bottom: 8px; align-items: flex-start;
+}
+.rx .bd-col {
+  flex: 1 1 262px; min-width: 232px;
+  display: flex; flex-direction: column; gap: 10px; padding: 10px; border-radius: 21px;
+  background: color-mix(in srgb, var(--card) 55%, transparent); border: 1px solid transparent;
+  transition: border-color 0.16s, background 0.16s;
+}
+.rx .bd-col-empty { opacity: 0.72; flex: 0 1 168px; min-width: 150px; }
+.rx .bd-col-drop { border: 1px dashed color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 6%, transparent); }
+.rx .bd-colhead { display: flex; align-items: center; gap: 8px; padding: 4px 6px; font-size: 13.5px; font-weight: 640; letter-spacing: -0.01em; }
+.rx .bd-coldot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 18%, transparent); }
+.rx .bd-colcount { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rx .bd-colbody { display: flex; flex-direction: column; gap: 10px; }
+.rx .bd-colempty { padding: 14px 6px; font-size: 12.5px; color: var(--faint); text-align: center; }
+
+/* ------------------------------------------------------------------- cards */
+.rx .bd-card {
+  position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 14px 15px; border-radius: 18px; background: var(--card); border: 1px solid var(--hair);
+  transition: border-color 0.16s, transform 0.16s var(--ease);
+}
+.rx .bd-card:hover { border-color: var(--hair-2); }
+.rx .bd-card-needs { border-color: color-mix(in srgb, var(--st-needs) 38%, transparent); }
+.rx .bd-card-review { border-color: color-mix(in srgb, var(--st-review) 40%, transparent); }
+.rx .bd-card-draft { background: var(--card-2); border-style: dashed; }
+.rx .bd-card-held { opacity: 0.6; }
+.rx .bd-card-manual { cursor: grab; border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.rx .bd-card-manual:active { cursor: grabbing; }
+.rx .bd-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.rx .bd-card-tool { position: relative; z-index: 1; display: inline-flex; gap: 2px; opacity: 0.55; transition: opacity 0.16s; }
+.rx .bd-card:hover .bd-card-tool, .rx .bd-card:focus-within .bd-card-tool { opacity: 1; }
+/* The title is the card's link; its hit area stretches over the whole card while
+ * the card's own controls stay above it. */
+.rx .bd-card-title {
+  all: unset; cursor: pointer; font-size: 14.5px; font-weight: 620; line-height: 1.35; letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+.rx .bd-card-title::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.rx .bd-card-title:focus-visible { outline: none; }
+.rx .bd-card:has(.bd-card-title:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .bd-card-activity { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dim); min-width: 0; }
+.rx .bd-card-activity span:last-child { overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.rx .bd-card-note {
+  display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 12px; font-size: 12.5px;
+  color: var(--text); background: color-mix(in srgb, var(--st-needs) 10%, transparent);
+}
+.rx .bd-card-note svg { color: var(--st-needs); flex: none; margin-top: 2px; }
+.rx .bd-card-deps { font-size: 12px; }
+.rx .bd-meas { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.rx .bd-meas-live { display: inline-flex; align-items: center; gap: 6px; color: var(--st-working); font-weight: 600; }
+.rx .bd-pulse {
+  width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--st-working);
+  animation: bd-pulse 1.4s ease-in-out infinite;
+}
+@keyframes bd-pulse { 50% { opacity: 0.3; transform: scale(0.8); } }
+.rx .bd-actions { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rx .bd-actions .btn.sm { padding: 6px 12px; font-size: 12.5px; }
+.rx .bd-status {
+  font: inherit; font-size: 12.5px; color: var(--text); cursor: pointer;
+  padding: 5px 10px; border-radius: 99px; background: var(--card-2); border: 1px solid var(--hair);
+}
+.rx .bd-add {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 11px; border-radius: 16px; border: 1px dashed var(--hair-2); color: var(--dim); font-size: 13.5px; font-weight: 580;
+}
+.rx .bd-add:hover { color: var(--text); background: var(--card-2); }
+.rx .bd-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ------------------------------------------------------------------- focus */
+.rx .bd-focus { display: flex; flex-direction: column; gap: 22px; width: 100%; max-width: var(--content); margin-inline: auto; }
+.rx .bd-focus-sec { display: flex; flex-direction: column; gap: 10px; }
+.rx .bd-focus-head {
+  display: flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 650; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--c);
+}
+.rx .bd-focus-head .faint { letter-spacing: 0; font-size: 12.5px; }
+.rx .bd-card-wide { padding: 16px 20px; border-radius: 21px; }
+.rx .bd-card-wide .bd-card-title { font-size: 15.5px; }
+
+/* ----------------------------------------------------------------- removed */
+.rx .bd-removed { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: var(--content); margin-inline: auto; }
+.rx .bd-removed-row { grid-template-columns: 1fr auto; align-items: center; }
+.rx .bd-removed-text { gap: 6px; }
+.rx .bd-removed-meta { gap: 8px; font-size: 12.5px; flex-wrap: wrap; }
+.rx .bd-removed-actions { gap: 8px; }
+
+/* ---------------------------------------------------------- AI review sheet */
+.rx .bd-review-text { white-space: pre-wrap; font-size: 14px; line-height: 1.6; }
+.rx .bd-review-error { color: var(--st-needs); }
+
+/* ================================================================== ticket */
+
+.rx .tk-head { gap: 10px; }
+.rx .tk-meas { gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.rx .tk-head .seg { align-self: flex-start; }
+.rx .tk-body { gap: 18px; }
+.rx .tk-skel { height: 18px; }
+.rx .tk-pre { margin: 0; padding: 12px 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rx .tk-raw { font-size: 12px; line-height: 1.55; }
+.rx .tk-h3 { font-size: 15px; font-weight: 650; letter-spacing: -0.015em; }
+.rx .tk-foot { flex: 1; flex-wrap: wrap; gap: 8px; }
+.rx .tk-foot-hint { flex: 1; }
+.rx .tk-changes { flex: 1; gap: 10px; }
+
+/* story */
+.rx .tk-story { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.rx .tk-step { position: relative; display: flex; gap: 12px; padding-bottom: 14px; }
+.rx .tk-step:not(:last-child)::before {
+  content: ""; position: absolute; left: 13px; top: 28px; bottom: 2px; width: 1px; background: var(--hair-2);
+}
+.rx .tk-glyph {
+  width: 27px; height: 27px; flex: none; border-radius: 50%; display: grid; place-items: center;
+  background: var(--card-2); border: 1px solid var(--hair); color: var(--dim);
+}
+.rx .tk-step-final .tk-glyph { color: var(--st-merged); border-color: color-mix(in srgb, var(--st-merged) 40%, transparent); }
+.rx .tk-step-delegate .tk-glyph, .rx .tk-step-subresult .tk-glyph { color: var(--st-info); }
+.rx .tk-step-body { gap: 3px; padding-top: 3px; flex: 1; }
+.rx .tk-step-verb { gap: 8px; font-size: 13.5px; font-weight: 600; }
+.rx .tk-step-detail { overflow-wrap: anywhere; }
+.rx .tk-step-text { font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rx .tk-step-say .tk-step-text { color: var(--dim); }
+.rx .tk-lessons { gap: 10px; }
+.rx .tk-lesson { background: var(--card-2); gap: 10px; }
+.rx .tk-lesson p { font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+.rx .tk-lesson-meta { gap: 8px; font-size: 12px; flex-wrap: wrap; }
+
+/* why it failed */
+.rx .tk-why { gap: 20px; }
+.rx .tk-verdict {
+  display: grid; gap: 8px; padding: 16px 18px; border-radius: 18px;
+  background: color-mix(in srgb, var(--st-needs) 7%, transparent); border: 1px solid color-mix(in srgb, var(--st-needs) 24%, transparent);
+}
+.rx .tk-verdict-head { font-size: 16px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
+.rx .tk-block { gap: 10px; }
+.rx .tk-block-head { display: flex; align-items: center; gap: 6px; margin: 0; }
+.rx .tk-fixes { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.rx .tk-fix { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--card-2); border: 1px solid var(--hair); }
+.rx .tk-fix-text { flex: 1; gap: 2px; font-size: 13.5px; }
+.rx .tk-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; font-size: 13.5px; }
+.rx .tk-steps li { display: flex; align-items: baseline; gap: 10px; }
+.rx .tk-steps li span:nth-child(2) { flex: 1; }
+.rx .tk-step-n {
+  width: 20px; height: 20px; flex: none; border-radius: 50%; display: inline-grid; place-items: center;
+  font-size: 11px; font-weight: 650; background: var(--card-3); color: var(--dim); font-variant-numeric: tabular-nums;
+}
+.rx .tk-evidence { gap: 6px; }
+
+/* shared callout (plain-language errors, warnings) */
+.rx .tk-callout {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 16px; font-size: 13.5px;
+  border: 1px dashed var(--hair-2); color: var(--dim);
+}
+.rx .tk-callout > svg { flex: none; }
+.rx .tk-callout-body { flex: 1; line-height: 1.5; }
+.rx .tk-callout-body b { color: var(--text); }
+.rx .tk-callout-warn {
+  border-style: solid; color: var(--text);
+  background: color-mix(in srgb, var(--st-needs) 9%, transparent); border-color: color-mix(in srgb, var(--st-needs) 30%, transparent);
+}
+.rx .tk-callout-warn > svg { color: var(--st-needs); }
+
+/* answer & decision */
+.rx .tk-question {
+  display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: 16px; font-size: 14.5px; line-height: 1.5;
+  background: color-mix(in srgb, var(--st-needs) 8%, transparent); border: 1px solid color-mix(in srgb, var(--st-needs) 24%, transparent);
+}
+.rx .tk-question > svg { color: var(--st-needs); flex: none; margin-top: 2px; }
+.rx .tk-question p { white-space: pre-wrap; }
+.rx .tk-facts { gap: 10px; background: var(--card-2); }
+.rx .tk-facts-row { gap: 8px; flex-wrap: wrap; }
+.rx .tk-quick { gap: 8px; }
+.rx .tk-answer { min-height: 140px; }
+.rx .tk-ask { font-size: 15px; line-height: 1.5; white-space: pre-wrap; }
+.rx .tk-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.rx .tk-option {
+  position: relative; display: flex; flex-direction: column; overflow: hidden; border-radius: 18px;
+  background: var(--card-2); border: 1px solid var(--hair); transition: border-color 0.16s, box-shadow 0.16s;
+}
+.rx .tk-option:hover { border-color: var(--hair-2); }
+.rx .tk-option-on { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.rx .tk-option-frame { display: block; width: 100%; height: 150px; border: 0; background: var(--card); pointer-events: none; }
+.rx .tk-option-none { display: grid; place-items: center; color: var(--faint); font-size: 12.5px; }
+.rx .tk-option-pick {
+  all: unset; box-sizing: border-box; cursor: pointer; display: grid; gap: 4px; padding: 12px 14px; font-size: 13.5px;
+}
+.rx .tk-option-pick::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.rx .tk-option-pick:focus-visible { outline: none; }
+.rx .tk-option:has(.tk-option-pick:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ================================================================ diff page */
+.rx .tk-diff-view { gap: 16px; }
+.rx .tk-diff { display: flex; gap: 18px; align-items: flex-start; min-width: 0; }
+.rx .tk-files {
+  position: sticky; top: 0; width: 272px; flex: none; gap: 4px; padding: 14px; max-height: calc(100vh - var(--topbar) - 40px); overflow: auto;
+}
+.rx .tk-files .label { padding: 2px 8px 8px; }
+.rx .tk-files-item {
+  display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 12px; font-size: 12.5px; text-decoration: none; min-width: 0;
+}
+.rx .tk-files-item:hover { background: var(--card-2); }
+.rx .tk-files-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx .tk-diff-files { flex: 1; gap: 14px; }
+.rx .tk-add { color: var(--st-merged); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rx .tk-del { color: var(--st-needs); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rx .tk-file { display: flex; flex-direction: column; gap: 8px; scroll-margin-top: 12px; min-width: 0; }
+.rx .tk-file-head {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-radius: 14px; background: var(--card); border: 1px solid var(--hair); color: var(--text);
+}
+.rx .tk-file-head:hover { border-color: var(--hair-2); }
+.rx .tk-file-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .tk-file-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx .tk-code { padding: 8px 0; }
+.rx .tk-line { position: relative; }
+.rx .tk-line-code { flex: 1; min-width: 0; }
+.rx .tk-line-add {
+  all: unset; cursor: pointer; position: absolute; left: 4px; top: 50%; transform: translateY(-50%);
+  width: 18px; height: 18px; border-radius: 6px; display: grid; place-items: center; font-weight: 700; font-size: 13px;
+  background: var(--accent); color: var(--on-accent); opacity: 0; transition: opacity 0.12s;
+}
+.rx .tk-line:hover .tk-line-add, .rx .tk-line-add:focus-visible { opacity: 1; }
+.rx .tk-line-add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.rx .tk-comment {
+  margin: 4px 16px 4px 76px; padding: 6px 6px 6px 12px; border-radius: 12px; gap: 8px; white-space: normal;
+  font-family: var(--sans); font-size: 13px; background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.rx .tk-comment-text { flex: 1; white-space: pre-wrap; }
+.rx .tk-composer { margin: 6px 16px 6px 76px; gap: 8px; font-family: var(--sans); white-space: normal; }
+.rx .tk-review-bar { position: sticky; bottom: 0; box-shadow: var(--g-lift); gap: 10px; }
+.rx .tk-review-bar textarea.input { min-height: 64px; }
+
+/* syntax colours (tokens from highlight.ts) */
+.rx .tk-code .tok-kw { color: var(--st-checking); }
+.rx .tk-code .tok-str { color: var(--st-merged); }
+.rx .tk-code .tok-num { color: var(--st-review); }
+.rx .tk-code .tok-com { color: var(--faint); font-style: italic; }
+.rx .tk-code .tok-fn { color: var(--st-info); }
+.rx .tk-code .tok-op, .rx .tk-code .tok-punct { color: var(--dim); }
+
+/* ------------------------------------------------------------------ phones */
+@media (max-width: 760px) {
+  .rx .bd-run { grid-template-columns: 1fr; }
+  .rx .bd-run-ctl { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .rx .bd-cols { grid-auto-columns: minmax(250px, 86vw); scroll-snap-type: x mandatory; }
+  .rx .bd-col { scroll-snap-align: start; }
+  .rx .bd-removed-row { grid-template-columns: 1fr; }
+  .rx .tk-diff { flex-direction: column; }
+  .rx .tk-files { position: static; width: 100%; max-height: none; }
+  .rx .tk-comment, .rx .tk-composer { margin-left: 16px; }
+}
+
+/* A finished run: one line, the ship list folds open on demand. */
+.rx .bd-run-done { padding: 14px 20px; align-items: start; }
+.rx .bd-run-done .bd-run-title { flex-wrap: wrap; row-gap: 8px; font-size: 15px; }
+.rx .bd-run-ctl-row { flex-direction: row; align-items: center; flex-wrap: wrap; }
+
+/* A ticket whose log was not kept: point at its recorded change instead. */
+.rx .tk-nolog { gap: 8px; }
+
+/* Execution mode + delivery, always visible on the board. */
+.rx .bd-mode { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 99px; font-size: 13px; font-weight: 580; color: var(--dim); background: var(--card-2); border: 1px solid var(--hair); white-space: nowrap; }
+.rx .bd-mode:hover { color: var(--text); }
+.rx .bd-mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .bd-mode-sep { width: 1px; height: 14px; background: var(--hair-2); margin: 0 4px; }

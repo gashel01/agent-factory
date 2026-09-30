@@ -21,12 +21,15 @@ from .hotspots import DEFAULT_MIN_TOKENS, scan_hotspots
 from .loop import LoopError, LoopSpec, run_loop
 from .plan import (
     PlanError,
+    check_spec_quotes,
     read_brief,
     run_planner,
     run_questions,
     write_brief,
     write_drafts,
 )
+from .recovery import recover
+from .runlock import WORKSPACE_LOCK, LockBusy, RunLock, holder, repo_lock_path
 from .supervise import SuperviseError, ask, format_answer, reset
 from .task import TicketError, load_backlog, parse_ticket
 from .worktree import GitError, ensure_base_checked_out, prune
@@ -98,21 +101,80 @@ def cmd_run(args: argparse.Namespace) -> int:
                 print(f"  {a} <-> {b}")
         return 0
 
-    # Deliver to the requested base: create the integration branch and check it out
-    # (per repo in the batch) so the merge queue's preflight passes — the operator
-    # never has to switch branches by hand. Guarded against a dirty tree upstream.
-    if getattr(args, "base", None):
-        for repo in {t.repo for t in tasks if t.repo}:
-            ensure_base_checked_out(Path(repo), args.base)
+    run_name = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    repos = sorted({t.repo for t in tasks}, key=str)
+    try:
+        lock = _run_lock(args.runs, repos, run_name).acquire()
+    except LockBusy as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    try:
+        # Deliver to the requested base: create the integration branch and check it
+        # out (per repo in the batch) so the merge queue's preflight passes — the
+        # operator never has to switch branches by hand. Guarded against a dirty tree.
+        if getattr(args, "base", None):
+            for repo in repos:
+                ensure_base_checked_out(Path(repo), args.base)
 
-    # Absolute, always: worktree paths are handed to `git -C <repo>`, which
-    # resolves relative paths against the REPO, not our cwd.
-    run_dir = (args.runs / datetime.now().strftime("%Y-%m-%d_%H%M%S")).resolve()
-    run_dir.mkdir(parents=True, exist_ok=False)
-    print(f"run: {run_dir}")
-    counts = asyncio.run(Dispatcher(cfg, tasks, run_dir).run())
+        _recover_into(args.runs, tasks)
+
+        # Absolute, always: worktree paths are handed to `git -C <repo>`, which
+        # resolves relative paths against the REPO, not our cwd.
+        run_dir = (args.runs / run_name).resolve()
+        run_dir.mkdir(parents=True, exist_ok=False)
+        print(f"run: {run_dir}")
+        counts = asyncio.run(Dispatcher(cfg, tasks, run_dir).run())
+    finally:
+        lock.release()
     print("done:", ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return 0 if counts.get("FAILED", 0) == 0 and counts.get("BLOCKED", 0) == 0 else 1
+
+
+def _run_lock(runs_dir: Path, repos: list[Path], run_name: str) -> RunLock:
+    """One run at a time per workspace (the lock the dashboard also reads) and per
+    repository (two workspaces must not merge into the same checkout at once)."""
+    return RunLock(
+        [runs_dir.resolve() / WORKSPACE_LOCK, *(repo_lock_path(r) for r in repos)],
+        run=run_name,
+    )
+
+
+def _recover_into(runs_dir: Path, tasks: list) -> None:
+    """Close out runs that died without shutting down, and let this run continue
+    their interrupted work (only ever called while holding the run lock)."""
+    report = recover(runs_dir, {t.repo: t.base_branch for t in tasks})
+    if not report.runs:
+        return
+    print(f"recovered {len(report.runs)} interrupted run(s): {', '.join(report.runs)} "
+          f"({report.removed_worktrees} worktree(s) cleaned, "
+          f"{len(report.adopt)} branch(es) with work kept)")
+    for t in tasks:
+        branch = report.adopt.get((t.repo.resolve(), t.id))
+        if branch:
+            t.adopt_branch = branch
+            print(f"  {t.id} continues from {branch}")
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    """Close out interrupted runs now (the next `factory run` also does it)."""
+    cfg = load_config(args.config)
+    tasks = load_backlog(args.backlog, cfg.base_branch)
+    repos = sorted({t.repo for t in tasks}, key=str)
+    try:
+        with _run_lock(args.runs, repos, "recover"):
+            report = recover(args.runs, {t.repo: t.base_branch for t in tasks})
+    except LockBusy as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    if not report.runs:
+        print("nothing to recover")
+        return 0
+    print(f"closed {len(report.runs)} interrupted run(s): {', '.join(report.runs)}")
+    print(f"  worktrees removed: {report.removed_worktrees}, empty branches deleted: "
+          f"{report.deleted_branches}")
+    for (_, task_id), branch in sorted(report.adopt.items()):
+        print(f"  kept {branch} — the next run of {task_id} continues from it")
+    return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -121,8 +183,13 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"no runs found under {args.runs}")
         return 1
     states, meta = _replay_states(run_dir)
-    print(f"run: {run_dir.name}  slots={meta.get('slots', '?')}"
-          + (" [finished]" if "end" in meta else " [in progress]"))
+    if "end" in meta:
+        tag = " [finished]"
+    elif holder(args.runs / WORKSPACE_LOCK) is not None:
+        tag = " [in progress]"
+    else:
+        tag = " [interrupted — the next `factory run` recovers it]"
+    print(f"run: {run_dir.name}  slots={meta.get('slots', '?')}{tag}")
     for task_id in sorted(states):
         print(f"  {task_id:<12} {states[task_id]}")
     for issue in meta.get("issues", []):
@@ -181,7 +248,17 @@ def cmd_plan(args: argparse.Namespace) -> int:
     # Persist the (refreshed) project map, keyed to THIS repo, so the next plan
     # and every coding agent reuse it — and a different repo never inherits it.
     write_brief(workspace, repo, str(contract.get("brief", "")))
-    written = write_drafts(contract["tickets"], args.backlog, repo)
+    written = write_drafts(contract["tickets"], args.backlog, repo, args.goal)
+    quotes = [
+        c for t in contract["tickets"] if isinstance(t, dict)
+        for c in check_spec_quotes(t, repo, args.goal)
+    ]
+    loose = [c for c in quotes if not c["verbatim"]]
+    if quotes:
+        found = len(quotes) - len(loose)
+        print(f"\nspec: {found}/{len(quotes)} quoted rule(s) found verbatim in their source")
+    for c in loose:
+        print(f"  WARNING {c['problem']}: \"{c['quote'][:100]}\"")
     print(f"\n{len(written)} draft ticket(s) written to {args.backlog}:")
     for path in written:
         task = parse_ticket(path, cfg.base_branch)
@@ -215,7 +292,12 @@ def cmd_loop(args: argparse.Namespace) -> int:
     )
     print(f"autopilot '{spec.name}' → integration branch warden/loop-{spec.name} "
           f"(base {cfg.base_branch} stays untouched)")
-    result = asyncio.run(run_loop(cfg, spec, repo, args.runs))
+    try:
+        with _run_lock(args.runs, [repo], f"loop-{spec.name}"):
+            result = asyncio.run(run_loop(cfg, spec, repo, args.runs))
+    except LockBusy as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
     print(
         f"\nstopped: {result['stop']}  (spent ${result['spent']:.2f}, "
         f"accepted={result['accepted']}, base untouched={result['base_untouched']})"
@@ -500,6 +582,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_clean = sub.add_parser("clean", parents=[common], help="prune orphaned worktrees")
     p_clean.set_defaults(func=cmd_clean)
+
+    p_recover = sub.add_parser(
+        "recover", parents=[common],
+        help="close out runs that died without shutting down (keeps branches with work)",
+    )
+    p_recover.set_defaults(func=cmd_recover)
 
     # Agent-facing: share/query the run's coordination bus (Levels 2-3).
     p_coord = sub.add_parser("coord",

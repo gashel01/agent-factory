@@ -1,0 +1,112 @@
+/* Projects + Memory (src/next/views/projects, src/next/views/memory).
+ * pj- = the Projects page, its sheets and first-run onboarding; mem- = Memory. */
+
+/* ---------------------------------------------------------------- projects */
+.rx .pj-search { min-width: 220px; }
+.rx .pj-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.rx .pj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.rx .pj-skeleton { height: 318px; border-radius: 21px; }
+
+.rx .pj-card { position: relative; padding: 0; gap: 0; overflow: hidden; transition: border-color 0.16s; grid-template-columns: minmax(0, 1fr); }
+.rx .pj-card:hover { border-color: var(--hair-2); }
+.rx .pj-card.attention { border-color: color-mix(in srgb, var(--st-needs) 35%, transparent); }
+.rx .pj-card:has(.pj-card-open:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .pj-card-band {
+  height: 88px; padding: 18px 20px; display: flex; justify-content: space-between; align-items: flex-start;
+  background: var(--card-2); border-bottom: 1px solid var(--hair);
+}
+.rx .pj-card-icon {
+  width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center;
+  background: var(--card-3); border: 1px solid var(--hair-2); color: var(--c, var(--accent));
+}
+.rx .pj-card-body { padding: 18px 20px 20px; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.rx .pj-card-name { margin: 0; font-size: 18px; font-weight: 680; letter-spacing: -0.02em; min-width: 0; }
+.rx .pj-card-open {
+  all: unset; cursor: pointer; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The name's hit area covers the whole card; the card's own buttons sit above it. */
+.rx .pj-card-open::after { content: ""; position: absolute; inset: 0; border-radius: 21px; }
+.rx .pj-card-open:focus-visible { outline: none; }
+.rx .pj-card-repo { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx .pj-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.rx .pj-metric { display: grid; gap: 1px; }
+.rx .pj-metric-n { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.rx .pj-metric-l { font-size: 12px; color: var(--faint); }
+.rx .pj-budget { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+.rx .pj-budget-cap { font-size: 12px; font-variant-numeric: tabular-nums; }
+.rx .pj-card-foot { gap: 8px; }
+.rx .pj-updated { font-size: 12.5px; }
+.rx .pj-card-actions { position: relative; z-index: 1; display: flex; align-items: center; gap: 6px; }
+
+.rx .pj-new {
+  all: unset; box-sizing: border-box; cursor: pointer; min-height: 318px; border-radius: 21px;
+  border: 1px dashed var(--hair-2); display: grid; place-content: center; justify-items: center; gap: 10px;
+  color: var(--dim); text-align: center; transition: border-color 0.16s, background 0.16s;
+}
+.rx .pj-new:hover { border-color: var(--dim); background: var(--card); }
+.rx .pj-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .pj-new-plus { width: 48px; height: 48px; border-radius: 50%; background: var(--card-2); display: grid; place-items: center; }
+.rx .pj-new-title { font-size: 15px; color: var(--text); }
+.rx .pj-new-sub { font-size: 13px; }
+
+/* Phone link: compact, beside the cards. */
+.rx .pj-phone { grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 14px; padding: 16px; }
+.rx .pj-phone-qr {
+  width: 96px; height: 96px; border-radius: 14px; background: var(--card-2); border: 1px solid var(--hair);
+  color: var(--text); display: grid; place-items: center; overflow: hidden;
+}
+.rx .pj-phone-qr svg { width: 88px; height: 88px; display: block; }
+.rx .pj-phone-body { gap: 8px; }
+.rx .pj-phone-head { gap: 8px; }
+.rx .pj-phone-title { font-size: 14.5px; font-weight: 640; }
+.rx .pj-phone-url {
+  gap: 8px; padding: 4px 4px 4px 12px; border-radius: 12px; background: var(--card-2); border: 1px solid var(--hair);
+}
+.rx .pj-phone-addr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rx .pj-phone-note { font-size: 12px; }
+
+/* Edit sheet */
+.rx .pj-readonly { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.rx .pj-danger {
+  grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 16px 18px;
+  background: color-mix(in srgb, var(--st-needs) 7%, var(--card));
+  border-color: color-mix(in srgb, var(--st-needs) 30%, transparent);
+}
+.rx .pj-danger-text { gap: 3px; font-size: 14px; }
+
+/* First-run onboarding */
+.rx .pj-onboard { width: 100%; max-width: 640px; margin: 24px auto 0; display: grid; justify-items: center; gap: 10px; text-align: center; }
+.rx .pj-onboard-mark {
+  width: 60px; height: 60px; border-radius: 18px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--accent) 16%, var(--card)); color: var(--accent);
+}
+.rx .pj-onboard-title { margin: 6px 0 0; font-size: 26px; font-weight: 700; letter-spacing: -0.03em; }
+.rx .pj-onboard-thesis { max-width: 480px; font-size: 14px; }
+.rx .pj-onboard-card { width: 100%; margin-top: 12px; text-align: left; gap: 18px; padding: 24px; }
+.rx .pj-onboard-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: end; }
+.rx .pj-onboard-foot { flex-wrap: wrap; }
+
+@media (max-width: 900px) {
+  .rx .pj-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rx .pj-onboard-row { grid-template-columns: 1fr; }
+}
+
+/* ------------------------------------------------------------------ memory */
+.rx .mem-lead { font-size: 14px; max-width: 640px; }
+.rx .mem-toolbar { flex-wrap: wrap; }
+.rx .mem-search { flex: 1; }
+.rx .mem-list { gap: 12px; }
+.rx .mem-skeleton { height: 104px; border-radius: 21px; }
+.rx .mem-card { gap: 12px; }
+.rx .mem-card-top { display: flex; align-items: flex-start; gap: 12px; }
+.rx .mem-text { margin: 0; flex: 1; min-width: 0; font-size: 14.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rx .mem-meta { gap: 8px; flex-wrap: wrap; }
+.rx .mem-origin {
+  all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 99px; font-size: 11.5px; font-weight: 620; white-space: nowrap;
+  color: var(--st-review); background: color-mix(in srgb, var(--st-review) 17%, transparent);
+}
+.rx .mem-origin:hover { background: color-mix(in srgb, var(--st-review) 26%, transparent); }
+.rx .mem-origin:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rx .mem-when { font-size: 12px; }
+.rx .mem-text-input { min-height: 140px; }

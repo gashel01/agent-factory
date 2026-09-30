@@ -60,10 +60,29 @@ class SetupConfig:
     timeout_s: int = 600
 
 
+#: Files an agent must not change unless its ticket names them in files_hint:
+#: the machinery that JUDGES the work (test runner config, shared fixtures, CI).
+#: An agent that edits them can make a red suite report green. Globs match the
+#: repo-relative path (fnmatch, "/" separators); "**/" also matches the root.
+DEFAULT_PROTECTED = (
+    "**/conftest.py", "pytest.ini", "tox.ini", "setup.cfg", ".coveragerc",
+    "**/jest.config.*", "**/vitest.config.*", "**/karma.conf.*", "**/.mocharc.*",
+    ".github/**", ".gitlab-ci.yml", ".circleci/**",
+)
+
+
 @dataclass(frozen=True)
 class VerifyConfig:
     commands: tuple[str, ...] = ()
     command_timeout_s: int = 600
+    # A ticket with no success-criteria command at all (none on the ticket, none
+    # here) is only proven to have produced a diff — not to work. Refuse to call
+    # that DONE unless the operator opted out (per ticket `skip_verify: true`,
+    # or run-wide `verify.require_commands: false`).
+    require_commands: bool = True
+    # Tamper check: changing these (or deleting test files) without the ticket
+    # listing them fails verification. Empty tuple disables it.
+    protected: tuple[str, ...] = DEFAULT_PROTECTED
 
 
 @dataclass(frozen=True)
@@ -127,12 +146,24 @@ class ReviewConfig:
     enabled: bool = False
     model: str | None = None  # cheap tier recommended (e.g. "haiku")
     timeout_min: int = 10
+    # A review that produces no verdict (timeout, crash, unreadable) is retried up
+    # to `attempts` times, then handled per `on_failure`:
+    #   "hold"    — park the ticket for the operator to approve (the default: no
+    #               judgement is not an approval),
+    #   "reject"  — send it back to the agent like a rejection,
+    #   "approve" — merge on the verify gate alone (the old fail-open behaviour).
+    attempts: int = 2
+    on_failure: str = "hold"
 
 
 @dataclass(frozen=True)
 class RateLimitConfig:
     cooldown_min: int = 20
     max_pauses_before_stop: int = 6
+    # When the CLI says when the plan window resets, wait for that — unless it is
+    # further away than this (a weekly cap), in which case stop cleanly instead of
+    # idling for days.
+    max_wait_min: int = 330
 
 
 @dataclass(frozen=True)
@@ -152,6 +183,14 @@ class Config:
     # (distinct from retries, which are for failures). Bounds a genuinely stuck
     # ticket that would otherwise resume forever without finishing.
     max_continuations: int = 2
+    # Best-of-N: independent agents per ticket on its first attempt (each in its own
+    # worktree, each counting as a slot). The passing candidate with the smallest
+    # diff goes on to review/merge; the others are discarded. 1 = off. Tickets can
+    # override with `candidates: N`. N× the tokens for a better first-try hit rate.
+    candidates: int = 1
+    # How long a run keeps waiting for the operator to answer a BLOCKED ticket that
+    # other queued tickets depend on, before leaving them for a later run.
+    blocked_wait_min: int = 60
     # Model escalation ladder: on a RETRY (a failure, not a resume) a task that is
     # currently on a tier in this ladder is bumped to the next one up — cheap first,
     # stronger only when the cheap tier couldn't do it. Empty = retry the same model.
@@ -205,6 +244,19 @@ def _validate_effort(value: object) -> str | None:
     if text not in EFFORT_LEVELS:
         raise ConfigError(
             f"agent.effort must be one of {', '.join(EFFORT_LEVELS)}, got {value!r}"
+        )
+    return text
+
+
+REVIEW_FAILURE_POLICIES = ("hold", "reject", "approve")
+
+
+def _review_on_failure(value: object) -> str:
+    text = str(value or "hold").strip().lower()
+    if text not in REVIEW_FAILURE_POLICIES:
+        raise ConfigError(
+            f"review.on_failure must be one of {', '.join(REVIEW_FAILURE_POLICIES)}, "
+            f"got {value!r}"
         )
     return text
 
@@ -273,6 +325,10 @@ def load_config(path: Path | None) -> Config:
         max_continuations=_cfg_int(
             conc.get("max_continuations"), 2, "concurrency.max_continuations"
         ),
+        candidates=max(1, _cfg_int(conc.get("candidates"), 1, "concurrency.candidates")),
+        blocked_wait_min=_cfg_int(
+            conc.get("blocked_wait_min"), 60, "concurrency.blocked_wait_min"
+        ),
         escalation=(
             tuple(str(m) for m in conc["escalation"])
             if isinstance(conc.get("escalation"), list)
@@ -315,6 +371,12 @@ def load_config(path: Path | None) -> Config:
             command_timeout_s=_cfg_int(
                 verify.get("command_timeout_s"), 600, "verify.command_timeout_s"
             ),
+            require_commands=bool(verify.get("require_commands", True)),
+            protected=(
+                _as_str_tuple(verify["protected"], "verify.protected")
+                if "protected" in verify
+                else DEFAULT_PROTECTED
+            ),
         ),
         integration=IntegrationConfig(
             commands=_as_str_tuple(integration.get("commands"), "integration.commands"),
@@ -327,6 +389,8 @@ def load_config(path: Path | None) -> Config:
             enabled=bool(review.get("enabled", False)),
             model=review.get("model"),
             timeout_min=_cfg_int(review.get("timeout_min"), 10, "review.timeout_min"),
+            attempts=max(1, _cfg_int(review.get("attempts"), 2, "review.attempts")),
+            on_failure=_review_on_failure(review.get("on_failure")),
         ),
         supervisor=SupervisorConfig(
             allowed_tools=(
@@ -347,6 +411,7 @@ def load_config(path: Path | None) -> Config:
             max_pauses_before_stop=_cfg_int(
                 rate.get("max_pauses_before_stop"), 6, "ratelimit.max_pauses_before_stop"
             ),
+            max_wait_min=_cfg_int(rate.get("max_wait_min"), 330, "ratelimit.max_wait_min"),
         ),
         notify=NotifyConfig(webhook_url=str(notify.get("webhook") or "").strip()),
     )

@@ -19,18 +19,33 @@ class EventLog:
         self.path = path
         self._lock = threading.Lock()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # A strictly increasing sequence number per log: two events in the same
+        # millisecond still have a total order, and a reader can tell a gap (a
+        # torn line) from a quiet period. Continues an existing log (recovery
+        # appends to a crashed run's file) instead of restarting at zero.
+        self._seq = self._count_lines(path)
+
+    @staticmethod
+    def _count_lines(path: Path) -> int:
+        if not path.exists():
+            return 0
+        with path.open("rb") as fh:
+            return sum(1 for _ in fh)
 
     def emit(self, event: str, **fields: object) -> dict:
-        record = {
-            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
-            "event": event,
-            **fields,
-        }
-        line = json.dumps(record, ensure_ascii=False, default=str)
-        # Open/append/flush per event: survives crashes and lets readers tail the file.
-        with self._lock, self.path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-            fh.flush()
+        with self._lock:
+            self._seq += 1
+            record = {
+                "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "seq": self._seq,
+                "event": event,
+                **fields,
+            }
+            line = json.dumps(record, ensure_ascii=False, default=str)
+            # Open/append/flush per event: survives crashes and lets readers tail it.
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+                fh.flush()
         return record
 
     @staticmethod

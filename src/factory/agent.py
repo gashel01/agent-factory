@@ -15,6 +15,8 @@ import logging
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -42,7 +44,7 @@ def is_rate_limit_result(record: dict) -> bool:
     `rate_limit_info` fields (so raw scanning flags every run), and base64
     thinking signatures can contain '429' by chance. Both observed live on
     2026-07-11: two successful agents were discarded as rate-limited.
-    stderr, being plain text, is still scanned.
+    stderr, being plain text, is still scanned — see outcome_rate_limited.
     """
     if record.get("api_error_status") == 429:
         return True
@@ -63,6 +65,15 @@ DEFAULT_CONTRACT = """\
   directly and use Grep / targeted Reads (offset+limit) to find what you need. Do NOT
   read large files end-to-end or scan the whole repo — it burns your turn budget for
   little gain. Explore beyond the listed files only when the task genuinely requires it.
+- LANGUAGE: write everything the operator reads — your progress notes, the final
+  "summary", any question or decision option, your commit messages — in the natural
+  language the ticket is written in, whatever language your own settings or memory
+  prefer. An English ticket gets an English summary.
+- If the ticket has a "Spec (verbatim)" section, those quoted lines are the source of
+  truth: the rest of the ticket is someone's reading of them and can be wrong. Where
+  the ticket's wording and a quote disagree, follow the quote and say so in your
+  summary. Write your tests from the quoted rules (use the spec's own examples when
+  it gives them), including a case that a plausible misreading would fail.
 - Before finishing: run the success criteria commands yourself. If they fail, fix the
   code. Never finish on a red state without explaining why. These verification
   commands (typecheck, build, tests, linters) are PRE-APPROVED — run them directly.
@@ -115,6 +126,18 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return (self.input_tokens + self.output_tokens
+                + self.cache_read_tokens + self.cache_write_tokens)
+
+
+#: The CLI's usage fields, one per billing class.
+_USAGE_KEYS = (
+    "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+)
 
 
 def extract_usage(record: dict | None) -> Usage:
@@ -126,6 +149,7 @@ def extract_usage(record: dict | None) -> Usage:
         input_tokens=int(u.get("input_tokens") or 0),
         output_tokens=int(u.get("output_tokens") or 0),
         cache_read_tokens=int(u.get("cache_read_input_tokens") or 0),
+        cache_write_tokens=int(u.get("cache_creation_input_tokens") or 0),
     )
 
 
@@ -163,11 +187,26 @@ class StreamOutcome:
     rate_limit_info: dict | None = None
 
 
+def outcome_rate_limited(out: StreamOutcome) -> bool:
+    """Did this invocation actually end on a rate limit?
+
+    The structured result record wins. stderr is only a fallback for when there is
+    no result at all: the CLI prints transient "overloaded, retrying" warnings on
+    stderr and then SUCCEEDS — trusting stderr first threw that finished work
+    away and paused the whole run for nothing.
+    """
+    if out.result is not None:
+        return is_rate_limit_result(out.result)
+    return out.stderr_rate_limited
+
+
 def _record_tokens(record: dict) -> int:
-    """Tokens billed for one assistant turn (input + output). Cache reads are not
-    added — they are the cheap part and would inflate the live counter."""
+    """Tokens processed by one assistant turn, prompt cache included — the same
+    four classes Usage.total_tokens sums, so the live counter ends where the
+    final result lands instead of jumping. An agent replays its context from the
+    cache every turn, so without the cache the count is off by ~50x."""
     usage = (record.get("message") or {}).get("usage") or {}
-    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+    return sum(int(usage.get(k) or 0) for k in _USAGE_KEYS)
 
 
 def describe_step(record: dict) -> str | None:
@@ -207,6 +246,49 @@ def describe_step(record: dict) -> str | None:
     return narration
 
 
+#: Headless prompts go over stdin as stream-json messages, not raw text. In text
+#: mode the CLI gives stdin ~3 s to deliver the prompt and then aborts with
+#: "Input must be provided…" — which is what capped parallel starts at two slots
+#: (several spawns at once delay the write past that window). In stream-json mode
+#: it waits for its first message however long that takes. Verified against the
+#: real CLI: a 6 s delay fails in text mode and succeeds in stream-json mode.
+STREAM_INPUT_ARGS = ("--input-format", "stream-json")
+
+
+def _stdin_payload(cmd: list[str], prompt: str) -> bytes:
+    """What to write on the child's stdin: one stream-json user message when the
+    command speaks stream-json input, the raw prompt otherwise (test doubles, or
+    any CLI with the plain-text contract)."""
+    if "--input-format" in cmd and cmd[cmd.index("--input-format") + 1:][:1] == ["stream-json"]:
+        message = {"type": "user", "message": {
+            "role": "user", "content": [{"type": "text", "text": prompt}],
+        }}
+        return (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
+    return prompt.encode("utf-8")
+
+
+def _spawn_kwargs() -> dict:
+    """Start the agent as the head of its own process group (POSIX), so a kill
+    reaches everything it launched — test runners, dev servers — not just the
+    CLI. Windows reaches the tree with `taskkill /T` instead (see kill_tree)."""
+    return {} if os.name == "nt" else {"start_new_session": True}
+
+
+def kill_tree(pid: int) -> None:
+    """Kill a process and every descendant, best-effort.
+
+    `proc.kill()` alone only reaches the direct child: the pytest or `npm run dev`
+    an agent started keeps running (and holding files open) after the agent is
+    gone. Never raises — it runs on timeout/cancel paths.
+    """
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           capture_output=True, timeout=30)
+        else:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+
+
 def spawn_env(mode: str) -> dict[str, str] | None:
     """The environment for a spawned agent, per execution mode.
 
@@ -229,15 +311,20 @@ async def stream_headless(
     on_progress: Callable[[int, int], None] | None = None,
     on_activity: Callable[[dict], None] | None = None,
     env: dict[str, str] | None = None,
+    on_kill: Callable[[], None] | None = None,
 ) -> StreamOutcome:
     """Spawn one headless agent: prompt on stdin, stream-json on stdout.
 
-    Raises TimeoutError (budget) or CancelledError (operator kill) — the
-    subprocess is reaped in both cases. Used by the coding agent, the planner,
-    and the reviewer, so process handling has exactly one implementation.
+    Raises TimeoutError (budget) or CancelledError (operator kill) — the whole
+    process tree is killed and reaped in both cases. Used by the coding agent,
+    the planner, and the reviewer, so process handling has exactly one
+    implementation.
 
     ``env`` is the child environment (None = inherit the parent's). Callers build
     it with spawn_env(mode) to control subscription vs API execution.
+    ``on_kill`` runs before the tree is killed, for work that lives outside it:
+    a sandboxed agent's container belongs to the Docker daemon, not to the
+    `docker run` client we spawned.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -254,13 +341,14 @@ async def stream_headless(
         stderr=asyncio.subprocess.PIPE,
         limit=_STREAM_LIMIT,  # big stream-json records (inline SVG, file writes)
         env=env,
+        **_spawn_kwargs(),
     )
 
     with log_path.open("w", encoding="utf-8", errors="replace") as log:
 
         async def feed_stdin() -> None:
             assert proc.stdin is not None
-            proc.stdin.write(prompt.encode("utf-8"))
+            proc.stdin.write(_stdin_payload(cmd, prompt))
             await proc.stdin.drain()
             proc.stdin.close()
 
@@ -310,7 +398,12 @@ async def stream_headless(
                 await asyncio.gather(feed_stdin(), read_stdout(), read_stderr())
                 await proc.wait()
         except (TimeoutError, asyncio.CancelledError):
-            proc.kill()
+            if on_kill is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(asyncio.to_thread(on_kill))
+            kill_tree(proc.pid)
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
             await proc.wait()
             raise
 
@@ -325,10 +418,16 @@ async def stream_headless(
 
 
 def extract_trailing_json(text: str) -> dict | None:
-    """Find the contract JSON at the end of the agent's final message."""
+    """Find the contract JSON at the end of the agent's final message.
+
+    Every "{" is a candidate start, tried from the last one back: only the
+    outermost object parses all the way to the end, the nested ones fail on the
+    trailing text. No cap on how many are tried — a planner's ticket bodies
+    quote API shapes (`{ "error": { "code" } }`), so a real plan easily holds
+    more than 50 braces, and a capped scan never reached the opening one."""
     cleaned = text.rstrip().removesuffix("```").rstrip()
     starts = [i for i, ch in enumerate(cleaned) if ch == "{"]
-    for i in reversed(starts[-50:]):
+    for i in reversed(starts):
         try:
             candidate = json.loads(cleaned[i:])
         except json.JSONDecodeError:
@@ -430,13 +529,21 @@ def build_cli(
     mcp_config: str | None = None,
     disallowed_tools: tuple[str, ...] = (),
     extra_args: tuple[str, ...] = (),
-    checkpoints: bool = False,
+    hooks: dict | None = None,
+    isolate_mcp: bool = True,
     missing: Callable[[str], Exception] | None = None,
 ) -> list[str]:
     """The shared `claude -p` headless invocation used by the coding agent, the
     planner, the reviewer, the supervisor and the doctor. Each differs only in
     turn budget, tool allowlist and model — everything else (stream-json, verbose,
     PATH resolution) is identical, so it lives here once.
+
+    `isolate_mcp` (default) starts the agent with ONLY the MCP servers Warden
+    hands it (`mcp_config`, or none): without it the CLI also boots every server
+    in the operator's own config — observed live: Blender, Unity and the claude.ai
+    Gmail/Drive/Calendar connectors inside a coding agent, which is slower to
+    start and gives a prompt-injected agent tools that reach the operator's mail.
+    The supervisor opts out: its config may extend it with workspace MCP tools.
 
     `missing` builds the exception raised when the CLI isn't on PATH, so each
     caller keeps its own typed error; the default is FileNotFoundError.
@@ -450,7 +557,8 @@ def build_cli(
             f"{msg} — is the CLI installed and the shell environment inherited?"
         ))
     exe = _without_the_shim(exe)
-    cmd = [exe, *command[1:], "-p", "--output-format", "stream-json", "--verbose"]
+    cmd = [exe, *command[1:], "-p", *STREAM_INPUT_ARGS,
+           "--output-format", "stream-json", "--verbose"]
     if permission_mode:
         cmd += ["--permission-mode", permission_mode]
     cmd += ["--max-turns", str(max_turns)]
@@ -461,11 +569,14 @@ def build_cli(
     if resume:
         cmd += ["--resume", resume]
     if mcp_config:
-        # Give the agent the project's knowledge base as an MCP server (ragmcp),
-        # and ONLY that one — --strict-mcp-config ignores any ambient .mcp.json in
-        # the cwd so the run is reproducible. The tools it exposes still have to be
-        # in --allowedTools (the caller adds them); see build_command.
-        cmd += ["--mcp-config", mcp_config, "--strict-mcp-config"]
+        # Give the agent the project's knowledge base as an MCP server (ragmcp).
+        # The tools it exposes still have to be in --allowedTools (the caller
+        # adds them); see build_command.
+        cmd += ["--mcp-config", mcp_config]
+    if mcp_config or isolate_mcp:
+        # --strict-mcp-config ignores every other MCP source (user config, an
+        # ambient .mcp.json in the cwd), so a run is reproducible and contained.
+        cmd += ["--strict-mcp-config"]
     if allowed_tools:
         cmd += ["--allowedTools", ",".join(allowed_tools)]
     if disallowed_tools:
@@ -473,23 +584,45 @@ def build_cli(
         # these. A denied call surfaces to the agent, which (per the contract)
         # reports blocked instead of finding a workaround.
         cmd += ["--disallowedTools", ",".join(disallowed_tools)]
-    if checkpoints:
-        # A PostToolUse hook commits the worktree after each file edit, so the
-        # dashboard can undo a single step. The hook shells out to `factory
-        # checkpoint` with the SAME interpreter running this process (quoted for
-        # paths with spaces), which reads the tool payload on stdin and commits cwd.
-        py = sys.executable or "python"
-        hook = json.dumps({
-            "hooks": {
-                "PostToolUse": [{
-                    "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-                    "hooks": [{"type": "command", "command": f'"{py}" -m factory checkpoint'}],
-                }],
-            },
-        })
-        cmd += ["--settings", hook]
+    if hooks:
+        cmd += ["--settings", json.dumps({"hooks": hooks})]
     cmd += list(extra_args)
     return cmd
+
+
+#: The hooks script, run by path so the sandbox can mount the very same file.
+HOOKS_SCRIPT = Path(__file__).with_name("agent_hooks.py")
+#: Where the sandbox mounts it (read-only) — see sandbox.wrap.
+SANDBOX_HOOKS_SCRIPT = "/opt/warden/agent_hooks.py"
+
+
+def hook_settings(*, runtime: str, role: str = "agent", checkpoints: bool = False) -> dict:
+    """The `hooks` block handed to the CLI via --settings.
+
+    Always a PreToolUse guard (see agent_hooks.guard). With ``checkpoints``, a
+    PostToolUse hook also commits the tree after each file edit so the dashboard
+    can undo a single step. ``runtime`` picks the interpreter and script path: the
+    host's own Python (quoted for paths with spaces) or the container's python3.
+    """
+    py = sys.executable or "python"
+    run = (f"python3 {SANDBOX_HOOKS_SCRIPT}" if runtime == "sandbox"
+           else f'"{py}" "{HOOKS_SCRIPT}"')
+    hooks: dict = {
+        "PreToolUse": [{
+            "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit",
+            "hooks": [{"type": "command", "command": f"{run} guard --role {role}"}],
+        }],
+    }
+    if checkpoints:
+        # Host: `factory checkpoint` with the same interpreter. Sandbox: the
+        # standalone script, since Warden itself isn't installed in the box.
+        command = (f"{run} checkpoint" if runtime == "sandbox"
+                   else f'"{py}" -m factory checkpoint')
+        hooks["PostToolUse"] = [{
+            "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+            "hooks": [{"type": "command", "command": command}],
+        }]
+    return hooks
 
 
 # The ragmcp retrieval tools the agent may call when a project knowledge base is
@@ -521,7 +654,7 @@ DESTRUCTIVE_GIT_DENY = (
 )
 
 
-def build_command(cfg: AgentConfig, task: Task) -> list[str]:
+def build_command(cfg: AgentConfig, task: Task, *, runtime: str = "direct") -> list[str]:
     # A ticket may pin its own model and effort (cheap tier for a trivial change,
     # a stronger/deeper one for a hard task) and, on a retry, resume its previous
     # session (context + repo knowledge intact) — all overriding the run defaults.
@@ -539,7 +672,7 @@ def build_command(cfg: AgentConfig, task: Task) -> list[str]:
         mcp_config=cfg.mcp_config,
         disallowed_tools=DESTRUCTIVE_GIT_DENY,
         extra_args=cfg.extra_args,
-        checkpoints=cfg.checkpoints,
+        hooks=hook_settings(runtime=runtime, checkpoints=cfg.checkpoints),
     )
 
 
@@ -551,6 +684,7 @@ def build_prompt(
     project_brief: str = "",
     architecture: str = "",
     coordination: str = "",
+    coord_cli: bool = True,
 ) -> str:
     """Assemble the stdin prompt for one coding agent.
 
@@ -602,12 +736,17 @@ def build_prompt(
         # avoid redefining what a sibling already exported (import it instead).
         prompt += (
             "\n---\n\n# Shared workspace — what your sibling agents are doing\n\n"
-            f"{coordination}\n\n"
-            "Before you create a shared type/util, run "
-            "`factory coord --whereis <Name>` to check it doesn't already exist. "
-            "When you make a decision others should follow, record it with "
-            "`factory coord --decision \"<Name>=<where/what>\"`.\n"
+            f"{coordination}\n"
         )
+        if coord_cli:
+            # Only where `factory` is reachable: a sandboxed agent reads the same
+            # snapshot but has no Warden CLI (nor the bus file) inside its box.
+            prompt += (
+                "\nBefore you create a shared type/util, run "
+                "`factory coord --whereis <Name>` to check it doesn't already exist. "
+                "When you make a decision others should follow, record it with "
+                "`factory coord --decision \"<Name>=<where/what>\"`.\n"
+            )
     return prompt
 
 
@@ -625,21 +764,31 @@ async def run_agent(
     isolation: str = "direct",
     coordination: str = "",
     coord_path: Path | None = None,
+    box: sandbox.Box | None = None,
 ) -> AgentResult:
+    """Run one coding agent on a worktree and classify how it ended.
+
+    With ``isolation="sandbox"`` the agent runs inside ``box`` (see sandbox.py);
+    the caller then brings its commits home with sandbox.import_result. A box
+    is built on the fly when none is given (no git inside it then).
+    """
+    sandboxed = isolation == "sandbox"
     prompt = build_prompt(
         task, contract,
         lessons=lessons, project_brief=project_brief,
         architecture=architecture, coordination=coordination,
+        coord_cli=not sandboxed,
     )
-    cmd = build_command(cfg, task)
+    cmd = build_command(cfg, task, runtime="sandbox" if sandboxed else "direct")
     env = spawn_env(mode)
-    if coord_path is not None:
+    on_kill: Callable[[], None] | None = None
+    if coord_path is not None and not sandboxed:
         # Let `factory coord` (spawned by the agent's own Bash) find this run's bus
         # and know which ticket is posting, without the agent passing either.
         env = {**(env or dict(os.environ)),
                "FACTORY_COORD_PATH": str(coord_path),
                "FACTORY_TICKET_ID": task.id}
-    if isolation == "sandbox":
+    if sandboxed:
         # Wrap the SAME claude invocation in a hardened container. The box
         # authenticates via the mounted OAuth token, so we never inject the API
         # key into it (env=None) — even in "api" execution mode, the sandbox draws
@@ -650,14 +799,19 @@ async def run_agent(
         except sandbox.SandboxError as exc:
             return AgentResult("error", f"sandbox unavailable: {exc}"[:500],
                                None, 0.0, None)
-        cmd = sandbox.wrap(cmd, worktree_path)
+        box = box or sandbox.Box(
+            name=sandbox.container_name(worktree_path.name, "agent"), worktree=worktree_path
+        )
+        cmd = sandbox.wrap(cmd, worktree_path, box)
         env = None
+        on_kill = functools.partial(sandbox.kill_container, box.name)
     try:
         out = await stream_headless(
             cmd, prompt, worktree_path, log_path,
             timeout_s=task.budget.timeout_min * 60,
             on_progress=on_progress,
             env=env,
+            on_kill=on_kill,
         )
     except TimeoutError:
         return AgentResult(
@@ -672,11 +826,8 @@ async def run_agent(
     raw_session = out.result.get("session_id") if out.result else None
     session = str(raw_session) if raw_session else None
     usage = extract_usage(out.result)
-    rate_limited = out.stderr_rate_limited or (
-        out.result is not None and is_rate_limit_result(out.result)
-    )
     rli = out.rate_limit_info
-    if rate_limited:
+    if outcome_rate_limited(out):
         return AgentResult(
             "ratelimit", "provider rate/usage limit hit", turns, out.wall_s, None, session, usage,
             rate_limit_info=rli,

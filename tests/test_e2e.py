@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import git, write_ticket
-from factory.config import AgentConfig, Config, RateLimitConfig
+from factory.config import AgentConfig, Config, RateLimitConfig, VerifyConfig
 from factory.dispatcher import Dispatcher
 from factory.events import EventLog
 from factory.task import load_backlog
@@ -26,6 +26,9 @@ def make_config(**kwargs) -> Config:
         stagger_seconds=0.0,
         agent=AgentConfig(command=(sys.executable, str(STUB))),
         ratelimit=RateLimitConfig(cooldown_min=0, max_pauses_before_stop=1),
+        # Stub tickets carry no success-criteria command: exercise the git-only gate
+        # here. The production default (a command is required) has its own test.
+        verify=VerifyConfig(require_commands=False),
     )
     defaults.update(kwargs)
     return Config(**defaults)
@@ -245,26 +248,26 @@ def test_retry_resumes_the_failed_session_in_the_same_worktree(tmp_path, repo):
     assert "resumed session stub-agent-session-001" in content
 
 
-def test_review_fails_open_after_persistent_rate_limit(tmp_path, repo):
-    # A rate-limited reviewer must not re-review one ticket forever: after two
-    # waits the gate fails open (the deterministic verify gate already passed)
-    # and says so loudly in the review event.
+def test_persistent_review_rate_limit_stops_cleanly_without_approving(tmp_path, repo):
+    # A rate-limited reviewer used to be skipped after two waits and the ticket
+    # merged unreviewed ("fail-open"). Now the run pauses like for any rate limit;
+    # when the limit persists past the stop threshold, the ticket is put back in
+    # the queue intact for a later run — never merged unreviewed.
     from factory.config import ReviewConfig
 
     backlog = tmp_path / "backlog"
     write_ticket(backlog, "001", repo, body="STUB:REVIEW_RATELIMIT\n")
     cfg = make_config(
         review=ReviewConfig(enabled=True),
-        ratelimit=RateLimitConfig(cooldown_min=0, max_pauses_before_stop=10),
+        ratelimit=RateLimitConfig(cooldown_min=0, max_pauses_before_stop=2),
     )
 
     counts = run_dispatcher(cfg, backlog, tmp_path / "run")
 
-    assert counts == {"DONE": 1}
-    reviews = [e for e in EventLog.replay(tmp_path / "run" / "events.jsonl")
-               if e["event"] == "review"]
-    assert reviews[-1]["verdict"] == "approve"
-    assert "fail-open" in reviews[-1]["reasons"][0]
+    assert counts == {"QUEUED": 1}
+    events = list(EventLog.replay(tmp_path / "run" / "events.jsonl"))
+    assert not [e for e in events if e["event"] == "merged"]
+    assert [e for e in events if e["event"] == "stopped"]
 
 
 def test_mixed_base_branches_in_one_repo_are_rejected_upfront(tmp_path, repo):

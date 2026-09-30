@@ -15,7 +15,7 @@ from pathlib import Path
 from .agent import (
     build_cli,
     extract_trailing_json,
-    is_rate_limit_result,
+    outcome_rate_limited,
     spawn_env,
     stream_headless,
 )
@@ -76,7 +76,7 @@ async def run_doctor(cfg: Config, workdir: Path, log_path: Path) -> DoctorReport
     except TimeoutError as exc:
         raise DoctorError("capability check exceeded 5 minutes") from exc
 
-    if out.stderr_rate_limited or (out.result is not None and is_rate_limit_result(out.result)):
+    if outcome_rate_limited(out):
         raise DoctorError("usage limit hit — try again when your window resets")
     if out.returncode != 0 or out.result is None:
         raise DoctorError(out.stderr_tail or f"probe agent exited {out.returncode}")

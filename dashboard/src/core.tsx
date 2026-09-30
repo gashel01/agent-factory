@@ -1,38 +1,12 @@
-/* Extracted from app.tsx — mechanical split. */
-/** Agent Factory dashboard — React app. Mounts into #app. */
+/** Shared client plumbing: toasts, polling and interval hooks, the event
+ *  stream, file attachments, the companion feed. */
 
-import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type {
-  ClipboardEvent as ReactClipboardEvent, CSSProperties, DragEvent as ReactDragEvent, JSX, ReactNode,
-} from "react";
-import { createRoot } from "react-dom/client";
-import { createPortal } from "react-dom";
-import type {
-  BlockedContext, FactoryEvent, TaskState,
-  CapsuleAction, CapsuleConsent, CapsulePanel, CapsuleView,
-} from "./types.js";
-import {
-  api, fetchJSON, getText, getWs, initToken, initWs, postJSON, repoGet, repoPath, scopedJSON, setRepoPath, setWs,
-} from "./api.js";
-import {
-  ACTIVITY, Checkpoint, EFFORT_CHOICES, HistoryTicket, MODEL_CHOICES, Model, Settings, StoryItem, TaskModel,
-  ago, fmtDuration, fmtTokens, fmtUsd, freshModel, generateConfig, inFlight, narrate,
-  parseDiff, parseSettings, reduce, seedHistory,
-} from "./model.js";
-import { langFromPath, tokenizeLine } from "./highlight.js";
-import { qrSvg } from "./qr.js";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ClipboardEvent as ReactClipboardEvent, DragEvent as ReactDragEvent } from "react";
+import type { FactoryEvent } from "./types.js";
+import { api, fetchJSON, postJSON } from "./api.js";
+import { HistoryTicket, Model, freshModel, reduce, seedHistory } from "./model.js";
 import type { Observation } from "./companion.js";
-import {
-  ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpFromLine,
-  BookOpen, Bot, Brain, Check, ChevronDown, ChevronRight, Circle,
-  CircleDot, CircleHelp, Command, CompanionIcon, CornerDownLeft, CornerDownRight,
-  ExternalLink, Eye, FileText, FlaskConical, Flag, Folder, FolderOpen, FolderPlus,
-  GitBranch, GitMerge, Globe, InfinityIcon, Key, Laptop, Lightbulb, ListChecks, Lock, MessageCircle,
-  MoreHorizontal, Palette, Pause, Pencil, Play, Plus, RotateCw, Search, Send,
-  ShieldCheck, Smartphone, Sparkles, Square, Terminal, Timer, Trash2, TriangleAlert, Undo2, Upload, X,
-} from "./icons.js";
-import type { LucideIcon } from "./icons.js";
-
 
 /* --------------------------------- toasts --------------------------------- */
 
@@ -46,76 +20,6 @@ export function toast(msg: string, error = false): void {
   toastList = [...toastList, t];
   emitToasts();
   setTimeout(() => { toastList = toastList.filter((x) => x.id !== t.id); emitToasts(); }, 4600);
-}
-export function Toaster(): JSX.Element {
-  const [items, setItems] = useState<Toast[]>(toastList);
-  useEffect(() => { toastSubs.add(setItems); return () => { toastSubs.delete(setItems); }; }, []);
-  return (
-    <div className="toaster">
-      {items.map((t) => <div key={t.id} className={`toast${t.error ? " error" : ""}`}>{t.msg}</div>)}
-    </div>
-  );
-}
-
-/* --------------------------------- ui primitives --------------------------------- */
-
-/** A small inline activity spinner. Decorative — always paired with a label or aria-busy. */
-export function Spinner({ size = 13 }: { size?: number }): JSX.Element {
-  return <span className="spinner" style={{ width: size, height: size }} aria-hidden="true" />;
-}
-
-/**
- * The one button. It centralises behaviour — in-flight pending, disabled, and the
- * accessible name — while reusing the existing CSS vocabularies (`hbtn` / `btn` /
- * `act`) via `kind`, so the whole product routes clicks through one component
- * without a fourth class system. `autoPending` makes it own the spinner: it awaits
- * the onClick promise and disables itself for the duration — no external flag needed.
- */
-export type BtnKind = "hbtn" | "btn" | "act";
-export interface ButtonProps {
-  children: ReactNode;
-  onClick?: () => void | Promise<void>;
-  kind?: BtnKind;
-  variant?: string;        // appended verbatim, e.g. "accent" | "primary" | "ghost" | "danger-soft"
-  pending?: boolean;       // controlled: the caller owns the in-flight flag
-  autoPending?: boolean;   // uncontrolled: the button awaits onClick and shows its own spinner
-  disabled?: boolean;
-  title?: string;
-  ariaLabel?: string;
-  className?: string;
-  type?: "button" | "submit";
-}
-export function Button({
-  children, onClick, kind = "hbtn", variant, pending, autoPending,
-  disabled, title, ariaLabel, className = "", type = "button",
-}: ButtonProps): JSX.Element {
-  const [busy, setBusy] = useState(false);
-  const isPending = pending ?? (autoPending ? busy : false);
-  const run = async (): Promise<void> => {
-    if (!onClick || isPending || disabled) return;
-    if (!autoPending) { await onClick(); return; }
-    setBusy(true);
-    try { await onClick(); } finally { setBusy(false); }
-  };
-  const cls = [kind, variant, isPending ? "is-pending" : "", className].filter(Boolean).join(" ");
-  return (
-    <button type={type} title={title} aria-label={ariaLabel} aria-busy={isPending || undefined}
-      disabled={disabled || isPending} className={cls} onClick={() => void run()}>
-      {isPending && <Spinner />}
-      <span className="btn-label">{children}</span>
-    </button>
-  );
-}
-
-/** Shimmer placeholder for async panels — replaces bare "loading…" text. */
-export function Skeleton({ lines = 3, className = "" }: { lines?: number; className?: string }): JSX.Element {
-  return (
-    <div className={`skeleton ${className}`.trim()} role="status" aria-label="Loading">
-      {Array.from({ length: lines }, (_, i) => (
-        <div key={i} className="skeleton-line" style={{ width: `${92 - i * 12}%` }} />
-      ))}
-    </div>
-  );
 }
 
 /** Secondary header actions folded behind one "More" disclosure, closed on outside click.
@@ -212,18 +116,74 @@ export function useEventStream(ws: string): [Model, number, boolean] {
  * A polling interval started from an event handler (Send, Test, Plan) that is
  * ALWAYS cleared on unmount — closing the modal mid-poll must not keep hitting
  * the server and calling setState on an unmounted tree. The tick receives a
- * `stop()` to end the poll itself when its work is done.
+ * `stop()` to end the poll itself when its work is done. Ticks are skipped while
+ * the tab is hidden; one runs as soon as it's visible again.
  */
 export function useManagedInterval(): (tick: (stop: () => void) => void, ms: number) => void {
   const ref = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tickRef = useRef<((stop: () => void) => void) | null>(null);
   const stop = useCallback(() => {
     if (ref.current) { clearInterval(ref.current); ref.current = null; }
+    tickRef.current = null;
   }, []);
-  useEffect(() => stop, [stop]); // clear on unmount
+  useEffect(() => {
+    const onVisible = (): void => {
+      if (!document.hidden && ref.current) tickRef.current?.(stop);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { document.removeEventListener("visibilitychange", onVisible); stop(); }; // clear on unmount
+  }, [stop]);
   return useCallback((tick, ms) => {
     stop();
-    ref.current = setInterval(() => tick(stop), ms);
+    tickRef.current = tick;
+    ref.current = setInterval(() => { if (!document.hidden) tick(stop); }, ms);
   }, [stop]);
+}
+
+/** What a usePolling callback gets: `alive()` is false once the effect was torn
+ *  down (unmount / deps change) — check it after an await before setting state;
+ *  `stop()` ends the polling for good (until deps change). */
+export interface PollControl { alive: () => boolean; stop: () => void }
+
+/**
+ * Network polling that respects the tab: `fn` runs once immediately, then every
+ * `ms` — but the interval is suspended while `document.hidden` (a backgrounded
+ * dashboard shouldn't keep hitting the server) and resumed, with an immediate
+ * call, when the tab becomes visible again. `ms: null` is a one-shot load with
+ * the same lifecycle. Nothing runs while `enabled` is false. Re-subscribes when
+ * `deps` change (like useEffect). A rejected poll is ignored: the last value
+ * stays and the next tick retries.
+ */
+export function usePolling(
+  fn: (ctl: PollControl) => void | Promise<void>,
+  ms: number | null,
+  deps: React.DependencyList,
+  enabled = true,
+): void {
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true, stopped = false;
+    let id: ReturnType<typeof setInterval> | null = null;
+    const pause = (): void => { if (id !== null) { clearInterval(id); id = null; } };
+    const ctl: PollControl = { alive: () => alive, stop: () => { stopped = true; pause(); } };
+    const run = (): void => {
+      if (stopped) return;
+      void Promise.resolve().then(() => fn(ctl)).catch(() => { /* keep last; next tick retries */ });
+    };
+    const resume = (): void => { if (id === null && !stopped && ms !== null) id = setInterval(run, ms); };
+    const onVisibility = (): void => {
+      if (document.hidden) pause();
+      else { run(); resume(); }
+    };
+    run();
+    if (ms === null) return () => { alive = false; };
+    if (!document.hidden) resume();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      alive = false; stopped = true; pause();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [...deps, ms, enabled]);
 }
 
 /** A ticking clock so running timers re-render each second. */
@@ -237,23 +197,20 @@ export function useNow(activeOrPaused: boolean): number {
   return now;
 }
 
+/** How often the header re-checks that a dispatcher is really running. */
+const RUN_ACTIVE_POLL_MS = 3000;
+
 /** Polls whether a dispatcher is really alive for the shown run. */
 export function useRunActive(tick: number): boolean {
   const [active, setActive] = useState(true);
-  useEffect(() => {
-    let alive = true;
-    const poll = async (): Promise<void> => {
-      try {
-        const s = await fetchJSON<{ run: { state: string }; loop?: { state: string } }>("/api/status");
-        // An autopilot loop runs via the "loop" job, not "run" — count it as active
-        // too, so the header doesn't say "stopped" while the loop is working.
-        if (alive) setActive(s.run.state === "running" || s.loop?.state === "running");
-      } catch { /* keep last */ }
-    };
-    void poll();
-    const id = setInterval(poll, 3000);
-    return () => { alive = false; clearInterval(id); };
-  }, [tick === 0 ? 0 : 1]); // (re)start once the stream is live
+  usePolling(async ({ alive }) => {
+    try {
+      const s = await fetchJSON<{ run: { state: string }; loop?: { state: string } }>("/api/status");
+      // An autopilot loop runs via the "loop" job, not "run" — count it as active
+      // too, so the header doesn't say "stopped" while the loop is working.
+      if (alive()) setActive(s.run.state === "running" || s.loop?.state === "running");
+    } catch { /* keep last */ }
+  }, RUN_ACTIVE_POLL_MS, [tick === 0 ? 0 : 1]); // (re)start once the stream is live
   return active;
 }
 
@@ -266,120 +223,7 @@ export function useEsc(onClose: () => void): void {
   });
 }
 
-/**
- * Dialog focus management: move focus into the container on open, keep Tab inside
- * it (so keyboard users can't wander behind the modal), and restore focus to the
- * element that opened it on close. Returns a ref to attach to the dialog root.
- */
-export function useFocusTrap<T extends HTMLElement>(): React.RefObject<T | null> {
-  const ref = useRef<T>(null);
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    const opener = document.activeElement as HTMLElement | null;
-    const focusable = (): HTMLElement[] =>
-      [...node.querySelectorAll<HTMLElement>(
-        'a[href],button:not([disabled]),textarea,input,select,[tabindex]:not([tabindex="-1"])',
-      )].filter((el) => el.offsetParent !== null);
-    (focusable()[0] ?? node).focus();
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== "Tab") return;
-      const items = focusable();
-      if (items.length === 0) return;
-      const first = items[0]!, last = items[items.length - 1]!;
-      const active = document.activeElement;
-      if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
-    };
-    node.addEventListener("keydown", onKey);
-    return () => {
-      node.removeEventListener("keydown", onKey);
-      opener?.focus?.(); // restore focus to the trigger
-    };
-  }, []);
-  return ref;
-}
-
-/** Browser-notification opt-in, persisted and gated on the OS permission. */
-export function useNotifyPref(): { on: boolean; toggle: () => void } {
-  const [on, setOn] = useState(() => {
-    try {
-      return localStorage.getItem("factory.notify") === "1"
-        && "Notification" in window && Notification.permission === "granted";
-    } catch { return false; }
-  });
-  const toggle = (): void => {
-    if (on) {
-      setOn(false);
-      try { localStorage.setItem("factory.notify", "0"); } catch { /* */ }
-      return;
-    }
-    if (!("Notification" in window)) { toast("This browser has no notifications.", true); return; }
-    void Notification.requestPermission().then((perm) => {
-      if (perm === "granted") {
-        setOn(true);
-        try { localStorage.setItem("factory.notify", "1"); } catch { /* */ }
-        toast("Notifications on — I'll ping you when a task needs you or a run ends.");
-      } else {
-        toast("Notifications are blocked in the browser settings.", true);
-      }
-    });
-  };
-  return { on, toggle };
-}
-
-export function sendNotification(title: string, body: string): void {
-  try { new Notification(title, { body, tag: "agent-factory" }); } catch { /* not permitted */ }
-}
-
-/** Terminal states worth interrupting a human for. */
-export const ALERT_STATES: Partial<Record<TaskState, { msg: string; error: boolean }>> = {
-  DONE: { msg: "merged", error: false },
-  FAILED: { msg: "failed", error: true },
-  BLOCKED: { msg: "needs you — it asked a question", error: true },
-};
-
-/**
- * Toasts (C2) and browser notifications (C1) on real state changes. The run's
- * replay-on-connect is swallowed by a short grace window so history doesn't
- * fire a burst of stale alerts; browser notifications only fire when the tab is
- * in the background (a toast already covers the focused case).
- */
-export function useStateAlerts(model: Model, notifyEnabled: boolean): void {
-  const prev = useRef<Map<string, TaskState>>(new Map());
-  const readyAt = useRef(0);
-  const lastRun = useRef<string | null>(null);
-  const endedSeen = useRef(false);
-  useEffect(() => {
-    if (model.run !== lastRun.current) {
-      lastRun.current = model.run;
-      readyAt.current = Date.now() + 3500; // let the connect-time replay settle
-      prev.current = new Map();
-      endedSeen.current = false;
-    }
-    const ready = Date.now() > readyAt.current;
-    for (const [id, t] of model.tasks) {
-      const was = prev.current.get(id);
-      if (ready && was && was !== t.state) {
-        const a = ALERT_STATES[t.state];
-        if (a) {
-          toast(`${id} ${a.msg}`, a.error);
-          if (notifyEnabled && document.hidden) sendNotification("Warden", `${t.title}: ${a.msg}`);
-        }
-      }
-      prev.current.set(id, t.state);
-    }
-    if (ready && model.endedTs && !endedSeen.current) {
-      endedSeen.current = true;
-      const merged = [...model.tasks.values()].filter((t) => t.state === "DONE").length;
-      toast(`Run finished — ${merged} merged.`);
-      if (notifyEnabled && document.hidden) sendNotification("Warden", `Run finished — ${merged} merged.`);
-    }
-  });
-}
-
 /* --------------------------------- companion --------------------------------- */
-
 
 /**
  * The companion timeline for a workspace: the narrated, persistent record of
@@ -415,36 +259,6 @@ export function useCompanion(ws: string): { obs: Observation[]; latestId: string
 }
 
 export interface WorkspaceInfo { name: string; workdir: string; repo: string | null; currentRun: string | null }
-
-/* --------------------------------- status meta --------------------------------- */
-
-/** Per-state pill: human label + icon + colour family (drives the oklch CSS vars). */
-export const STATE_META: Record<TaskState, { label: string; Icon: LucideIcon; fam: string }> = {
-  QUEUED: { label: "Up next", Icon: Circle, fam: "upnext" },
-  RUNNING: { label: "Working", Icon: Play, fam: "working" },
-  VERIFYING: { label: "Tests", Icon: FlaskConical, fam: "checking" },
-  REVIEWING: { label: "Review", Icon: Search, fam: "reviewing" },
-  AWAITING_APPROVAL: { label: "To review", Icon: Eye, fam: "approval" },
-  MERGE_QUEUED: { label: "Merging", Icon: GitMerge, fam: "merging" },
-  MERGING: { label: "Merging", Icon: GitMerge, fam: "merging" },
-  DONE: { label: "Merged", Icon: Check, fam: "merged" },
-  BLOCKED: { label: "Question", Icon: CircleHelp, fam: "blocked" },
-  FAILED: { label: "Failed", Icon: TriangleAlert, fam: "failed" },
-};
-
-/** Headline tone → status colour family, for the synthesis dot. */
-export const TONE_FAM: Record<string, string> = { good: "merged", warning: "blocked", critical: "failed", accent: "working" };
-
-export function StatusPill({ state, live }: { state: TaskState; live?: boolean }): JSX.Element {
-  const m = STATE_META[state];
-  return (
-    <span className={`pill fam-${m.fam}`}>
-      {live ? <span className="live-dot" /> : <span className="glyph"><m.Icon size={12} /></span>}
-      {m.label}
-    </span>
-  );
-}
-
 
 /* --------------------------------- image attachments --------------------------------- */
 
@@ -499,39 +313,6 @@ export function useAttachments(): {
     [items],
   );
   return { items, paste, drop, pick, remove, clear, refs };
-}
-
-/** The thumbnail strip under a composer; each image has a remove (×) button. */
-export function AttachStrip(
-  { items, onRemove }: { items: Attachment[]; onRemove: (path: string) => void },
-): JSX.Element | null {
-  if (!items.length) return null;
-  return (
-    <div className="attach-strip">
-      {items.map((a) => (
-        <div key={a.path} className="attach-thumb" title={a.name}>
-          <img src={a.thumb} alt={a.name} />
-          <button type="button" className="attach-x" aria-label={`Remove ${a.name}`} onClick={() => onRemove(a.path)}>
-            <X size={11} />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** A small "attach file" button that opens a file picker, accepting all file types. */
-export function AttachButton({ onPick }: { onPick: (files: FileList | null) => void }): JSX.Element {
-  const ref = useRef<HTMLInputElement>(null);
-  return (
-    <>
-      <button type="button" className="attach-btn" title="Attach files" onClick={() => ref.current?.click()}>
-        <Upload size={13} /> Attach
-      </button>
-      <input ref={ref} type="file" multiple hidden
-        onChange={(e) => { onPick(e.target.files); e.target.value = ""; }} />
-    </>
-  );
 }
 
 /* --------------------------------- file attachments --------------------------------- */

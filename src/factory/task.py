@@ -85,6 +85,9 @@ class Task:
     model: str | None = None
     # Optional per-ticket reasoning-effort override; None = the run-wide effort.
     effort: str | None = None
+    # Best-of-N: how many independent agents attempt this ticket in parallel on its
+    # first try (the verified, smallest passing diff wins). None = the run default.
+    candidates: int | None = None
     attempts: int = 0
     # Times the agent ran out of its turn budget and was RESUMED to continue. Not
     # a failure and not counted against max_retries — capped separately so a truly
@@ -100,6 +103,10 @@ class Task:
     # LATER-stage failure — post-rebase merge conflict, review rejection — can
     # resume that session instead of restarting the agent from scratch.
     last_session: str | None = None
+    # A branch recovered from a crashed run that already holds commits for this
+    # ticket. The next attempt starts FROM it instead of from the base, so an
+    # interrupted hour of agent work isn't thrown away (see factory.recovery).
+    adopt_branch: str | None = None
 
     def collides_with(self, other: Task) -> bool:
         """Two tasks collide when they may touch the same files.
@@ -241,6 +248,10 @@ def parse_ticket(path: Path, default_base_branch: str, default_max_retries: int 
         hold=bool(meta.get("hold", False)),
         model=(str(meta["model"]) if meta.get("model") else None),
         effort=effort,
+        candidates=(
+            max(1, _int(meta.get("candidates"), 1, "candidates"))
+            if meta.get("candidates") is not None else None
+        ),
     )
 
 

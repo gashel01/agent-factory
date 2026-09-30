@@ -119,7 +119,7 @@ def test_merge_reverifies_when_base_moved(tmp_path, repo, task):
     assert "post-rebase verify failed" in result.reason
 
 
-def test_merge_reports_conflict_and_aborts(tmp_path, repo, task):
+def test_merge_conflict_is_left_for_the_agent_to_resolve(tmp_path, repo, task):
     wt = wt_mod.create(repo, tmp_path / "wt", "run1", task.id, "main")
     _commit_in(wt, "shared.txt", "agent version\n")
     # base moves with a conflicting change after the worktree was created
@@ -128,9 +128,31 @@ def test_merge_reports_conflict_and_aborts(tmp_path, repo, task):
     git(repo, "commit", "-m", "conflicting base change")
     result = merge_branch(task, wt, VerifyConfig())
     assert not result.ok
-    assert "conflict" in result.reason
-    # the worktree is left rebase-free so cleanup can proceed
-    assert git(wt.path, "status", "--porcelain") == ""
+    assert result.conflicts == ("shared.txt",)
+    # The agent can't rebase (forbidden), so it gets a MERGE in progress it can
+    # finish with edits + git add + git commit — and instructions saying so.
+    assert "git commit --no-edit" in result.reason
+    status = git(wt.path, "status", "--porcelain")
+    assert "UU shared.txt" in status or "AA shared.txt" in status
+
+    # Resolving it the way the agent is told to makes the branch mergeable.
+    (wt.path / "shared.txt").write_text("both versions\n", encoding="utf-8")
+    git(wt.path, "add", "shared.txt")
+    git(wt.path, "commit", "--no-edit")
+    again = merge_branch(task, wt, VerifyConfig())
+    assert again.ok, again.reason
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "both versions\n"
+
+
+def test_non_conflicting_base_move_merges_without_the_agent(tmp_path, repo, task):
+    wt = wt_mod.create(repo, tmp_path / "wt", "run1", task.id, "main")
+    _commit_in(wt, "mine.txt", "agent\n")
+    (repo / "theirs.txt").write_text("sibling\n", encoding="utf-8")
+    git(repo, "add", "theirs.txt")
+    git(repo, "commit", "-m", "sibling landed")
+    result = merge_branch(task, wt, VerifyConfig(commands=('python -c "exit(0)"',)))
+    assert result.ok, result.reason
+    assert result.reverified  # the base moved under it: proven again after rebase
 
 
 def test_preflight_rejects_dirty_repo(repo):

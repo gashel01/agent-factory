@@ -7,9 +7,16 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-import { json, readBody, runCmd, runShell } from "./server-core.js";
+import { json, knownRepos, pathKey, readJSON, runCmd, runShell, sendError } from "./server-core.js";
 import { BOOTSTRAP_GITIGNORE } from "./server-preview.js";
 import type { RouteCtx } from "./server-routes.js";
+
+/** A git ref / revision expression from the client. Never starting with "-": git
+ *  would parse it as an option (e.g. --output=<file>). The commands also pass
+ *  --end-of-options (git >= 2.24) before it, as a second line of defence. */
+const SAFE_REF = /^(?!-)[\w./@^~-]+$/;
+/** A branch name to create / switch to / delete / push (same "-" rule). */
+const SAFE_BRANCH = /^(?!-)[\w./-]+$/;
 
 /** Run `gh` capturing stdout SEPARATELY from stderr, so `--json` output parses
  *  cleanly (runCmd merges the two, and gh's notices would corrupt the JSON). */
@@ -37,14 +44,14 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
   // Closes the "Warden develops Warden" loop without dropping to a terminal.
   if (url.pathname === "/api/deploy" && req.method === "POST") {
     try {
-      const { branch, restart } = JSON.parse(await readBody(req)) as
+      const { branch, restart } = await readJSON(req) as
         { branch?: string; restart?: boolean };
       const dashDir = process.cwd();          // server is launched from dashboard/
       const repoRoot = resolve(dashDir, "..");
       if (!existsSync(join(repoRoot, ".git")) || !existsSync(join(dashDir, "package.json"))) {
         throw new Error("deploy only works when Warden runs from its own source tree");
       }
-      if (branch && !/^[\w./-]+$/.test(branch)) throw new Error("bad branch name");
+      if (branch && !SAFE_BRANCH.test(branch)) throw new Error("bad branch name");
       // A restart kills any spawned run/loop subprocess, so refuse while one is
       // live — otherwise a deploy would abort a run mid-flight (surfacing as a
       // spurious "killed by the operator").
@@ -85,14 +92,14 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       }
       json(res, 200, { ok: true, restarting: false, log: build.output.slice(-400) });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
 
   if (url.pathname === "/api/repo/init" && req.method === "POST") {
     try {
-      const { path } = JSON.parse(await readBody(req)) as { path?: string };
+      const { path } = await readJSON(req) as { path?: string };
       if (!path?.trim()) throw new Error("path is required");
       const dir = resolve(path.trim());
       if (existsSync(join(dir, ".git"))) throw new Error("already a git repository");
@@ -111,14 +118,14 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (commit.code !== 0) throw new Error(commit.output.trim());
       json(res, 200, { ok: true, output: `initialized ${dir} on branch main` });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
 
   if (url.pathname === "/api/repo/publish" && req.method === "POST") {
     try {
-      const { path, visibility } = JSON.parse(await readBody(req)) as {
+      const { path, visibility } = await readJSON(req) as {
         path?: string;
         visibility?: string;
       };
@@ -137,14 +144,14 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (result.code !== 0) throw new Error(result.output.trim() || "gh failed — is it installed and logged in?");
       json(res, 200, { ok: true, output: result.output.trim() });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
 
   if (url.pathname === "/api/repo/visibility" && req.method === "POST") {
     try {
-      const { path, visibility } = JSON.parse(await readBody(req)) as {
+      const { path, visibility } = await readJSON(req) as {
         path?: string;
         visibility?: string;
       };
@@ -168,25 +175,29 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (result.code !== 0) throw new Error(result.output.trim() || "gh failed — is it installed and logged in?");
       json(res, 200, { ok: true, output: result.output.trim() || `repository is now ${visibility}` });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
 
   if (url.pathname.startsWith("/api/repo/") && req.method === "GET") {
     const repo = resolve(url.searchParams.get("repo") ?? "");
-    if (!repo || !existsSync(join(repo, ".git"))) {
+    if (!knownRepos(registry).has(pathKey(repo))) {
+      json(res, 403, { ok: false, error: "not a repository of a registered project" });
+      return true;
+    }
+    if (!existsSync(join(repo, ".git"))) {
       json(res, 400, { ok: false, error: "repo must be an existing git repository" });
       return true;
     }
     const ref = url.searchParams.get("ref") ?? "HEAD";
-    if (!/^[\w./@^~-]+$/.test(ref)) {
+    if (!SAFE_REF.test(ref)) {
       json(res, 400, { ok: false, error: "bad ref" });
       return true;
     }
 
     if (url.pathname === "/api/repo/tree") {
-      const result = await runCmd("git", ["ls-tree", "-r", "--name-only", ref], repo);
+      const result = await runCmd("git", ["ls-tree", "-r", "--name-only", "--end-of-options", ref], repo);
       if (result.code !== 0) {
         json(res, 400, { ok: false, error: result.output.trim() });
         return true;
@@ -200,7 +211,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
         json(res, 400, { ok: false, error: "bad path" });
         return true;
       }
-      const result = await runCmd("git", ["show", `${ref}:${file}`], repo);
+      const result = await runCmd("git", ["show", "--end-of-options", `${ref}:${file}`], repo);
       if (result.code !== 0) {
         json(res, 404, { ok: false, error: result.output.trim() });
         return true;
@@ -225,7 +236,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       // Unit-sep (\x1f) between fields, record-sep (\x1e) between commits, so the
       // full body (%b) can carry newlines/tabs without breaking the parse.
       const args = ["log", "--format=%h%x1f%p%x1f%ad%x1f%an%x1f%D%x1f%s%x1f%b%x1e", "--date=relative", "-n", "120"];
-      if (all) args.push("--all", "--topo-order"); else args.push(ref);
+      if (all) args.push("--all", "--topo-order"); else args.push("--end-of-options", ref);
       const result = await runCmd("git", args, repo);
       const commits = result.output
         .split("\x1e")
@@ -248,10 +259,10 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       const from = url.searchParams.get("from");
       const to = url.searchParams.get("to");
       let args: string[];
-      if (commit && /^[\w^~]+$/.test(commit)) {
-        args = ["show", commit, "--stat", "--patch"];
-      } else if (from && to && /^[\w./@^~-]+$/.test(from) && /^[\w./@^~-]+$/.test(to)) {
-        args = ["diff", `${from}..${to}`, "--stat", "--patch"];
+      if (commit && SAFE_REF.test(commit) && /^[\w^~]+$/.test(commit)) {
+        args = ["show", "--stat", "--patch", "--end-of-options", commit];
+      } else if (from && to && SAFE_REF.test(from) && SAFE_REF.test(to)) {
+        args = ["diff", "--stat", "--patch", "--end-of-options", `${from}..${to}`];
       } else {
         json(res, 400, { ok: false, error: "pass ?commit= or ?from=&to=" });
         return true;
@@ -266,7 +277,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
 
   if (url.pathname === "/api/repo/switch" && req.method === "POST") {
     try {
-      const { path, branch } = JSON.parse(await readBody(req)) as {
+      const { path, branch } = await readJSON(req) as {
         path?: string;
         branch?: string;
       };
@@ -274,7 +285,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (!repo || !existsSync(join(repo, ".git"))) {
         throw new Error("repo must be an existing git repository");
       }
-      if (!branch || !/^[\w./-]+$/.test(branch)) throw new Error("bad branch name");
+      if (!branch || !SAFE_BRANCH.test(branch)) throw new Error("bad branch name");
       // A run's merge queue targets the checked-out branch: never switch mid-run.
       const running = [...registry.workspaces.values()].some(
         (w) => w.jobs.run.state === "running",
@@ -284,7 +295,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (result.code !== 0) throw new Error(result.output.trim());
       json(res, 200, { ok: true, output: `now on ${branch}` });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -293,11 +304,11 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
   // run-in-progress guard as switch, since it moves HEAD.
   if (url.pathname === "/api/repo/branch/create" && req.method === "POST") {
     try {
-      const body = JSON.parse(await readBody(req)) as { path?: string; branch?: string; from?: string };
+      const body = await readJSON(req) as { path?: string; branch?: string; from?: string };
       const repo = resolve(body.path ?? "");
       if (!repo || !existsSync(join(repo, ".git"))) throw new Error("repo must be an existing git repository");
-      if (!body.branch || !/^[\w./-]+$/.test(body.branch)) throw new Error("bad branch name");
-      const from = typeof body.from === "string" && /^[\w./-]+$/.test(body.from) ? body.from : null;
+      if (!body.branch || !SAFE_BRANCH.test(body.branch)) throw new Error("bad branch name");
+      const from = typeof body.from === "string" && SAFE_BRANCH.test(body.from) ? body.from : null;
       const running = [...registry.workspaces.values()].some((w) => w.jobs.run.state === "running");
       if (running) throw new Error("refusing to create/switch branches while a run is in progress");
       const args = from ? ["switch", "-c", body.branch, from] : ["switch", "-c", body.branch];
@@ -305,7 +316,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (result.code !== 0) throw new Error(result.output.trim());
       json(res, 200, { ok: true, output: `created and switched to ${body.branch}` });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -315,10 +326,10 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
   // live branches).
   if (url.pathname === "/api/repo/branch/delete" && req.method === "POST") {
     try {
-      const body = JSON.parse(await readBody(req)) as { path?: string; branch?: string };
+      const body = await readJSON(req) as { path?: string; branch?: string };
       const repo = resolve(body.path ?? "");
       if (!repo || !existsSync(join(repo, ".git"))) throw new Error("repo must be an existing git repository");
-      if (!body.branch || !/^[\w./-]+$/.test(body.branch)) throw new Error("bad branch name");
+      if (!body.branch || !SAFE_BRANCH.test(body.branch)) throw new Error("bad branch name");
       if (body.branch === "main" || body.branch === "master") throw new Error("won't delete the default branch");
       const current = (await runCmd("git", ["rev-parse", "--abbrev-ref", "HEAD"], repo)).output.trim();
       if (body.branch === current) throw new Error("can't delete the current branch — switch away first");
@@ -343,7 +354,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (result.code !== 0) throw new Error(result.output.trim());
       json(res, 200, { ok: true, output: `deleted ${body.branch}` });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -352,7 +363,11 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
   // board, so PR mode's loop closes inside Warden instead of on github.com.
   if (url.pathname === "/api/prs" && req.method === "GET") {
     const repo = resolve(url.searchParams.get("repo") ?? "");
-    if (!repo || !existsSync(join(repo, ".git"))) {
+    if (!knownRepos(registry).has(pathKey(repo))) {
+      json(res, 403, { prs: [], error: "not a repository of a registered project" });
+      return true;
+    }
+    if (!existsSync(join(repo, ".git"))) {
       json(res, 400, { prs: [], error: "repo must be an existing git repository" });
       return true;
     }
@@ -368,11 +383,11 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
 
   if (url.pathname === "/api/prs/create" && req.method === "POST") {
     try {
-      const { repo: repoIn, head, base, title, body } = JSON.parse(await readBody(req)) as
+      const { repo: repoIn, head, base, title, body } = await readJSON(req) as
         { repo?: string; head?: string; base?: string; title?: string; body?: string };
       const repo = resolve(repoIn ?? "");
       if (!repo || !existsSync(join(repo, ".git"))) throw new Error("bad repo");
-      const nameRe = /^[\w./-]+$/;
+      const nameRe = SAFE_BRANCH;
       if (!head || !nameRe.test(head)) throw new Error("bad head branch");
       const baseBranch = base && nameRe.test(base) ? base : "main";
       if (head === baseBranch) throw new Error("head and base branches must differ");
@@ -391,7 +406,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (result.code !== 0) throw new Error(result.output.trim() || "gh pr create failed");
       json(res, 200, { ok: true, url: result.output.trim() });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }
@@ -399,7 +414,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
   if ((url.pathname === "/api/prs/merge" || url.pathname === "/api/prs/close")
       && req.method === "POST") {
     try {
-      const { repo: repoIn, number } = JSON.parse(await readBody(req)) as {
+      const { repo: repoIn, number } = await readJSON(req) as {
         repo?: string; number?: number;
       };
       const repo = resolve(repoIn ?? "");
@@ -412,7 +427,7 @@ export async function handleRepoRoutes(ctx: RouteCtx): Promise<boolean> {
       if (result.code !== 0) throw new Error(result.output.trim() || "gh command failed");
       json(res, 200, { ok: true, output: result.output.trim() });
     } catch (err) {
-      json(res, 400, { ok: false, error: String(err) });
+      sendError(res, err);
     }
     return true;
   }

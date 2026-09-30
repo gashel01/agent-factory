@@ -8,22 +8,34 @@ arbitrary code execution). `sandbox` wraps the *same* `claude -p` invocation in 
 
 - mounts ONLY the task's worktree (rw at /workspace); the rest of the host FS is
   invisible to the agent;
+- never mounts the host repository's `.git`. git inside the box works on a
+  throwaway repository in a tmpfs, which reads the host's object store READ-ONLY
+  (alternates). The agent's commits leave the box as a `git bundle` — inert data
+  the host fetches — so nothing the agent writes can become a hook, a config
+  entry or a rewritten ref that the host's own git would later honour;
 - mounts the subscription OAuth token read-only (no API key ever enters the box);
 - drops all Linux capabilities, forbids privilege escalation, caps CPU/RAM/PIDs;
 - routes egress through an allow-list proxy so the agent reaches Anthropic and
-  nothing else — even though `python:*` still runs, it cannot phone home.
+  nothing else — even though `python:*` still runs, it cannot phone home;
+- names every container, so a timeout or an operator kill stops the container
+  itself (killing the `docker run` client alone leaves it running and spending).
 
 Everything here shells out to the `docker` CLI (no SDK dependency), mirroring how
-the rest of the factory stays dependency-light. Proven end-to-end before wiring:
-FS confinement, OAuth-in-container, live bind-mount, and egress deny all verified.
+the rest of the factory stays dependency-light.
 """
 
 from __future__ import annotations
 
+import contextlib
+import re
+import secrets
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
+
+from .worktree import Worktree, git, sanitize_gitlink
 
 # Image + infra names are stable so the proxy/networks are reused across runs and
 # across factory restarts (created once, idempotently).
@@ -206,9 +218,159 @@ def _wait_proxy_ready(timeout_s: float = 10.0) -> None:
         time.sleep(0.3)
 
 
+# ------------------------------------------------------------------ git in the box
+
+#: Where the box sees the host's object store (read-only) and its own scratch repo.
+_BASE_OBJECTS = "/base/objects"
+_SCRATCH_GIT = "/scratch/git"
+_OUT = "/out"
+#: The ref the box exports its final HEAD under, and where the host receives it.
+_EXPORT_REF = "refs/warden/export"
+_INCOMING_REF = "refs/warden/incoming"
+
+# Runs as the container's entrypoint, then execs nothing: it stays the parent so
+# it can export the agent's commits once the agent exits. The scratch repo starts
+# at WARDEN_START on WARDEN_BRANCH with an index matching the checked-out tree,
+# so `git status/diff/commit/log` behave exactly as in the host worktree.
+_BOX_SCRIPT = f"""\
+set -e
+export GIT_DIR={_SCRATCH_GIT} GIT_WORK_TREE=/workspace \
+GIT_ALTERNATE_OBJECT_DIRECTORIES={_BASE_OBJECTS}
+git init -q
+git update-ref "refs/heads/$WARDEN_BRANCH" "$WARDEN_START"
+git symbolic-ref HEAD "refs/heads/$WARDEN_BRANCH"
+git read-tree HEAD
+git update-index -q --refresh >/dev/null 2>&1 || true
+set +e
+"$@"
+rc=$?
+if [ -d {_OUT} ]; then
+  head=$(git rev-parse -q --verify HEAD)
+  printf '%s\\n' "$head" > {_OUT}/head.txt
+  if [ -n "$head" ] && [ "$head" != "$WARDEN_START" ]; then
+    git update-ref {_EXPORT_REF} "$head"
+    git bundle create -q {_OUT}/result.bundle {_EXPORT_REF} "^$WARDEN_START" \
+      >/dev/null 2>&1 || true
+  fi
+fi
+exit $rc
+"""
+
+
+class BoxImportError(SandboxError):
+    """The box's commits could not be brought back to the host repository."""
+
+
+@dataclass(frozen=True)
+class Box:
+    """One container's view of a worktree.
+
+    ``objects`` is the host repository's object store (mounted read-only) and
+    ``start`` the commit the box's scratch repository begins at; without them
+    the box has no git at all. ``out_dir`` (agent boxes only) receives the
+    exported commits; ``name`` is what a kill targets.
+    """
+
+    name: str
+    worktree: Path
+    objects: Path | None = None
+    start: str = ""
+    branch: str = ""
+    out_dir: Path | None = None
+
+
+_NAME_UNSAFE = re.compile(r"[^a-zA-Z0-9_.-]+")
+
+
+def container_name(*parts: str) -> str:
+    """A unique, Docker-valid container name: `warden-<parts>-<nonce>`."""
+    stem = "-".join(_NAME_UNSAFE.sub("-", p).strip("-") for p in parts if p)
+    return f"warden-{stem}-{secrets.token_hex(3)}"[:120]
+
+
+def box_for(wt: Worktree, *, tag: str, out_dir: Path | None = None) -> Box:
+    """A Box for one phase (agent / setup / verify) of a task's worktree.
+
+    The worktree's `.git` pointer is restored first: the host is about to run
+    git in a tree the previous box could write to.
+    """
+    sanitize_gitlink(wt)
+    common = git(wt.repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    start = git(wt.path, "rev-parse", "HEAD").stdout.strip()
+    return Box(
+        name=container_name(wt.path.parent.parent.name, wt.path.name, tag),
+        worktree=wt.path,
+        objects=Path(common.stdout.strip()) / "objects",
+        start=start,
+        branch=wt.branch,
+        out_dir=out_dir,
+    )
+
+
+def kill_container(name: str) -> None:
+    """Stop a box for good. Best-effort and silent: it runs on timeout/cancel paths,
+    and a container that already exited is exactly the outcome we want."""
+    with contextlib.suppress(SandboxError, OSError, subprocess.SubprocessError):
+        _run(["kill", name], timeout=30.0)
+        _run(["rm", "-f", name], timeout=30.0)
+
+
+def _box_args(box: Box) -> list[str]:
+    """Docker args for the box's filesystem view: the worktree, git (scratch repo
+    over a read-only object store), the export dir, the hooks script, identity."""
+    args = ["--name", box.name, "-v", f"{_docker_path(box.worktree)}:/workspace",
+            "-w", "/workspace"]
+    if box.objects is not None:
+        args += [
+            "-v", f"{_docker_path(box.objects)}:{_BASE_OBJECTS}:ro",
+            "--tmpfs", "/scratch",
+            "-e", f"WARDEN_START={box.start}",
+            "-e", f"WARDEN_BRANCH={box.branch or 'warden'}",
+        ]
+    if box.out_dir is not None:
+        box.out_dir.mkdir(parents=True, exist_ok=True)
+        for stale in ("head.txt", "result.bundle"):
+            (box.out_dir / stale).unlink(missing_ok=True)
+        args += ["-v", f"{_docker_path(box.out_dir)}:{_OUT}"]
+    args += ["-v", f"{_docker_path(_hooks_script())}:{_sandbox_hooks_target()}:ro"]
+    gitconfig = Path.home() / ".gitconfig"
+    if gitconfig.is_file():
+        # Commits carry the operator's identity, as in a direct run.
+        args += ["-v", f"{_docker_path(gitconfig)}:/root/.gitconfig:ro"]
+    # Additive (does not replace the mounted .gitconfig): trust the bind mount.
+    args += ["-e", "GIT_CONFIG_COUNT=1", "-e", "GIT_CONFIG_KEY_0=safe.directory",
+             "-e", "GIT_CONFIG_VALUE_0=*"]
+    return args
+
+
+def _entry(box: Box) -> list[str]:
+    """The command prefix inside the box: the git bootstrap when it has git."""
+    return ["bash", "-c", _BOX_SCRIPT, "warden"] if box.objects is not None else []
+
+
+def _hooks_script() -> Path:
+    from .agent import HOOKS_SCRIPT  # agent imports this module; resolve lazily
+    return HOOKS_SCRIPT
+
+
+def _sandbox_hooks_target() -> str:
+    from .agent import SANDBOX_HOOKS_SCRIPT
+    return SANDBOX_HOOKS_SCRIPT
+
+
+# The CLI's own background traffic (telemetry, error reports, update checks) is
+# not needed to do the work, and the egress allow-list no longer admits it.
+_QUIET_CLI_ENV = (
+    "-e", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+    "-e", "DISABLE_TELEMETRY=1",
+    "-e", "DISABLE_ERROR_REPORTING=1",
+    "-e", "DISABLE_AUTOUPDATER=1",
+)
+
+
 # ------------------------------------------------------------------ wrap
 
-def wrap(base_cmd: list[str], worktree_path: Path) -> list[str]:
+def wrap(base_cmd: list[str], worktree_path: Path, box: Box | None = None) -> list[str]:
     """Turn the host `claude -p …` argv into a hardened `docker run … claude -p …`.
 
     base_cmd[0] is the host-resolved claude executable (dropped — the container has
@@ -216,10 +378,11 @@ def wrap(base_cmd: list[str], worktree_path: Path) -> list[str]:
     container-agnostic. A host-only `--mcp-config <path>` (ragmcp knowledge base)
     is stripped: that server lives on the host and isn't reachable from the box —
     knowledge-base + sandbox is a documented follow-up, not a silent broken run.
+    Without a ``box`` (no git context) the container still runs, just git-less.
     """
+    box = box or Box(name=container_name(worktree_path.name, "agent"), worktree=worktree_path)
     args = _strip_host_only_flags(base_cmd[1:])
     creds = _docker_path(credentials_path())
-    wt = _docker_path(worktree_path)
     proxy = f"http://{PROXY_NAME}:{PROXY_PORT}"
     return [
         _docker(), "run", "--rm", "-i",
@@ -227,67 +390,68 @@ def wrap(base_cmd: list[str], worktree_path: Path) -> list[str]:
         "--network", NET_INTERNAL,
         "-e", f"HTTP_PROXY={proxy}", "-e", f"HTTPS_PROXY={proxy}",
         "-e", f"http_proxy={proxy}", "-e", f"https_proxy={proxy}",
+        *_QUIET_CLI_ENV,
         # privilege + resource hardening
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
         "--pids-limit", PIDS_LIMIT,
         "--memory", MEM_LIMIT,
         "--cpus", CPU_LIMIT,
-        # only the worktree is visible; auth token mounted read-only
-        "-v", f"{wt}:/workspace",
+        # the worktree + scratch git; auth token mounted read-only
+        *_box_args(box),
         "-v", f"{creds}:{CREDS_TARGET}:ro",
-        "-w", "/workspace",
-        # let the agent's `git commit` work inside the box (see _git_args)
-        *_git_args(worktree_path),
         AGENT_IMAGE,
+        *_entry(box),
         "claude", *args,
     ]
 
 
-def _git_args(worktree_path: Path) -> list[str]:
-    """Docker args that make the agent's git operations work inside the container.
+def import_result(wt: Worktree, box: Box) -> None:
+    """Bring the agent's commits back from the box into the host repository.
 
-    A factory worktree is a LINKED worktree: its `.git` is a file pointing at
-    `<main-repo>/.git/worktrees/<id>`, which lives OUTSIDE the mounted worktree. So
-    git in the box can't find it. We mount the main `.git` and point git at it via
-    GIT_DIR/GIT_WORK_TREE env — no file rewrite, so host git keeps using its own
-    (Windows) paths unchanged. The host `.gitconfig` is mounted read-only so commits
-    carry the same identity as a direct run, and safe.directory is relaxed so the
-    cross-uid bind mount isn't rejected as 'dubious ownership'.
+    The box exported its final HEAD (head.txt) and, when it made new commits, a
+    bundle holding them. Fetching from a bundle reads pack data only — it never
+    executes anything the agent wrote. The task branch is then pointed at that
+    HEAD and the worktree's index reset to it, leaving the agent's working-tree
+    files (including any uncommitted edits) exactly as the agent left them.
+
+    No head.txt means the box never reached its export step (killed, crashed):
+    the branch stays where it was, which is the honest state.
     """
-    args: list[str] = []
-    dotgit = worktree_path / ".git"
+    if box.out_dir is None:
+        return
+    head_file = box.out_dir / "head.txt"
+    if not head_file.exists():
+        return
+    head = head_file.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", head):
+        raise BoxImportError(f"the box exported an unreadable HEAD: {head[:80]!r}")
+    if head == box.start:
+        return
+    bundle = box.out_dir / "result.bundle"
+    incoming = f"{_INCOMING_REF}/{_NAME_UNSAFE.sub('-', wt.branch)}"
+    known = git(wt.repo, "cat-file", "-e", f"{head}^{{commit}}", check=False).returncode == 0
+    if not known:
+        if not bundle.exists():
+            raise BoxImportError("the box made commits but exported no bundle")
+        git(wt.repo, "fetch", "--no-tags", "--no-write-fetch-head", str(bundle),
+            f"+{_EXPORT_REF}:{incoming}")
     try:
-        text = dotgit.read_text(encoding="utf-8").strip() if dotgit.is_file() else ""
-    except OSError:
-        text = ""
-    if text.startswith("gitdir:"):
-        gitdir = Path(text.split(":", 1)[1].strip())
-        common = gitdir.parent.parent  # <main-repo>/.git
-        wt_id = gitdir.name
-        args += [
-            "-v", f"{_docker_path(common)}:/repo/.git",
-            "-e", f"GIT_DIR=/repo/.git/worktrees/{wt_id}",
-            "-e", "GIT_WORK_TREE=/workspace",
-        ]
-    gitconfig = Path.home() / ".gitconfig"
-    if gitconfig.is_file():
-        args += ["-v", f"{_docker_path(gitconfig)}:/root/.gitconfig:ro"]
-    # Additive (does not replace the mounted .gitconfig): trust the bind-mounted tree.
-    args += [
-        "-e", "GIT_CONFIG_COUNT=1",
-        "-e", "GIT_CONFIG_KEY_0=safe.directory",
-        "-e", "GIT_CONFIG_VALUE_0=*",
-    ]
-    return args
+        git(wt.repo, "update-ref", f"refs/heads/{wt.branch}", head)
+    finally:
+        git(wt.repo, "update-ref", "-d", incoming, check=False)
+    sanitize_gitlink(wt)
+    git(wt.path, "read-tree", "HEAD")
 
 
 def run_command(
     cmd: str, worktree_path: Path, *, allow_network: bool, timeout_s: int,
+    box: Box | None = None,
 ) -> tuple[int, str]:
     """Run ONE shell command inside the hardened box against the worktree, and
     return (returncode, combined output). Raises subprocess.TimeoutExpired on
-    timeout so callers handle it uniformly with the host path.
+    timeout so callers handle it uniformly with the host path — after killing
+    the container, which a client-side timeout alone would leave running.
 
     Used for the setup and verify phases (NOT the agent). No auth token is mounted
     here — these phases never talk to Anthropic — so a malicious dependency or an
@@ -296,21 +460,28 @@ def run_command(
     npm and the commands are trusted operator config; False (--network none) for
     verify, since it runs the agent's own test code — offline, it cannot exfiltrate.
     """
+    box = box or Box(name=container_name(worktree_path.name, "cmd"), worktree=worktree_path)
     net = ["--network", "bridge"] if allow_network else ["--network", "none"]
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [
             _docker(), "run", "--rm",
             *net,
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--pids-limit", PIDS_LIMIT, "--memory", MEM_LIMIT, "--cpus", CPU_LIMIT,
-            "-v", f"{_docker_path(worktree_path)}:/workspace", "-w", "/workspace",
-            *_git_args(worktree_path),
-            AGENT_IMAGE, "bash", "-c", cmd,
+            *_box_args(box),
+            AGENT_IMAGE, *_entry(box), "bash", "-c", cmd,
         ],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout_s,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
     )
-    return proc.returncode, proc.stdout + proc.stderr
+    try:
+        out, _ = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        kill_container(box.name)
+        proc.kill()
+        proc.communicate()
+        raise
+    return proc.returncode, out or ""
 
 
 def _strip_host_only_flags(args: list[str]) -> list[str]:
@@ -324,7 +495,7 @@ def _strip_host_only_flags(args: list[str]) -> list[str]:
         if a == "--mcp-config":
             skip_next = True  # also drop its path argument
             continue
-        if a == "--strict-mcp-config":
-            continue
+        # --strict-mcp-config stays: it holds no host path, and it keeps the box
+        # from loading any MCP server beyond what Warden hands it.
         out.append(a)
     return out
